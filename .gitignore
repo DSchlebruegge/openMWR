@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__
+*.log
+.ipynb_checkpoints
+data/*
+src/*.egg-info/*
+libRadtran-*
+docs/_build
+docs/source/api/openMWR
+docs/source/api/torchMWRT
+src/*.egg-info
+.DS_Store
+paper/*
+src/torchMWRT/_lineshape

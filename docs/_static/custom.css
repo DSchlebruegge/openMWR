@@ -1,0 +1,108 @@
+/* Notebook-Outputs (myst-nb): Box-Look entfernen */
+div.cell_output {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+div.cell_output > * {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+div.cell_output {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+html[data-theme="dark"] div.cell_output .xarray,
+html[data-theme="dark"] div.cell_output .xr-wrap,
+html[data-theme="dark"] div.cell_output .xarray-wrap,
+html[data-theme="dark"] div.cell_output table.dataframe,
+html[data-theme="dark"] div.cell_output table.dataframe * {
+  color: #fff !important;
+}
+
+/* xarray HTML-Repräsentation in Notebook-Outputs kleiner */
+div.cell_output .xarray,
+div.cell_output .xr-wrap,
+div.cell_output .xarray-wrap {
+  font-size: 0.9em;      /* oder z.B. 12px */
+  line-height: 1.25;
+}
+
+/* Tabellen innerhalb von xarray (Dataset/DA Darstellung) */
+div.cell_output .xarray table,
+div.cell_output .xr-wrap table,
+div.cell_output .xarray-wrap table {
+  font-size: inherit;
+}
+
+/* Optional: Header/Labels in der xarray-Darstellung */
+div.cell_output .xarray th,
+div.cell_output .xarray td,
+div.cell_output .xr-wrap th,
+div.cell_output .xr-wrap td {
+  padding: 0.15rem 0.35rem;  /* kompakter */
+}
+
+/* Gemeinsame Form (beide Modi) */
+.bd-content div.cell div.cell_input.docutils.container {
+  border-radius: 4px !important;
+}
+
+/* DARK */
+html[data-theme="dark"] .bd-content div.cell div.cell_input.docutils.container {
+  background-color: rgb(41, 49, 61) !important;
+  border: 1px solid rgb(72, 86, 107) !important;
+  border-left: 1px solid rgb(72, 86, 107) !important;
+}
+
+/* LIGHT (an „normalen“ Codecell-Stil anlehnen) */
+html[data-theme="light"] .bd-content div.cell div.cell_input.docutils.container {
+  background-color: rgb(243, 244, 245) !important;      /* helles Codeblock-Grau */
+  border: 1px solid rgb(209, 213, 218) !important;      /* dezenter Rahmen */
+  border-left: 1px solid rgb(209, 213, 218) !important; /* kein grüner Akzent */
+}
+
+/* Inneres Highlight/Pre ohne eigene Box */
+.bd-content div.cell div.cell_input.docutils.container .highlight,
+.bd-content div.cell div.cell_input.docutils.container div[class^="highlight-"],
+.bd-content div.cell div.cell_input.docutils.container pre {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+
+/* Optional: etwas Padding wie bei Codeblöcken */
+.bd-content div.cell div.cell_input.docutils.container pre {
+  padding: 0.75rem 1rem !important;
+  margin: 0 !important;
+}
+/* Abstand nach dem Input, bevor Output kommt */
+.bd-content div.cell div.cell_input.docutils.container {
+  margin-bottom: 0.75rem !important;
+}
+
+
+div.cell_output > img[src$=".svg"] {
+  background-color: #ffffff !important;
+  padding: 0 !important;
+}
+div.cell_output > img[src$=".svg"] {
+  display: inline-block;
+}
+
+/* pandas DataFrames in Notebook-Outputs kleiner */
+div.cell_output table.dataframe {
+  font-size: 0.9em !important;   /* z.B. 0.8–0.9em oder 11–12px */
+  line-height: 1.25 !important;
+}
+
+/* Zellen kompakter (optional) */
+div.cell_output table.dataframe th,
+div.cell_output table.dataframe td {
+  padding: 0.2rem 0.45rem !important;
+}

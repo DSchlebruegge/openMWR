@@ -1,0 +1,39 @@
+[project]
+name = "openMWR"
+version = "0.1"
+license = { file = "LICENSE" }
+dependencies = [
+    "xarray",
+    "torch",
+    "matplotlib",
+    "scikit-learn",
+    "pyrtlib",
+    "pandas",
+    "numpy",
+    "scipy",
+    "optuna",
+    "cdsapi",
+    "requests",
+    "IPython",
+    "ipykernel",
+    "ipywidgets",
+    "suntime",
+    "metpy",
+    "netCDF4",
+    "pytest",
+]
+
+[project.optional-dependencies]
+docs = [
+    "sphinx>=8,<9",   # ensure compatibility with myst_nb 1.3
+    "myst_nb>=1.3,<2",
+    "sphinx_copybutton",
+    "pydata_sphinx_theme",
+    "sphinxcontrib-bibtex",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
