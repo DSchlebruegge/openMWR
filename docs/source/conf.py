@@ -98,7 +98,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/D.Schleebruegge/openMWR",
+            "url": "https://github.com/DSchlebruegge/openMWR",
             "icon": "fab fa-github",   # Font Awesome brand icon
             "type": "fontawesome",
         },
