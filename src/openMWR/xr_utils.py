@@ -292,9 +292,16 @@ def to_1d_tensor(ds, device):
     tensor = torch.tensor(np.concatenate(arrays), dtype=torch.float32, device=device)
     return tensor
 
-def add_time_data(ds):
+def add_time_data(ds, time_dim='time'):
     """
-    Adds time-related features to the dataset based on the 'time' coordinate. 
+    Adds time-related features to the dataset based on the specified time coordinate. 
+
+    Parameters
+    --------------
+    ds : xarray.Dataset
+        The input dataset containing a time coordinate.
+    time_dim : str, optional
+        The name of the time dimension in the dataset (default is 'time').
     
     Notes
     -----
@@ -304,9 +311,9 @@ def add_time_data(ds):
     - 'doy_sin': Sine of the day of year
     - 'years_since_1970': Time in years since 1970-01-01
     """
-    ds['doy_cos'] = np.cos(2*np.pi/365.25 * (ds.time.dt.dayofyear+10)) # +10 so 21.12 is the zero point
-    ds['doy_sin'] = np.sin(2*np.pi/365.25 * (ds.time.dt.dayofyear+10))
-    ds['years_since_1970'] = ds.time.astype('int64').astype('float64') * 1e-9 / 60 / 60 / 24 / 365.25
+    ds['doy_cos'] = np.cos(2*np.pi/365.25 * (ds[time_dim].dt.dayofyear+10)) # +10 so 21.12 is the zero point
+    ds['doy_sin'] = np.sin(2*np.pi/365.25 * (ds[time_dim].dt.dayofyear+10))
+    ds['years_since_1970'] = ds[time_dim].astype('int64').astype('float64') * 1e-9 / 60 / 60 / 24 / 365.25
 
     return ds
 

@@ -391,7 +391,7 @@ def create_radiosonde_dataset_for_RT(
     logger.info("Added surface variables to dataset")
 
     # Add time data
-    ds_new = add_time_data(ds_new)
+    ds_new = add_time_data(ds_new, time_dim='synop')
     logger.info("Added time-related features to dataset like 'doy_cos', 'doy_sin'")
 
     # Save the dataset
