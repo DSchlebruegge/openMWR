@@ -11,9 +11,9 @@ regression retrievals, but it is focused on more complex neural network retrieva
 It also supports the training of retrieval algorithms for elevation scans, to study
 the boundary layer.
 
-`OpenMWR` also includes the `torchMWRT` package, which is a PyTorch translation of the 
-radiative transfer calculation core of [PyRTlib](https://github.com/SatCloP/pyrtlib). It gives the same 
-results as `PyRTlib`, but is orders of magnitude faster. That is mainly achieved by 
+`OpenMWR` also includes the `torchMWRT` package, a PyTorch translation of the radiative-transfer 
+calculation core of [PyRTlib](https://github.com/SatCloP/pyrtlib). It produces the same results as 
+`PyRTlib` while being orders of magnitude faster. That is mainly achieved by 
 heavy vectorizations. It also supports GPU acceleration and automatic differentiation, 
 which is, however, not necessary for the classical retrieval algorithms.
 
