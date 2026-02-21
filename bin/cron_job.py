@@ -15,7 +15,7 @@ from openMWR.utils import setup_logging
 
 #logger = setup_daily_logger()
 logger = setup_logging()
-DATA_DIR = "data"
+DATA_DIR = "../data"
 
 def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
     logger.info(f"Run retrival and plot for the {date.strftime('%Y-%m-%d')} for {site}")

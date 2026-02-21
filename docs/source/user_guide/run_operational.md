@@ -37,22 +37,24 @@ There is also an `update.py` script in the `bin` directory that can be run like 
 
 This script updates all the datasets created in [Create a Retrieval](#create_retrieval) or with `bin/main.py` with the latest available data.
 
+In the list below, `DATA_DIR` refers to the data root configured in your scripts and passed to the openMWR functions.
+
 Specifically, the script updates the following datasets:
 - The raw, unchanged radiosonde data:<br>
- `data/radiosonde/{station}/raw_data_{year}.nc`.
+ `{DATA_DIR}/radiosondes/station_{station}/raw_data_{year}.nc`.
 - The filtered and interpolated radiosonde data:<br>
-`data/sites/{site}/radiosonde/radiosonde_data_{station}.nc`.
+`{DATA_DIR}/sites/{site}/radiosonde/radiosonde_data_{station}.nc`.
 - The radiosonde data with forward-calculated brightness temperatures:<br>
-`data/sites/{site}/radiosonde/radiosonde_data_with_RT_{station}.nc`.
+`{DATA_DIR}/sites/{site}/radiosonde/radiosonde_data_with_RT_{station}.nc`.
 - The Hatpro dataset with all the measurements:<br>
-`data/sites/{site}/hatpro/hatpro_data.nc`.
+`{DATA_DIR}/sites/{site}/hatpro/hatpro_data.nc`.
 - The radiosonde analysis dataset:<br>
-`data/sites/{site}/analysis/analysis_data_radiosonde.nc`.
+`{DATA_DIR}/sites/{site}/analysis/analysis_data_radiosonde.nc`.
 - The raw, unchanged ERA5 data:<br>
-`data/era5/era5_{lat}_{lon}.nc`.
+`{DATA_DIR}/era5/era5_{lat}_{lon}.nc`.
 - The interpolated ERA5 data with forward calculation:<br>
-`data/sites/{site}/era5/forward_calc_era5.nc`.
+`{DATA_DIR}/sites/{site}/era5/forward_calc_era5.nc`.
 - The ERA5 analysis dataset:<br>
-`data/sites/{site}/analysis/analysis_data_era5.nc`.
+`{DATA_DIR}/sites/{site}/analysis/analysis_data_era5.nc`.
 
 The `update.py` script also needs to be personalized. Site names and radiosonde station IDs are set in the script itself.

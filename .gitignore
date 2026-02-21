@@ -13,3 +13,4 @@ src/*.egg-info
 .DS_Store
 paper/*
 src/torchMWRT/_lineshape
+tests/baselines

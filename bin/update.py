@@ -8,7 +8,7 @@ from openMWR.era5 import ERA5Processor
 from openMWR.consts import std_freqs, std_angles, std_heights
 
 logger = setup_logging()
-DATA_DIR = "data"
+DATA_DIR = "../data"
 
 def update():
     site = 'munich_G5'

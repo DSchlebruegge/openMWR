@@ -3,7 +3,7 @@ from openMWR.consts import std_freqs, std_angles, std_heights
 
 logger = setup_logging()
 
-DATA_DIR = "data"
+DATA_DIR = "../data"
 
 def create_munich_G5_site_config():
     from openMWR.site import create_site
