@@ -9,6 +9,10 @@ if [[ -z "$SCRIPT" ]]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+SCRIPT_BASENAME="$(basename "$SCRIPT")"
+LOG_FILE="${SCRIPT_DIR}/${SCRIPT_BASENAME}.log"
+
 PYTHON_BIN=""
 
 # Prefer an active virtual environment if present.
@@ -21,7 +25,8 @@ else
     exit 1
 fi
 
-nohup "$PYTHON_BIN" "$SCRIPT" "$@" > "${SCRIPT##*/}.log" 2>&1 &
+nohup "$PYTHON_BIN" "$SCRIPT" "$@" > "$LOG_FILE" 2>&1 &
 PID=$!
 
 echo "Started $SCRIPT with PID $PID"
+echo "Logging to $LOG_FILE"
