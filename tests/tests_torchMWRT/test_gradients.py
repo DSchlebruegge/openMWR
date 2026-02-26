@@ -104,18 +104,19 @@ def test_tb_gradients(config):
         freqs=config["freqs"],
         angles=config["angles"],
         absmdl="R17",
-        cloudy=config["cloudy"],
         ray_tracing=config["ray_tracing"],
         from_sat=config["from_sat"],
     )
-    atm_profile = AtmProfile(
+    atm_profile_kwargs = dict(
         temperature=temperature,
         height=height,
         pressure=pressure,
         rh=rh,
-        lwc=lwc_t,
-        iwc=iwc_t,
     )
+    if config["cloudy"]:
+        atm_profile_kwargs["lwc"] = lwc_t
+        atm_profile_kwargs["iwc"] = iwc_t
+    atm_profile = AtmProfile(**atm_profile_kwargs)
 
     tb_out = rtmodel.execute(atm_profile, return_intermediate=config["return_intermediate"])
     loss = tb_out["tbtotal"].mean()
@@ -165,14 +166,10 @@ def _compute_loss_for_temperature(temp_tensor: torch.Tensor) -> torch.Tensor:
     height = torch.tensor(ds["height"].values, dtype=torch.float64)
     pressure = torch.tensor(ds["pressure"].values, dtype=torch.float64)
     rh = torch.tensor(ds["rh"].values, dtype=torch.float64)
-    lwc_t = torch.tensor(ds["LWC"].values, dtype=torch.float64)
-    iwc_t = torch.tensor(ds["IWC"].values, dtype=torch.float64)
-
     rtmodel = RTModel(
         freqs=np.array([22.24, 31.40], dtype=float),
         angles=np.array([90.0], dtype=float),
         absmdl="R17",
-        cloudy=False,
         ray_tracing=False,
         from_sat=False,
     )
@@ -181,8 +178,6 @@ def _compute_loss_for_temperature(temp_tensor: torch.Tensor) -> torch.Tensor:
         height=height,
         pressure=pressure,
         rh=rh,
-        lwc=lwc_t,
-        iwc=iwc_t,
     )
     tb_out = rtmodel.execute(atm_profile)
     return tb_out["tbtotal"].mean()
@@ -195,14 +190,10 @@ def _compute_loss_for_rh(rh_tensor: torch.Tensor) -> torch.Tensor:
     temperature = torch.tensor(ds["temperature"].values, dtype=torch.float64)
     height = torch.tensor(ds["height"].values, dtype=torch.float64)
     pressure = torch.tensor(ds["pressure"].values, dtype=torch.float64)
-    lwc_t = torch.tensor(ds["LWC"].values, dtype=torch.float64)
-    iwc_t = torch.tensor(ds["IWC"].values, dtype=torch.float64)
-
     rtmodel = RTModel(
         freqs=np.array([22.24, 31.40], dtype=float),
         angles=np.array([90.0], dtype=float),
         absmdl="R17",
-        cloudy=False,
         ray_tracing=False,
         from_sat=False,
     )
@@ -211,8 +202,6 @@ def _compute_loss_for_rh(rh_tensor: torch.Tensor) -> torch.Tensor:
         height=height,
         pressure=pressure,
         rh=rh_tensor,
-        lwc=lwc_t,
-        iwc=iwc_t,
     )
     tb_out = rtmodel.execute(atm_profile)
     return tb_out["tbtotal"].mean()
@@ -225,13 +214,11 @@ def _compute_loss_for_lwc(lwc_tensor: torch.Tensor) -> torch.Tensor:
     height = torch.tensor(ds["height"].values, dtype=torch.float64)
     pressure = torch.tensor(ds["pressure"].values, dtype=torch.float64)
     rh = torch.tensor(ds["rh"].values, dtype=torch.float64)
-    iwc_t = torch.tensor(ds["IWC"].values, dtype=torch.float64)
 
     rtmodel = RTModel(
         freqs=np.array([22.24, 31.40], dtype=float),
         angles=np.array([90.0], dtype=float),
         absmdl="R17",
-        cloudy=True,
         ray_tracing=False,
         from_sat=False,
     )
@@ -241,7 +228,6 @@ def _compute_loss_for_lwc(lwc_tensor: torch.Tensor) -> torch.Tensor:
         pressure=pressure,
         rh=rh,
         lwc=lwc_tensor,
-        iwc=iwc_t,
     )
     tb_out = rtmodel.execute(atm_profile)
     return tb_out["tbtotal"].mean()
@@ -254,13 +240,11 @@ def _compute_loss_for_iwc(iwc_tensor: torch.Tensor) -> torch.Tensor:
     height = torch.tensor(ds["height"].values, dtype=torch.float64)
     pressure = torch.tensor(ds["pressure"].values, dtype=torch.float64)
     rh = torch.tensor(ds["rh"].values, dtype=torch.float64)
-    lwc_t = torch.tensor(ds["LWC"].values, dtype=torch.float64)
 
     rtmodel = RTModel(
         freqs=np.array([22.24, 31.40], dtype=float),
         angles=np.array([90.0], dtype=float),
         absmdl="R17",
-        cloudy=True,
         ray_tracing=False,
         from_sat=False,
     )
@@ -269,7 +253,6 @@ def _compute_loss_for_iwc(iwc_tensor: torch.Tensor) -> torch.Tensor:
         height=height,
         pressure=pressure,
         rh=rh,
-        lwc=lwc_t,
         iwc=iwc_tensor,
     )
     tb_out = rtmodel.execute(atm_profile)

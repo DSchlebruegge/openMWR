@@ -200,26 +200,25 @@ def _run_torchrt(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing
         ds_rt["IWC"] = xr.zeros_like(ds_rt["IWC"])
     ds_rt = _to_rt_units(ds_rt)
 
-    cloud_flag = bool(cloudy and not force_clear)
-
     rtmodel = RTModel(
         freqs=HATPRO_14,
         angles=angles,
         absmdl=abs_model,
         from_sat=from_sat,
-        cloudy=cloud_flag,
         ray_tracing=ray_tracing,
     )
     emissivity_var = ds_rt.data_vars.get("emissivity")
-    atm_profile = AtmProfile(
+    atm_profile_kwargs = dict(
         temperature=ds_rt["temperature"].values,
         height=ds_rt["height"].values,
         pressure=ds_rt["pressure"].values,
         rh=ds_rt["rh"].values,
-        lwc=ds_rt["LWC"].values,
-        iwc=ds_rt["IWC"].values,
         emissivity=emissivity_var.values if emissivity_var is not None else None,
     )
+    if cloudy and not force_clear:
+        atm_profile_kwargs["lwc"] = ds_rt["LWC"].values
+        atm_profile_kwargs["iwc"] = ds_rt["IWC"].values
+    atm_profile = AtmProfile(**atm_profile_kwargs)
 
     start = perf_counter()
     tb_torch = rtmodel.execute(atm_profile, return_ds=True)
@@ -273,7 +272,6 @@ def test_tb_full_dataset_parallel_torchrt():
     from_sat = False
     cloudy = True
     force_clear = False
-    cloud_flag = bool(cloudy and not force_clear)
 
     ds_full_rt = ds_full.copy()
     if force_clear:
@@ -291,7 +289,6 @@ def test_tb_full_dataset_parallel_torchrt():
         angles=angles,
         absmdl=abs_model,
         from_sat=from_sat,
-        cloudy=cloud_flag,
         ray_tracing=ray_tracing,
     )
     emissivity_var = ds_full_rt.data_vars.get("emissivity")

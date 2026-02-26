@@ -26,7 +26,50 @@ from .profile import AtmProfile
 
 
 class RTModel:
-    """Combined radiative-transfer and absorption model."""
+    """Combined radiative-transfer and absorption model.
+
+    Parameters
+    ----------
+    freqs : array-like
+        Simulation frequencies in GHz.
+    angles : array-like
+        Viewing elevation angles in degrees. 
+        ``90`` denotes zenith-pointing (upward looking).
+    absmdl : str, optional
+        Absorption-model identifier (for example ``"R98"`` or ``"R17"``).
+    ray_tracing : bool, optional
+        If ``True``, use refractivity-dependent ray tracing. If ``False``, use
+        plane-parallel slant-path geometry.
+    from_sat : bool, optional
+        If ``True``, integrate top-down (satellite view). If ``False``,
+        integrate bottom-up (ground-based view).
+    dtype : torch.dtype, optional
+        Default dtype used for internal frequency/angle tensors and absorption
+        model setup.
+    device : str or torch.device, optional
+        Device for internal tensors and absorption-model instances.
+    amu : optional
+        Optional line-shape parameter forwarded to absorption-model
+        constructors.
+
+    Raises
+    ------
+    ValueError
+        If ``freqs`` is ``None``.
+
+    Notes
+    -----
+    - Absorption-model instances are initialized during construction and reused
+      for subsequent calls to :meth:`execute`.
+    - Cloud absorption is inferred from the presence of ``lwc`` and/or ``iwc``
+      in the provided :class:`AtmProfile`.
+    - Input ``freqs`` and ``angles`` are converted to torch tensors on the
+      configured dtype/device.
+
+    Provenance: the overall radiative-transfer and absorption workflow is
+    adapted from pyrtlib (especially ``TbCloudRTE`` and ``RTEquation``) and
+    ported to PyTorch for differentiable workflows.
+    """
 
     def __init__(
         self,
@@ -35,7 +78,6 @@ class RTModel:
         absmdl: str = "R98",
         ray_tracing: bool = False,
         from_sat: bool = False,
-        cloudy: bool = True,
         dtype: torch.dtype = torch.float64,
         device=None,
         amu=None,
@@ -50,7 +92,6 @@ class RTModel:
         self.absmdl = absmdl
         self.ray_tracing = ray_tracing
         self.from_sat = from_sat
-        self.cloudy = cloudy
 
         self._from_sat = from_sat
 
@@ -147,6 +188,9 @@ class RTModel:
         denliq = profile.denliq
         denice = profile.denice
         o3n = profile.o3n
+        has_liq = denliq is not None
+        has_ice = denice is not None
+        has_cloud = has_liq or has_ice
 
         frq = self.freqs.to(device=tk.device, dtype=tk.dtype)
         angles = self.angles.to(device=tk.device, dtype=tk.dtype)
@@ -164,7 +208,7 @@ class RTModel:
         # not on the look angle; compute once per frequency and reuse for all angles.
         awet_base, adry_base = self._clearsky_absorption(p, tk, e, o3n)
         aliq_base = aice_base = None
-        if self.cloudy:
+        if has_cloud:
             aliq_base, aice_base = self._cloudy_absorption(tk, denliq, denice)
 
         # Compute distance per angle once
@@ -188,8 +232,9 @@ class RTModel:
         if return_intermediate:
             swet, _ = self._exponential_integration(True, wetn.unsqueeze(-2), ds, 0, nl, 0.1)
             sdry, _ = self._exponential_integration(True, dryn.unsqueeze(-2), ds, 0, nl, 0.1)
-            if self.cloudy:
+            if has_liq:
                 sliq = self._cloud_integrated_density(denliq.unsqueeze(-2), ds)
+            if has_ice:
                 sice = self._cloud_integrated_density(denice.unsqueeze(-2), ds)
 
         # Cache per-angle copies for optional output (broadcast across angle).
@@ -210,16 +255,17 @@ class RTModel:
         )
 
         sptauliq = sptauice = ptauliq = ptauice = None
-        if self.cloudy and aliq_base is not None and aice_base is not None:
+        ptaulay = ptauwet + ptaudry
+        if aliq_base is not None:
             sptauliq, ptauliq = self._exponential_integration(
                 False, aliq_base.unsqueeze(-2), ds_abs, 1, nl, 1
             )
+            ptaulay = ptaulay + ptauliq
+        if aice_base is not None:
             sptauice, ptauice = self._exponential_integration(
                 False, aice_base.unsqueeze(-2), ds_abs, 1, nl, 1
             )
-            ptaulay = ptauwet + ptaudry + ptauice + ptauliq
-        else:
-            ptaulay = ptauwet + ptaudry
+            ptaulay = ptaulay + ptauice
 
         # planck expects (ang, batch..., nf, nl) so that t/emissivity broadcast cleanly.
         taulay_for_planck = ptaulay.movedim(-2, 0)
@@ -884,21 +930,26 @@ class RTModel:
 
         return boftotl, boftatm, boftmr, tauprof, hvk, boft, bakgrnd
 
-    def _cloudy_absorption(self, t: torch.Tensor, denl: torch.Tensor, deni: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _cloudy_absorption(
+        self,
+        t: torch.Tensor,
+        denl: Optional[torch.Tensor],
+        deni: Optional[torch.Tensor],
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Compute cloud liquid and ice absorption profiles.
 
         Parameters
         ----------
         t : torch.Tensor
             Temperature profile in K.
-        denl : torch.Tensor
+        denl : torch.Tensor, optional
             Cloud liquid water density in g/m^3.
-        deni : torch.Tensor
+        deni : torch.Tensor, optional
             Cloud ice density in g/m^3.
 
         Returns
         -------
-        tuple[torch.Tensor, torch.Tensor]
+        tuple[torch.Tensor or None, torch.Tensor or None]
             ``(aliq, aice)`` cloud liquid and ice absorption in Np/m.
 
         Raises
@@ -923,12 +974,21 @@ class RTModel:
         --------
         pyrtlib.absorption_model.LiqAbsModel.liquid_water_absorption
         """
+        if denl is None and deni is None:
+            return None, None
+
         ref = next((arg for arg in (t, denl, deni) if isinstance(arg, torch.Tensor)), None)
         t_t = torch.as_tensor(t, device=ref.device if ref is not None else None,
                               dtype=ref.dtype if ref is not None else None)
-        denl_t = torch.as_tensor(denl, device=t_t.device, dtype=t_t.dtype)
-        deni_t = torch.as_tensor(deni, device=t_t.device, dtype=t_t.dtype)
-        t_t, denl_t, deni_t = torch.broadcast_tensors(t_t, denl_t, deni_t)
+        denl_t = torch.as_tensor(denl, device=t_t.device, dtype=t_t.dtype) if denl is not None else None
+        deni_t = torch.as_tensor(deni, device=t_t.device, dtype=t_t.dtype) if deni is not None else None
+
+        if denl_t is not None and deni_t is not None:
+            t_t, denl_t, deni_t = torch.broadcast_tensors(t_t, denl_t, deni_t)
+        elif denl_t is not None:
+            t_t, denl_t = torch.broadcast_tensors(t_t, denl_t)
+        elif deni_t is not None:
+            t_t, deni_t = torch.broadcast_tensors(t_t, deni_t)
 
         if self.liq is None:
             raise ValueError("RTModel absorption models not initialised.")
@@ -942,33 +1002,43 @@ class RTModel:
         ghz2hz = torch.as_tensor(1e9, dtype=t_t.dtype, device=t_t.device)
         db2np = torch.log(torch.tensor(10.0, dtype=t_t.dtype, device=t_t.device)) * 0.1
 
-        t_exp = t_t.unsqueeze(-2)        # (..., 1, nl)
-        denl_exp = denl_t.unsqueeze(-2)  # (..., 1, nl)
-        deni_exp = deni_t.unsqueeze(-2)  # (..., 1, nl)
+        t_exp = t_t.unsqueeze(-2)  # (..., 1, nl)
 
         wave = c / (frq_grid * ghz2hz)  # (..., nf, 1) -> broadcast to (..., nf, nl)
 
-        liq_abs = self.liq.liquid_water_absorption(denl_exp, frq_grid, t_exp)
-        has_liq = denl_exp > 0
-        aliq = torch.where(has_liq, liq_abs, torch.zeros_like(liq_abs))
+        aliq = aice = None
+        if denl_t is not None:
+            denl_exp = denl_t.unsqueeze(-2)  # (..., 1, nl)
+            liq_abs = self.liq.liquid_water_absorption(denl_exp, frq_grid, t_exp)
+            has_liq = denl_exp > 0
+            aliq = torch.where(has_liq, liq_abs, torch.zeros_like(liq_abs))
 
-        ice_abs = ((8.18645 / wave) * deni_exp) * 0.000959553 * db2np
-        has_ice = deni_exp > 0
-        aice = torch.where(has_ice, ice_abs, torch.zeros_like(ice_abs))
+        if deni_t is not None:
+            deni_exp = deni_t.unsqueeze(-2)  # (..., 1, nl)
+            ice_abs = ((8.18645 / wave) * deni_exp) * 0.000959553 * db2np
+            has_ice = deni_exp > 0
+            aice = torch.where(has_ice, ice_abs, torch.zeros_like(ice_abs))
 
         # clamp any negative absorption early and signal clearly
-        neg_liq = aliq < 0
-        neg_ice = aice < 0
-        if torch.any(neg_liq) or torch.any(neg_ice):
-            liq_min = float(aliq.min().detach().cpu()) if torch.any(neg_liq) else 0.0
-            ice_min = float(aice.min().detach().cpu()) if torch.any(neg_ice) else 0.0
+        neg_liq = aliq < 0 if aliq is not None else None
+        neg_ice = aice < 0 if aice is not None else None
+        has_neg_liq = bool(torch.any(neg_liq)) if neg_liq is not None else False
+        has_neg_ice = bool(torch.any(neg_ice)) if neg_ice is not None else False
+        if has_neg_liq or has_neg_ice:
+            liq_min = float(aliq.min().detach().cpu()) if has_neg_liq and aliq is not None else 0.0
+            ice_min = float(aice.min().detach().cpu()) if has_neg_ice and aice is not None else 0.0
             warnings.warn(
                 f"Negative cloud absorption detected (liq_min={liq_min:.3e}, ice_min={ice_min:.3e}); clamping to zero.",
             )
-            aliq = aliq.clamp_min(0.0)
-            aice = aice.clamp_min(0.0)
+            if aliq is not None:
+                aliq = aliq.clamp_min(0.0)
+            if aice is not None:
+                aice = aice.clamp_min(0.0)
 
-        return aliq / 1000.0, aice / 1000.0
+        return (
+            aliq / 1000.0 if aliq is not None else None,
+            aice / 1000.0 if aice is not None else None,
+        )
 
     def _clearsky_absorption(self, p: torch.Tensor, t: torch.Tensor, e: torch.Tensor, o3n: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute clear-sky water-vapor and dry-air absorption profiles.

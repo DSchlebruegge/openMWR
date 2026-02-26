@@ -14,13 +14,44 @@ ProfileInput = torch.Tensor | np.ndarray | xr.DataArray
 class AtmProfile(object):
     """Atmospheric profile container for torchMWRT radiative transfer.
 
+    Parameters
+    ----------
+    temperature : torch.Tensor or numpy.ndarray or xarray.DataArray
+        Atmospheric temperature profile in K.
+    height : torch.Tensor or numpy.ndarray or xarray.DataArray
+        Geometric height profile in m above mean sea level.
+    pressure : torch.Tensor or numpy.ndarray or xarray.DataArray
+        Atmospheric pressure profile in hPa.
+    rh : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Relative humidity as fraction (0-1).
+    q : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Specific humidity in kg/kg.
+    e : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Vapor pressure in hPa.
+    lwc : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Liquid water content in g/m^3.
+    iwc : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Ice water content in g/m^3.
+    emissivity : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
+        Surface emissivity, scalar or frequency-dependent array.
+
+    Raises
+    ------
+    ValueError
+        If humidity inputs are not provided exactly once.
+    SystemExit
+        If height is not strictly monotonic.
+
     Notes
     -----
-    Expected units:
-    ``height`` in m above mean sea level, ``pressure`` in hPa,
-    ``temperature`` in K, and cloud water contents in g/m^3.
-    Exactly one humidity input must be provided: relative humidity ``rh``,
-    specific humidity ``q``, or vapor pressure ``e``.
+    - Expected units: ``height`` in m above mean sea level, ``pressure`` in
+      hPa, ``temperature`` in K, and cloud water contents in g/m^3.
+    - Exactly one humidity input must be provided: relative humidity ``rh``,
+      specific humidity ``q``, or vapor pressure ``e``.
+    - All profile inputs are converted to torch tensors on a common
+      dtype/device.
+    - If vertical levels are descending, the profile is flipped so internal
+      computations use ascending height.
 
     Provenance: profile-orientation handling and antenna-relative height
     normalization are adapted from the profile setup logic in
@@ -40,42 +71,6 @@ class AtmProfile(object):
         iwc: ProfileInput | None = None,
         emissivity: ProfileInput | None = None,
     ):
-        """Build a validated atmospheric profile object.
-
-        Parameters
-        ----------
-        temperature : torch.Tensor or numpy.ndarray or xarray.DataArray
-            Atmospheric temperature profile in K.
-        height : torch.Tensor or numpy.ndarray or xarray.DataArray
-            Geometric height profile in m above mean sea level.
-        pressure : torch.Tensor or numpy.ndarray or xarray.DataArray
-            Atmospheric pressure profile in hPa.
-        rh : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Relative humidity as fraction (0-1).
-        q : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Specific humidity in kg/kg.
-        e : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Vapor pressure in hPa.
-        lwc : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Liquid water content in g/m^3.
-        iwc : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Ice water content in g/m^3.
-        emissivity : torch.Tensor or numpy.ndarray or xarray.DataArray, optional
-            Surface emissivity, scalar or frequency-dependent array.
-
-        Raises
-        ------
-        ValueError
-            If humidity inputs are not provided exactly once.
-        SystemExit
-            If height is not strictly monotonic.
-
-        Notes
-        -----
-        All profile inputs are converted to torch tensors on a common
-        dtype/device. If vertical levels are descending, the profile is flipped
-        so internal computations use ascending height.
-        """
         humidity_inputs = [input_ is not None for input_ in (rh, q, e)]
         if sum(humidity_inputs) != 1:
             raise ValueError("Provide exactly one of rh, q, or e.")
@@ -107,15 +102,8 @@ class AtmProfile(object):
         q_data = q_profile
         e_data = e_profile
 
-        if self.iwc is not None:
-            self.denice = self.iwc
-        else:
-            self.denice = torch.zeros_like(self.z, device=device, dtype=dtype)
-
-        if self.lwc is not None:
-            self.denliq = self.lwc
-        else:
-            self.denliq = torch.zeros_like(self.z, device=device, dtype=dtype)
+        self.denice = self.iwc
+        self.denliq = self.lwc
 
         self.tk = self.temperature
         self.o3n = None
@@ -135,8 +123,10 @@ class AtmProfile(object):
                 q_data = torch.flip(q_data, dims=[-1])
             if e_data is not None:
                 e_data = torch.flip(e_data, dims=[-1])
-            self.denliq = torch.flip(self.denliq, dims=[-1])
-            self.denice = torch.flip(self.denice, dims=[-1])
+            if self.denliq is not None:
+                self.denliq = torch.flip(self.denliq, dims=[-1])
+            if self.denice is not None:
+                self.denice = torch.flip(self.denice, dims=[-1])
         else:
             raise SystemExit("ERROR: input profile seems incorrect. "
                              "It must be monotonically increasing or decreasing")
@@ -309,9 +299,11 @@ class AtmProfile(object):
         expected = {
             "temperature": self.tk,
             "pressure": self.p,
-            "liquid water content": self.denliq,
-            "ice water content": self.denice,
         }
+        if self.denliq is not None:
+            expected["liquid water content"] = self.denliq
+        if self.denice is not None:
+            expected["ice water content"] = self.denice
         if rh is not None:
             expected["relative humidity"] = rh
         if q is not None:

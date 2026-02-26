@@ -53,7 +53,6 @@ def test_ray_tracing_supports_time_batches():
         absmdl="R17",
         ray_tracing=True,
         from_sat=False,
-        cloudy=False,
     )
 
     profile_batched = AtmProfile(
@@ -61,8 +60,6 @@ def test_ray_tracing_supports_time_batches():
         height=height,
         pressure=ds["pressure"].values,
         rh=ds["rh"].values,
-        lwc=ds["LWC"].values,
-        iwc=ds["IWC"].values,
     )
     tb_batched = rtmodel.execute(profile_batched, return_ds=True)["tbtotal"].to_numpy()
     assert tb_batched.shape == (ds.sizes["time"], 2, 2)
@@ -76,8 +73,6 @@ def test_ray_tracing_supports_time_batches():
             height=height_i,
             pressure=ds_i["pressure"].values,
             rh=ds_i["rh"].values,
-            lwc=ds_i["LWC"].values,
-            iwc=ds_i["IWC"].values,
         )
         tb_seq.append(
             rtmodel.execute(profile_i, return_ds=True)["tbtotal"].to_numpy()
@@ -93,16 +88,12 @@ def test_ray_tracing_time_batches_are_differentiable():
     height = torch.tensor(ds["height"].values, dtype=torch.float64)
     pressure = torch.tensor(ds["pressure"].values, dtype=torch.float64)
     rh = torch.tensor(ds["rh"].values, dtype=torch.float64)
-    lwc = torch.tensor(ds["LWC"].values, dtype=torch.float64)
-    iwc = torch.tensor(ds["IWC"].values, dtype=torch.float64)
-
     rtmodel = RTModel(
         freqs=np.array([22.24], dtype=float),
         angles=np.array([50.0], dtype=float),
         absmdl="R17",
         ray_tracing=True,
         from_sat=False,
-        cloudy=False,
     )
 
     profile = AtmProfile(
@@ -110,8 +101,6 @@ def test_ray_tracing_time_batches_are_differentiable():
         height=height,
         pressure=pressure,
         rh=rh,
-        lwc=lwc,
-        iwc=iwc,
     )
     tb = rtmodel.execute(profile)["tbtotal"]
     loss = tb.mean()
