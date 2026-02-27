@@ -484,19 +484,31 @@ class H2OAbsModel(AbsModel):
         t = 300.0 / vx
         theta = 296./t
 
-        theta_pow = theta ** (selftexp + 3.0)
-        a = 6.532e+12 * selfcon * theta_pow
-        a = torch.cat([a[1].unsqueeze(0), a], dim=0)
+        # Build interpolation coefficients with an explicit leading node axis
+        # so this works for scalar, profile, and fully-broadcasted frequency grids.
+        node_shape = (nf,) + (1,) * theta.dim()
+        theta_exp = theta.unsqueeze(0)
+        selfcon_exp = selfcon.view(node_shape)
+        selftexp_exp = selftexp.view(node_shape)
+
+        a = 6.532e+12 * selfcon_exp * theta_exp ** (selftexp_exp + 3.0)
+        a = torch.cat([a[1:2], a], dim=0)
 
         fj = frq / deltaf
         j_idx = torch.floor(fj).to(torch.long)
-        j_idx = torch.clamp(j_idx, max=nf - 2)
-        p = fj - j_idx
+        j_idx = torch.clamp(j_idx, min=0, max=nf - 2)
+        p = fj - j_idx.to(fj.dtype)
         c = (3. - 2. * p) * p * p
         b = 0.5 * p * (1. - p)
         b1 = b * (1. - p)
         b2 = b * p
-        cs = -a[j_idx] * b1 + a[j_idx + 1] * (1. - c + b2) + a[j_idx + 2] * (c + b1) - a[j_idx + 3] * b2
+
+        gather_idx = j_idx.unsqueeze(0)
+        a0 = torch.take_along_dim(a, gather_idx, dim=0).squeeze(0)
+        a1 = torch.take_along_dim(a, gather_idx + 1, dim=0).squeeze(0)
+        a2 = torch.take_along_dim(a, gather_idx + 2, dim=0).squeeze(0)
+        a3 = torch.take_along_dim(a, gather_idx + 3, dim=0).squeeze(0)
+        cs = -a0 * b1 + a1 * (1. - c + b2) + a2 * (c + b1) - a3 * b2
         return cs
 
     def h2o_continuum_mwl24(self, frq: torch.Tensor, vx: torch.Tensor) -> torch.Tensor:

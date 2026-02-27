@@ -14,37 +14,24 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from torchMWRT import RTModel, AtmProfile
-from pyrtlib.absorption_model import H2OAbsModel
+from torchMWRT.lineshape import H2OLL, O2LL
 from pyrtlib.tb_spectrum import TbCloudRTE
+from openMWR.utils import patch_pyrtlib_numpy_compat
 
 warnings.filterwarnings("ignore", message="Number of levels too low", module="pyrtlib")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="pyrtlib")
 
 
-def _patch_pyrtlib_scalar_h2o_absorption() -> None:
-    """Compatibility shim for pyrtlib versions returning vector outputs for scalar frq."""
-    original = H2OAbsModel.h2o_absorption
-    if getattr(original, "_openmwr_scalar_patch", False):
-        return
-
-    def _wrapped(self, pdrykpa, vx, ekpa, frq, amu=None):
-        npp, ncpp = original(self, pdrykpa, vx, ekpa, frq, amu)
-        if np.ndim(frq) == 0:
-            npp = np.asarray(npp).reshape(-1)[0]
-            ncpp = np.asarray(ncpp).reshape(-1)[0]
-        return npp, ncpp
-
-    _wrapped._openmwr_scalar_patch = True  # type: ignore[attr-defined]
-    H2OAbsModel.h2o_absorption = _wrapped
-
-
-_patch_pyrtlib_scalar_h2o_absorption()
+patch_pyrtlib_numpy_compat()
 
 # Frequencies used for HATPRO 14-channel configuration.
 HATPRO_14 = np.array([
     22.24, 23.04, 23.84, 25.44, 26.24, 27.84, 31.40,
     51.26, 52.28, 53.86, 54.94, 56.66, 57.30, 58.00
 ], dtype=float)
+
+# Sweep all model identifiers shared by H2O and O2 absorption backends.
+ABS_MODELS_SHARED = [m for m in H2OLL.available_models() if m in set(O2LL.available_models())]
 
 FILE_PATH = Path(__file__).resolve().parent
 DATASET_PATH = FILE_PATH / ".." / "test_data" / "20240427_model.nc"
@@ -59,9 +46,19 @@ SCENARIOS = [
     {"time_idx": 6, "angles": np.array([60.0]), "abs_model": "R98"},  # alternate absorption model
     {"time_idx": 12, "angles": np.array([50.0]), "abs_model": "R17", "ray_tracing": True},
     {"time_idx": 19, "angles": np.array([30.0, 50.0, 70.0]), "abs_model": "R17"},
-    {"time_idx": 5, "angles": np.array([90.0]), "abs_model": "R17", "cloudy": False, "force_clear": True},
+    {"time_idx": 5, "angles": np.array([90.0]), "abs_model": "R17", "force_clear": True},
     {"time_idx": 12, "angles": np.array([20.0]), "abs_model": "R17", "from_sat": True},
+    {"time_idx": 11, "angles": np.array([90.0]), "abs_model": "R24"},
 ]
+SCENARIOS.extend(
+    {
+        "time_idx": 11,
+        "angles": np.array([90.0]),
+        "abs_model": abs_model,
+        "force_clear": True,
+    }
+    for abs_model in ABS_MODELS_SHARED
+)
 
 _BASELINE_CACHE = None
 
@@ -78,12 +75,12 @@ def _dataset_signature() -> dict:
     }
 
 
-def _cache_key(time_idx: int, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, cloudy: bool, force_clear: bool) -> str:
+def _cache_key(time_idx: int, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, force_clear: bool) -> str:
     ang_key = ",".join(f"{float(a):.2f}" for a in np.asarray(angles).ravel())
     return (
         f"time{int(time_idx)}|abs{abs_model}|ang[{ang_key}]|"
         f"rt{'1' if ray_tracing else '0'}|sat{'1' if from_sat else '0'}|"
-        f"cld{'1' if cloudy else '0'}|clr{'1' if force_clear else '0'}"
+        f"clr{'1' if force_clear else '0'}"
     )
 
 
@@ -115,11 +112,11 @@ def _get_cloud_top_base(lwc: np.ndarray):
     return i_top, i_base
 
 
-def _cloud_active(lwc: np.ndarray, cloudy: bool, force_clear: bool) -> bool:
-    return bool(cloudy and not force_clear and np.count_nonzero(lwc > 0) > 0)
+def _cloud_active(lwc: np.ndarray, force_clear: bool) -> bool:
+    return bool(not force_clear and np.count_nonzero(lwc > 0) > 0)
 
 
-def _calc_pyrtlib_tb(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, cloudy: bool, force_clear: bool) -> np.ndarray:
+def _calc_pyrtlib_tb(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, force_clear: bool) -> np.ndarray:
     T_K = ds.temperature.values
     z_km = ds.height.values / 1000
     p_hPa = ds.pressure.values / 100
@@ -135,7 +132,7 @@ def _calc_pyrtlib_tb(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tra
         iwc = np.zeros_like(iwc)
 
     i_top, i_base = _get_cloud_top_base(lwc)
-    cloud_flag = _cloud_active(lwc, cloudy, force_clear)
+    cloud_flag = _cloud_active(lwc, force_clear)
     rte = TbCloudRTE(
         z_km, p_hPa, T_K, rh_100 / 100, HATPRO_14, angles,
         ray_tracing=ray_tracing, from_sat=from_sat, cloudy=cloud_flag,
@@ -165,23 +162,22 @@ def _to_rt_units(ds: xr.Dataset) -> xr.Dataset:
     return ds_rt
 
 
-def _get_expected_tb(ds: xr.Dataset, time_idx: int, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, cloudy: bool, force_clear: bool) -> np.ndarray:
+def _get_expected_tb(ds: xr.Dataset, time_idx: int, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, force_clear: bool) -> np.ndarray:
     global _BASELINE_CACHE
     if _BASELINE_CACHE is None:
         _BASELINE_CACHE = _load_baseline_cache()
 
-    key = _cache_key(time_idx, angles, abs_model, ray_tracing, from_sat, cloudy, force_clear)
+    key = _cache_key(time_idx, angles, abs_model, ray_tracing, from_sat, force_clear)
     cases = _BASELINE_CACHE.setdefault("cases", {})
 
     if key not in cases:
-        tb = _calc_pyrtlib_tb(ds, angles, abs_model, ray_tracing, from_sat, cloudy, force_clear)
+        tb = _calc_pyrtlib_tb(ds, angles, abs_model, ray_tracing, from_sat, force_clear)
         cases[key] = {
             "time_idx": int(time_idx),
             "angles": [float(a) for a in np.asarray(angles).ravel()],
             "abs_model": abs_model,
             "ray_tracing": bool(ray_tracing),
             "from_sat": bool(from_sat),
-            "cloudy": bool(cloudy),
             "force_clear": bool(force_clear),
             "tb": tb.tolist(),
         }
@@ -193,11 +189,8 @@ def _get_expected_tb(ds: xr.Dataset, time_idx: int, angles: np.ndarray, abs_mode
     return tb
 
 
-def _run_torchrt(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, cloudy: bool, force_clear: bool):
+def _run_torchrt(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing: bool, from_sat: bool, force_clear: bool):
     ds_rt = ds.copy()
-    if force_clear:
-        ds_rt["LWC"] = xr.zeros_like(ds_rt["LWC"])
-        ds_rt["IWC"] = xr.zeros_like(ds_rt["IWC"])
     ds_rt = _to_rt_units(ds_rt)
 
     rtmodel = RTModel(
@@ -215,7 +208,10 @@ def _run_torchrt(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing
         rh=ds_rt["rh"].values,
         emissivity=emissivity_var.values if emissivity_var is not None else None,
     )
-    if cloudy and not force_clear:
+    if force_clear:
+        atm_profile_kwargs["lwc"] = None
+        atm_profile_kwargs["iwc"] = None
+    else:
         atm_profile_kwargs["lwc"] = ds_rt["LWC"].values
         atm_profile_kwargs["iwc"] = ds_rt["IWC"].values
     atm_profile = AtmProfile(**atm_profile_kwargs)
@@ -235,11 +231,10 @@ def test_tb_matches_pyrtlib(scenario):
     abs_model = scenario["abs_model"]
     ray_tracing = scenario.get("ray_tracing", False)
     from_sat = scenario.get("from_sat", False)
-    cloudy = scenario.get("cloudy", True)
     force_clear = scenario.get("force_clear", False)
 
-    expected_tb = _get_expected_tb(ds, scenario["time_idx"], angles, abs_model, ray_tracing, from_sat, cloudy, force_clear)
-    torch_tb, duration = _run_torchrt(ds, angles, abs_model, ray_tracing, from_sat, cloudy, force_clear)
+    expected_tb = _get_expected_tb(ds, scenario["time_idx"], angles, abs_model, ray_tracing, from_sat, force_clear)
+    torch_tb, duration = _run_torchrt(ds, angles, abs_model, ray_tracing, from_sat, force_clear)
 
     assert torch_tb.shape == expected_tb.shape, (
         f"Shape mismatch for time {scenario['time_idx']} and angles {angles}. "
@@ -270,7 +265,6 @@ def test_tb_full_dataset_parallel_torchrt():
     abs_model = "R17"
     ray_tracing = False
     from_sat = False
-    cloudy = True
     force_clear = False
 
     ds_full_rt = ds_full.copy()
@@ -322,7 +316,7 @@ def test_tb_full_dataset_parallel_torchrt():
     tb_expected_all = []
     for ti in range(ntime):
         ds = ds_full.isel(time=ti)
-        expected_tb = _get_expected_tb(ds, ti, angles, abs_model, ray_tracing, from_sat, cloudy, force_clear)
+        expected_tb = _get_expected_tb(ds, ti, angles, abs_model, ray_tracing, from_sat, force_clear)
         tb_expected_all.append(expected_tb)
 
     tb_expected_all = np.stack(tb_expected_all, axis=0)

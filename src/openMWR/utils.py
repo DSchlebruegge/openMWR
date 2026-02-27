@@ -254,7 +254,7 @@ def round_up(n, k):
 
 def patch_pyrtlib_numpy_compat() -> None:
     """
-    Patch pyrtlib absorption outputs for NumPy>=2 scalar assignment behavior.
+    Patch pyrtlib absorption behavior for NumPy>=2 compatibility.
 
     Returns
     -------
@@ -266,13 +266,39 @@ def patch_pyrtlib_numpy_compat() -> None:
     Uses lazy imports so modules that do not run pyrtlib are unaffected.
     """
     import numpy as np
+    import pyrtlib.absorption_model as absorption_model
     from pyrtlib.absorption_model import H2OAbsModel, O2AbsModel
 
     if not getattr(H2OAbsModel.h2o_absorption, "_openmwr_numpy_compat_patch", False):
         original_h2o_absorption = H2OAbsModel.h2o_absorption
 
         def _h2o_absorption_safe(self, *args, **kwargs):
-            npp, ncpp = original_h2o_absorption(self, *args, **kwargs)
+            frq = kwargs.get("frq", args[3] if len(args) > 3 else None)
+            needs_sd_df_shape_patch = (
+                H2OAbsModel.model in {"R20SD", "R21SD", "R22SD", "R23SD", "R24", "MWL24"}
+                and frq is not None
+                and np.ndim(frq) == 0
+            )
+
+            if needs_sd_df_shape_patch:
+                # pyrtlib SD-family scalar-frequency path can create ``df`` with
+                # shape (2, 1) and later pass ``df[j]`` into ``complex(...)``,
+                # which fails in newer NumPy/Python combinations.
+                original_zeros = absorption_model.np.zeros
+
+                def _zeros_safe(shape, *zargs, **zkwargs):
+                    if shape == (2, 1):
+                        return original_zeros(2, *zargs, **zkwargs)
+                    return original_zeros(shape, *zargs, **zkwargs)
+
+                absorption_model.np.zeros = _zeros_safe
+                try:
+                    npp, ncpp = original_h2o_absorption(self, *args, **kwargs)
+                finally:
+                    absorption_model.np.zeros = original_zeros
+            else:
+                npp, ncpp = original_h2o_absorption(self, *args, **kwargs)
+
             npp_arr = np.asarray(npp)
             ncpp_arr = np.asarray(ncpp)
             if npp_arr.ndim == 0:
