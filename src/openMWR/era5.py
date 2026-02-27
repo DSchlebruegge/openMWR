@@ -20,6 +20,18 @@ from openMWR.paths import data_root, site_subdir
 # cds_logger.propagate = True
 
 
+def _change_height_coord_for_forward_calc(ds_date, new_heights):
+    ds_date = ds_date.swap_dims({'p': 'height'})
+    ds_date = ds_date.reset_coords("p")
+    ds_date = change_coord_of_ds(
+        ds_date,
+        new_heights,
+        extrapolate_lower_end=True,
+        extrapolate_upper_end=False,
+    )
+    return ds_date
+
+
 class ERA5Processor:
     """
     Download, process, and prepare ERA5 data for radiative transfer calculations
@@ -295,14 +307,13 @@ class ERA5Processor:
         mwr_height = get_config_parameter(self.site, "mwr_height", self.data_dir)
         ds_sel["height"] = ds_sel["height"] - mwr_height
 
-        def _change_height_coord(ds_date):
-            ds_date = ds_date.swap_dims({'p': 'height'})
-            ds_date = ds_date.reset_coords("p")
-            ds_date = change_coord_of_ds(ds_date, new_heights, extrapolate_lower_end=True, extrapolate_upper_end=False)
-            return ds_date
-
         # Process RT in parallel
-        ds_new = run_pool(ds_sel, num_of_processes, _change_height_coord)
+        ds_new = run_pool(
+            ds_sel,
+            num_of_processes,
+            _change_height_coord_for_forward_calc,
+            new_heights,
+        )
 
         # Replace too-small or negative RH values with 0.1% (otherwise causes problems with TD calculations)
         ds_new['rh'] = ds_new['rh'].where(ds_new['rh'] > 0.1, 0.1)
