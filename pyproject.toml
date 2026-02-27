@@ -21,6 +21,7 @@ dependencies = [
     "metpy",
     "netCDF4",
     "pytest",
+    "dask",
 ]
 
 [project.optional-dependencies]

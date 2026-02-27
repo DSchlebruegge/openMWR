@@ -2,7 +2,7 @@ from datetime import datetime
 
 from openMWR.dwd_opendata import update_radiosonde_data
 from openMWR.radiosonde import create_radiosonde_dataset_for_RT, create_radiosonde_dataset_with_RT, create_analysis_dataset
-from openMWR.hatpro_data import update_hatpro_dataset
+from openMWR.hatpro_data import create_hatpro_dataset
 from openMWR.utils import setup_logging
 from openMWR.era5 import ERA5Processor
 from openMWR.consts import std_freqs, std_angles, std_heights
@@ -34,7 +34,7 @@ def update():
         create_radiosonde_dataset_with_RT(station_id, site, DATA_DIR, freqs, angles, num_of_processes = 12, update_only=True)
 
     ### Update the hatpro dataset with new data
-    update_hatpro_dataset(site, DATA_DIR)
+    create_hatpro_dataset(site, DATA_DIR, update_only=True)
 
     ### Create an analysis dataset with Radiosonde data and hatpro data
     create_analysis_dataset(site, station_ids_for_analysis, DATA_DIR)

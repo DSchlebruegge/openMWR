@@ -6,14 +6,42 @@ import time
 import os
 from datetime import datetime
 from typing import Optional, Union
+import glob
 
-from openMWR.utils import progress_log
+from openMWR.utils import (
+    progress_log,
+)
+from openMWR.parallel import run_pool_date_range
 from openMWR.xr_utils import change_coord_of_ds, swap_dims_and_rename, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
 from openMWR.site import get_config_parameter
 from openMWR.paths import site_subdir
 
 logger = logging.getLogger(__name__)
+
+def _set_time_encoding_to_seconds(ds: xr.Dataset, time_dim: str = "time") -> None:
+    """
+    Encode datetime coordinates as integer seconds to avoid minute-unit warnings.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset containing a datetime coordinate.
+    time_dim : str, optional
+        Name of the datetime coordinate, by default "time".
+    """
+    if time_dim not in ds.coords:
+        return
+    if not np.issubdtype(ds[time_dim].dtype, np.datetime64):
+        return
+
+    ds[time_dim].encoding.update(
+        {
+            "units": "seconds since 1970-01-01 00:00:00",
+            "dtype": "int64",
+            "calendar": "proleptic_gregorian",
+        }
+    )
 
 def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
     """
@@ -44,7 +72,7 @@ def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
     # Compute absolute humidity
     rh = ds['rh'].where(ds['rh'] > 0.1, 0.1)
 
-    ds['ah'] = calc_absolute_humidity(ds.T, rh) * 1000 
+    ds['ah'] = calc_absolute_humidity(ds.T, rh) * 1000
     ds['ah'].attrs["units"] = "g/m^3"
     # ds['ah'] = ds['ah'].where(ds['ah'] != 0, 0.1)  # Set zeros to a small value so dew point calculation works
 
@@ -116,7 +144,7 @@ def _get_naming_convention(ds_BRT: xr.Dataset) -> tuple[dict[str, str], dict[str
             'frequencie_var': 'frequencies',
             'scan_angles_dim': 'number_scan_angles',
             'scan_angles_var': 'elevation_scan_angles',
-        } 
+        }
 
     elif 'Radiometer_Software_Version' in ds_BRT.attrs:
         var_names = {'TB': 'TBs',
@@ -141,7 +169,7 @@ def _get_naming_convention(ds_BRT: xr.Dataset) -> tuple[dict[str, str], dict[str
             'frequencie_var': 'Freq',
             'scan_angles_dim': 'number_scan_angles',
             'scan_angles_var': 'ElAngs',
-        } 
+        }
     return var_names, dim_names
 
 def import_hatpro_data(
@@ -150,7 +178,8 @@ def import_hatpro_data(
     data_dir: str,
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
-) -> xr.Dataset:
+    out_file: Optional[Union[str, os.PathLike]] = None,
+) -> Optional[xr.Dataset]:
     """
     Load and assemble zenith-mode Hatpro measurements for a single day.
 
@@ -167,13 +196,16 @@ def import_hatpro_data(
         If True, average all variables to 1-minute resolution.
     import_retrieval_data : bool, optional
         If True, include RPG retrieval products (LWP, LPR, TPC, HPC, IWV).
+    out_file : str or os.PathLike, optional
+        If provided, save the resulting daily dataset to this NetCDF file.
 
     Returns
     -------
-    xr.Dataset
+    xr.Dataset or None
         Combined dataset with standardized variable names and coordinates,
         filtered to zenith scans (`elevation_angle` ~ 90 deg). When retrieval
         data is included, profile and column products are merged as well.
+        Returns `None` when `out_file` is provided.
 
     Raises
     ------
@@ -190,7 +222,7 @@ def import_hatpro_data(
     - A standard frequency grid is enforced if unexpected values are found.
     """
     hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', data_dir)
-    
+
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
     file_suffixes = ["BRT", "MET", "IRT"]
@@ -214,7 +246,7 @@ def import_hatpro_data(
     ds_BRT = datasets["BRT"]
 
     var_names, dim_names = _get_naming_convention(ds_BRT)
-    
+
     ds_BRT = swap_dims_and_rename(ds_BRT, old_dim=dim_names['frequencie_dim'], old_var=dim_names['frequencie_var'], new_dim="frq")
     ds_BRT = ds_BRT[[var_names['TB'], var_names['rain_flag'], var_names['azimuth_angle'], var_names['elevation_angle']]]
     ds_BRT[var_names['rain_flag']] = ds_BRT[var_names['rain_flag']].astype("float64")
@@ -266,8 +298,8 @@ def import_hatpro_data(
     ds_hatpro = ds_hatpro.rename({v: k for k, v in var_names.items() if v in ds_hatpro})
 
     # Filter
-    #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True) 
-    ds_hatpro = ds_hatpro.where(ds_hatpro['elevation_angle'].round(0) == 90., drop=True) 
+    #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True)
+    ds_hatpro = ds_hatpro.where(ds_hatpro['elevation_angle'].round(0) == 90., drop=True)
 
     if mean_one_min:
         ds_hatpro = mean_n_min(ds_hatpro, 1)  # Useful to avoid many NaNs from mismatched time coords
@@ -285,6 +317,12 @@ def import_hatpro_data(
 
     ds_hatpro = add_time_data(ds_hatpro)
 
+    if out_file is not None:
+        if ds_hatpro["time"].size > 0:
+            ds_hatpro.to_netcdf(out_file)
+        ds_hatpro.close()
+        return None
+
     return ds_hatpro
 
 def import_hatpro_data_bls(
@@ -293,7 +331,8 @@ def import_hatpro_data_bls(
     data_dir: str,
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
-) -> xr.Dataset:
+    out_file: Optional[Union[str, os.PathLike]] = None,
+) -> Optional[xr.Dataset]:
     """
     Load and assemble boundary layer scan (BLS) Hatpro measurements for a day.
 
@@ -310,12 +349,15 @@ def import_hatpro_data_bls(
         If True, average surface meteorology to 1-minute resolution.
     import_retrieval_data : bool, optional
         If True, include RPG retrieval temperature profiles (TPB).
+    out_file : str or os.PathLike, optional
+        If provided, save the resulting daily dataset to this NetCDF file.
 
     Returns
     -------
-    xr.Dataset
+    xr.Dataset or None
         Combined dataset with standardized variable names and coordinates,
         including scan angle (`ang`) and frequency (`frq`) dimensions.
+        Returns `None` when `out_file` is provided.
 
     Raises
     ------
@@ -332,7 +374,7 @@ def import_hatpro_data_bls(
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
     hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', data_dir)
-    
+
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
     file_suffixes = ["MET", "BLB"]
@@ -408,7 +450,7 @@ def import_hatpro_data_bls(
     ds_hatpro_bls = ds_hatpro_bls.rename({v: k for k, v in var_names.items() if v in ds_hatpro_bls})
 
     # Filter
-    #ds_hatpro_bls = ds_hatpro_bls.where(ds_hatpro_bls['azimuth_angle'].round(0) == 0., drop=True) 
+    #ds_hatpro_bls = ds_hatpro_bls.where(ds_hatpro_bls['azimuth_angle'].round(0) == 0., drop=True)
 
 
     if import_retrieval_data:
@@ -417,9 +459,65 @@ def import_hatpro_data_bls(
 
     ds_hatpro_bls = add_time_data(ds_hatpro_bls)
 
+    if out_file is not None:
+        if not ds_hatpro_bls["time"].size > 0:
+            raise ValueError("The hatpro dataset has an empty 'time' coordinate before writing.")
+
+        ds_hatpro_bls.to_netcdf(out_file)
+        ds_hatpro_bls.close()
+        return None
+
     return ds_hatpro_bls
 
-def create_hatpro_dataset(site: str, data_dir: str, import_retrieval_data: Optional[bool] = None) -> None:
+def _create_hatpro_day_file(
+    date: Union[datetime, pd.Timestamp],
+    bls: bool,
+    bls_attribute: str,
+    site: str,
+    data_dir: str,
+    hatpro_out_dir: Union[str, os.PathLike],
+    import_retrieval_data: bool,
+) -> None:
+
+    daily_file = hatpro_out_dir / f'hatpro_data{bls_attribute}_{date:%Y%m%d}.nc'
+
+    try:
+        if bls:
+            import_hatpro_data_bls(
+                date,
+                site,
+                data_dir,
+                import_retrieval_data=import_retrieval_data,
+                out_file=daily_file,
+            )
+        else:
+            import_hatpro_data(
+                date,
+                site,
+                data_dir,
+                mean_one_min=True,
+                import_retrieval_data=import_retrieval_data,
+                out_file=daily_file,
+            )
+    except FileNotFoundError as e:
+        logger.info(f"Date skipped due to missing file: {date} – {e}")
+    except ValueError as e:
+        if "empty 'time' coordinate" in str(e):
+            logger.info(f"Error importing hatpro data for {date} – {e}")
+        else:
+            logger.error(f"Error importing hatpro data for {date}: {e}")
+            logger.info(e, exc_info=True)
+    except Exception as e:
+        logger.error(f"Error importing hatpro data for {date}: {e}")
+        logger.info(e, exc_info=True)
+
+def create_hatpro_dataset(
+    site: str,
+    data_dir: str,
+    import_retrieval_data: Optional[bool] = None,
+    num_of_processes: int = 1,
+    update_only: bool = False,
+) -> None:
     """
     Build site-level Hatpro datasets from daily RPG files.
 
@@ -432,6 +530,11 @@ def create_hatpro_dataset(site: str, data_dir: str, import_retrieval_data: Optio
     import_retrieval_data : bool, optional
         If None, the site config parameter `rpg_retrieval_exists` is used.
         When True, RPG retrieval products are included in the output.
+    num_of_processes : int, optional
+        Number of processes used to create daily files.
+    update_only : bool, optional
+        If True and a combined Hatpro file already exists, concatenate the
+        newly created data to the existing dataset and drop duplicate times.
 
     Returns
     -------
@@ -440,9 +543,9 @@ def create_hatpro_dataset(site: str, data_dir: str, import_retrieval_data: Optio
     Notes
     -----
     - Creates both zenith-mode and BLS datasets.
-    - Writes yearly files to `data/sites/{site}/hatpro/` and combines them into
-      `hatpro_data(_bls).nc`, removing the yearly files after a successful
-      merge.
+    - Writes temporary daily files to `data/sites/{site}/hatpro/` and combines
+      them into `hatpro_data(_bls).nc`, removing the daily files after a
+      successful merge.
     - The date range is derived from `mwr_measurement_start_date` up to today.
     """
 
@@ -450,167 +553,122 @@ def create_hatpro_dataset(site: str, data_dir: str, import_retrieval_data: Optio
         import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', data_dir)
 
     mwr_measurement_start_date = get_config_parameter(site, 'mwr_measurement_start_date', data_dir)
-    dr = pd.date_range(mwr_measurement_start_date, pd.Timestamp.now().normalize())
+    dr_full = pd.date_range(mwr_measurement_start_date, pd.Timestamp.now().normalize())
     hatpro_out_dir = site_subdir(data_dir, site, "hatpro")
 
     for bls in [False, True]:
 
-        logger.info(f'Creating Hatpro data for site {site} with BLS: {bls}')
+        logger.info(f'{"Updating" if update_only else "Creating"} Hatpro data for site {site} with BLS: {bls}')
 
         bls_attribute = '_bls' if bls else ''
+        combined_file = hatpro_out_dir / f'hatpro_data{bls_attribute}.nc'
+        tmp_file = None
 
-        files = []
+        if update_only and os.path.exists(combined_file):
+            update_only_bls = True
+        elif update_only and not os.path.exists(combined_file):
+            logger.warning(
+                f"Hatpro data file {combined_file} does not exist. "
+                "Creating dataset from scratch although update_only=True."
+            )
+            update_only_bls = False
+        else:
+            update_only_bls = False
 
-        current = 0
-        total = len(dr)
-        start_time = time.time()
 
-        for year in dr.year.unique():
+        try:
+            if update_only_bls:
+                with xr.open_dataset(combined_file) as ds_hatpro_old:
+                    last_date = pd.Timestamp(ds_hatpro_old.time.max().values).normalize()
+                logger.info(f"Last date in dataset: {last_date}")
+                dr = pd.date_range(start=last_date, end=pd.Timestamp.now())
+            else:
+                dr = dr_full
 
-            hatpro_data_list = []
+            if num_of_processes == 1:
+                total = len(dr)
+                start_time = time.time()
 
-            for date in dr[dr.year == year]:
+                for i, date in enumerate(dr):
+                    if i % 5 == 0:
+                        logger.info(progress_log(i, total, start_time))
 
-                if current % 5 == 0:
-                    logger.info(progress_log(current, total, start_time))
-                current += 1
+                    _create_hatpro_day_file(
+                        date,
+                        bls,
+                        bls_attribute,
+                        site,
+                        data_dir,
+                        hatpro_out_dir,
+                        import_retrieval_data,
+                    )
+            else:
+                run_pool_date_range(
+                    dr,
+                    num_of_processes,
+                    _create_hatpro_day_file,
+                    bls,
+                    bls_attribute,
+                    site,
+                    data_dir,
+                    hatpro_out_dir,
+                    import_retrieval_data,
+                )
 
-                try:
-                    if bls:
-                        ds_hatpro_date = import_hatpro_data_bls(date, site, data_dir, import_retrieval_data=import_retrieval_data)
-                    else:
-                        ds_hatpro_date = import_hatpro_data(date, site, data_dir, mean_one_min=True, import_retrieval_data=import_retrieval_data)
+            logger.info(f'Finished creating daily files for Hatpro data with BLS: {bls}')
 
-                    hatpro_data_list.append(ds_hatpro_date)
+            files = glob.glob(str(hatpro_out_dir / f'hatpro_data{bls_attribute}_*.nc'))
 
-                except FileNotFoundError as e:
-                    logger.info(f"Date skipped due to missing file: {date} – {e}")
-                except Exception as e:
-                    logger.error(f"Error importing hatpro data for {date}: {e}")
-                    logger.info(e, exc_info=True)
-
-            if len(hatpro_data_list) == 0:
+            if len(files) == 0:
+                logger.info(f'No Hatpro daily files created for site {site} with BLS: {bls}')
                 continue
 
-            ds_hatpro = xr.concat(hatpro_data_list, dim='time').drop_duplicates(dim='time').sortby("time")
+            if update_only_bls:
+                tmp_file = combined_file.with_name(f"{combined_file.name}.tmp")
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
 
-            file = hatpro_out_dir / f'hatpro_data{bls_attribute}_{year}.nc'
-            ds_hatpro.to_netcdf(file)
-            files.append(file)
+            with xr.open_mfdataset(
+                files,
+                combine='by_coords',
+                join='outer',
+                compat='no_conflicts',
+            ) as ds_hatpro_new:
+                ds_hatpro = ds_hatpro_new.drop_duplicates(dim='time').sortby("time")
 
-            logger.info(f'{file} saved')
+                if update_only_bls:
+                    with xr.open_dataset(combined_file) as ds_hatpro_old:
+                        ds_hatpro = xr.concat([ds_hatpro_old, ds_hatpro], dim='time').drop_duplicates(dim='time').sortby("time")
+                        _set_time_encoding_to_seconds(ds_hatpro)
+                        ds_hatpro.to_netcdf(tmp_file)
+                else:
+                    _set_time_encoding_to_seconds(ds_hatpro)
+                    ds_hatpro.to_netcdf(combined_file)
 
-        # Combine all files
-        ds_hatpro = xr.open_mfdataset(files, combine='by_coords').drop_duplicates(dim='time').sortby("time")
+            if update_only_bls and tmp_file is not None:
+                os.replace(tmp_file, combined_file)
 
-        combined_file = hatpro_out_dir / f'hatpro_data{bls_attribute}.nc'
-        ds_hatpro.to_netcdf(combined_file)
-        ds_hatpro.close()
+            logger.info(f'{combined_file} saved')
 
-        if os.path.exists(combined_file):
+        except Exception as e:
+            logger.error(f"Error creating Hatpro dataset for site {site} with BLS: {bls}: {e}", exc_info=True)
+
+        finally:
+            if tmp_file is not None and os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    logger.exception(f"Failed to remove temporary file: {tmp_file}")
+
+            files = glob.glob(str(hatpro_out_dir / f'hatpro_data{bls_attribute}_*.nc'))
             # Delete old files
             for f in files:
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except OSError:
+                    logger.exception(f"Failed to remove temporary file: {f}")
 
-        logging.info(f'{combined_file} saved')
-
-def update_hatpro_dataset(site: str, data_dir: str, import_retrieval_data: Optional[bool] = None) -> None:
-    """
-    Update existing site-level Hatpro datasets with newly available days.
-
-    Parameters
-    ----------
-    site : str
-        Site name used for configuration and output paths.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
-    import_retrieval_data : bool, optional
-        If None, the site config parameter `rpg_retrieval_exists` is used.
-        When True, RPG retrieval products are included in the update.
-
-    Returns
-    -------
-    None
-
-    Raises
-    ------
-    FileNotFoundError
-        If the combined Hatpro dataset does not exist yet.
-
-    Notes
-    -----
-    - Updates both zenith-mode and BLS datasets.
-    - The update starts from the last date present in the combined file and
-      merges new daily data up to the current time.
-    """
-
-    if import_retrieval_data is None:
-        import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', data_dir)
-
-    hatpro_out_dir = site_subdir(data_dir, site, "hatpro")
-
-    for bls in [False, True]:
-
-        logger.info(f'Updating Hatpro data for site {site} with BLS: {bls}')
-
-        bls_attribute = '_bls' if bls else ''
-
-        # Load existing Hatpro data
-        file = hatpro_out_dir / f'hatpro_data{bls_attribute}.nc'
-        if not os.path.exists(file):
-            raise FileNotFoundError(f"Hatpro data file {file} does not exist. Please create it first.")
-        
-        ds_hatpro_old = xr.load_dataset(file)
-
-        # Get the latest timestamps
-        last_date = ds_hatpro_old.time.max().values
-
-        # Round down to the last full day
-        last_date = pd.Timestamp(last_date).normalize()
-
-        logger.info(f"Last date in dataset: {last_date}")
-
-        data_list = []
-
-        # Create date range starting from the last timestamp
-        dr = pd.date_range(start=last_date, end=pd.Timestamp.now())
-
-        current = 0
-        total = len(dr)
-        start_time = time.time()
-
-        for date in dr:
-            if current % 5 == 0:
-                logger.info(progress_log(current, total, start_time))
-            current += 1
-
-            try:
-                if bls:
-                    ds_hatpro_date = import_hatpro_data_bls(date, site, data_dir, import_retrieval_data=import_retrieval_data)
-                else:
-                    ds_hatpro_date = import_hatpro_data(date, site, data_dir, mean_one_min=True, import_retrieval_data=import_retrieval_data)
-
-                data_list.append(ds_hatpro_date)
-
-            except FileNotFoundError as e:
-                logger.info(f"Date skipped due to missing file: {date} – {e}")
-            except Exception as e:
-                logger.error(f"Error importing hatpro data for {date}:", exc_info=True)
-
-
-        if len(data_list) == 0:
-            logger.info("No new Hatpro data to update.")
-            return
-
-        ds_hatpro_new = xr.concat(data_list, dim='time').drop_duplicates(dim='time').sortby("time")
-
-        # Merge old and new data
-        ds_hatpro_combined = xr.concat([ds_hatpro_old, ds_hatpro_new], dim='time').drop_duplicates(dim='time').sortby("time")
-
-        # Save the updated dataset
-        ds_hatpro_combined.to_netcdf(file) 
-
-        logging.info(f'{file} updated')
+            logger.info(f'Cleaned up daily files for site {site} with BLS: {bls}')
 
 def change_height_coord_of_ds_hatpro(ds_hatpro: xr.Dataset, new_heights: np.ndarray) -> xr.Dataset:
     """

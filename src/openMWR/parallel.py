@@ -1,12 +1,47 @@
 from multiprocessing import Pool
+import multiprocessing as mp
+from logging.handlers import QueueHandler, QueueListener
 import xarray as xr
 import numpy as np
+import pandas as pd
 import time
 import logging
 
 from openMWR.utils import progress_log
 
 logger = logging.getLogger(__name__)
+
+
+def _default_log_formatter() -> logging.Formatter:
+    return logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+
+def _default_stream_handler() -> logging.Handler:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_default_log_formatter())
+    return handler
+
+
+def _start_multiprocessing_log_listener():
+    """Start a queue listener that forwards worker log records."""
+    root_logger = logging.getLogger()
+    handlers = [h for h in root_logger.handlers if not isinstance(h, QueueHandler)]
+
+    if not handlers:
+        handlers = [_default_stream_handler()]
+
+    log_queue = mp.Queue()
+    listener = QueueListener(log_queue, *handlers, respect_handler_level=True)
+    listener.start()
+    return log_queue, listener
+
+
+def _configure_multiprocessing_worker_logging(log_queue, level=logging.INFO) -> None:
+    """Route worker-process logs into the shared multiprocessing queue."""
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(level)
+    root_logger.addHandler(QueueHandler(log_queue))
 
 def _kernal_function(ds_orig, process_number, function, args_for_function, kwargs_for_function):
     ds_list = []
@@ -33,7 +68,11 @@ def _kernal_function(ds_orig, process_number, function, args_for_function, kwarg
 
     if len(ds_list) != 0:
         ds = xr.concat(ds_list, dim='time')
+
+        logger.info(f'Process {process_number}: Completed processing.')
         return ds
+
+    logger.info(f'Process {process_number}: Completed processing.')
 
 def run_pool(ds_orig, num_of_processes, function, *args_for_function, **kwargs_for_function):
     """
@@ -74,8 +113,16 @@ def run_pool(ds_orig, num_of_processes, function, *args_for_function, **kwargs_f
         for i in range(num_of_processes)
     ]
 
-    with Pool(processes=num_of_processes) as pool:
-        ds_list = pool.starmap(_kernal_function, args)
+    log_queue, log_listener = _start_multiprocessing_log_listener()
+    try:
+        with Pool(
+            processes=num_of_processes,
+            initializer=_configure_multiprocessing_worker_logging,
+            initargs=(log_queue,),
+        ) as pool:
+            ds_list = pool.starmap(_kernal_function, args)
+    finally:
+        log_listener.stop()
 
     ds_list = [ds for ds in ds_list if ds is not None]
     if len(ds_list) == 0:
@@ -85,3 +132,91 @@ def run_pool(ds_orig, num_of_processes, function, *args_for_function, **kwargs_f
     ds_new = ds_new.sortby('time')
 
     return ds_new
+
+
+def _kernal_function_date_range(
+    dr,
+    process_number,
+    function,
+    args_for_function,
+    kwargs_for_function,
+):
+    
+    n_times = len(dr)
+    start_time = time.time()
+
+    div = max(n_times // 10, 1)
+
+    for i, date in enumerate(dr):
+        if i % div == 0:
+            logger.info(f'Process {process_number}: {progress_log(i, n_times, start_time)}')
+
+        function(
+            date,
+            *args_for_function,
+            **kwargs_for_function,
+        )
+
+    logger.info(f'Process {process_number}: Completed processing date range.')
+
+
+def run_pool_date_range(
+    dr: pd.DatetimeIndex,
+    num_of_processes: int,
+    function,
+    *args_for_function,
+    **kwargs_for_function,
+) -> None:
+    """
+    Run a function in parallel over a shuffled pandas date range.
+
+    Parameters
+    ----------
+    dr : pandas.DatetimeIndex
+        Date range to be processed.
+    num_of_processes : int
+        Number of parallel processes to use.
+    function : callable
+        Function called once per date inside each worker. It must accept the
+        date (``pandas.Timestamp``) as the first argument.
+    *args_for_function
+        Additional positional arguments passed to ``function``.
+    **kwargs_for_function
+        Additional keyword arguments passed to ``function``.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - The input date range is shuffled before splitting to preserve randomized
+      processing order across workers.
+    - Each worker receives one split of the shuffled date range and iterates
+      over its dates, calling ``function(date, *args_for_function, **kwargs_for_function)``.
+    """
+
+    shuffled_idx = np.random.permutation(len(dr))
+    dr_shuffled = dr.take(shuffled_idx)
+
+    n_dates = len(dr_shuffled)
+    split_date_ranges = [
+        dr_shuffled[int(n_dates / num_of_processes * i): int(n_dates / num_of_processes * (i + 1))]
+        for i in range(num_of_processes)
+    ]
+
+    args = [
+        (split_date_ranges[i], i, function, args_for_function, kwargs_for_function)
+        for i in range(num_of_processes)
+    ]
+
+    log_queue, log_listener = _start_multiprocessing_log_listener()
+    try:
+        with Pool(
+            processes=num_of_processes,
+            initializer=_configure_multiprocessing_worker_logging,
+            initargs=(log_queue,),
+        ) as pool:
+            pool.starmap(_kernal_function_date_range, args)
+    finally:
+        log_listener.stop()

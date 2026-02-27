@@ -235,9 +235,22 @@ def mean_n_min(ds: xr.Dataset, n_min: int):
     vars_without_time = [v for v in ds.data_vars if 'time' not in ds[v].dims]
     
     # Resample only variables with a time dimension
-    mean = ds[vars_with_time].resample(time=f'{n_min}min').mean(skipna=True) # , origin='start'
+    # Align bins to real clock boundaries, not first timestamp
+    rs = ds[vars_with_time].resample(
+        time=f"{n_min}min",
+        origin="epoch",
+        label="left",           # bin timestamp at left edge (e.g., 12:00)
+        closed="left",          # interval [12:00, 12:05)
+    )
 
-    count = ds["time"].resample(time=f"{n_min}min").count()
+    mean = rs.mean(skipna=True)
+
+    count = xr.ones_like(ds["time"], dtype="int64").resample(
+        time=f"{n_min}min",
+        origin="epoch",
+        label="left",
+        closed="left",
+    ).sum()
 
     mean = mean.where(count >= 1, drop=True)
 
