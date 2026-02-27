@@ -432,8 +432,7 @@ def run_RT(ds: xr.Dataset, site: str, data_dir: str, freqs: np.ndarray, angles: 
         Dataset with forward-calculated ``TB`` and ``TB_IR``.
     """
 
-    logger.info(f'strating RT for {ds.time.size} profiles with model {RT_model}')
-    logger.info(f'Number of Processes: {num_of_processes}')
+    logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')
 
     if RT_model == 'pyrtlib':
         ds_new = run_pyrtlib(ds, site, data_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes)
