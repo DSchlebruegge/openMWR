@@ -10,7 +10,7 @@ import warnings
 from pyrtlib.tb_spectrum import TbCloudRTE
 from torchMWRT import RTModel, AtmProfile
 
-from openMWR.libRadtran import libRadtran
+from openMWR.libRadtran import get_libradtran_paths, libRadtran
 from openMWR.utils import remove_files_in_dir
 from openMWR.parallel import run_pool
 from openMWR.site import get_config_parameter
@@ -68,6 +68,11 @@ def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, eff
     removed after execution. The wavelength band is selected based on the
     site's Hatpro generation.
     """
+    _, installation_data_dir = get_libradtran_paths()
+    atmosphere_file = installation_data_dir / "atmmod" / "afglus.dat"
+    if not atmosphere_file.is_file():
+        raise FileNotFoundError(f"libRadtran standard atmosphere not found at: {atmosphere_file}")
+
     zeitstempel_ns = time.time_ns()
 
     libRadtran_data_dir = Path(libRadtran_dir(data_dir)).resolve()
@@ -107,7 +112,8 @@ def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, eff
     
     try:
         df_rad, stderr = libRadtran(
-            atmosphere_file = '../data/atmmod/afglus.dat',
+            atmosphere_file = str(atmosphere_file),
+            data_files_path = str(installation_data_dir),
             source = 'thermal',
             mol_abs_param =  'reptran medium',
             wavelength = wavelengths,

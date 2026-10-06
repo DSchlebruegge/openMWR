@@ -1,8 +1,55 @@
 import pandas as pd
 import numpy as np
 import subprocess
-import glob
+import shutil
 import os
+from pathlib import Path
+
+
+def get_libradtran_paths(data_files_path: str | Path | None = None) -> tuple[Path, Path]:
+    """Find uvspec and its data, preferring a local libRadtran-* installation.
+
+    Otherwise, find uvspec on PATH and resolve symlinks to its installation.
+    Explicit data_files_path and LIBRADTRAN_DATA_FILES take precedence over
+    the installation's data/ or share/libRadtran/data/ directory.
+    Automatic discovery checks for the standard atmosphere at atmmod/afglus.dat.
+    Relative data paths are interpreted from uvspec's bin directory.
+    """
+    local_roots = sorted(p for p in Path.cwd().glob("libRadtran-*") if p.is_dir())
+    if local_roots:
+        uvspec = local_roots[0] / "bin" / "uvspec"
+    else:
+        executable = shutil.which("uvspec")
+        if executable is None:
+            raise FileNotFoundError(
+                "uvspec not found. Place libRadtran-* in the working directory "
+                "or add your libRadtran bin directory to PATH."
+            )
+        uvspec = Path(executable)
+
+    uvspec = uvspec.resolve()
+    if not uvspec.is_file():
+        raise FileNotFoundError(f"uvspec not found at: {uvspec}")
+    if not os.access(uvspec, os.X_OK):
+        raise PermissionError(f"uvspec exists but is not executable: {uvspec}")
+
+    data_override = data_files_path or os.environ.get("LIBRADTRAN_DATA_FILES")
+    if data_override:
+        data_dir = Path(data_override).expanduser()
+        if not data_dir.is_absolute():
+            data_dir = uvspec.parent / data_dir
+        data_dir = data_dir.resolve()
+    else:
+        prefix = uvspec.parent.parent
+        candidates = [prefix / "data", prefix / "share" / "libRadtran" / "data"]
+        data_dir = next((p for p in candidates if (p / "atmmod" / "afglus.dat").is_file()), None)
+
+    if data_dir is None or not data_dir.is_dir():
+        raise FileNotFoundError(
+            f"libRadtran data directory not found at {data_dir or uvspec.parent.parent}. "
+            "Set LIBRADTRAN_DATA_FILES to the directory containing the libRadtran data."
+        )
+    return uvspec, data_dir.resolve()
 
 def libRadtran(**input_dic: dict) -> 'tuple[pd.DataFrame, str]':
     """
@@ -26,14 +73,8 @@ def libRadtran(**input_dic: dict) -> 'tuple[pd.DataFrame, str]':
     libRadtranError
         If there is an error during the execution of uvspec or in its output.
     """
-    libRadtran_root = next(p for p in glob.glob("./libRadtran-*") if os.path.isdir(p))
-    libRadtran_bin = os.path.join(libRadtran_root, "bin")
-    uvspec_exe = os.path.join(libRadtran_bin, "uvspec")
-
-    if not os.path.isfile(uvspec_exe):
-        raise FileNotFoundError(f"uvspec not found at: {uvspec_exe}")
-    if not os.access(uvspec_exe, os.X_OK):
-        raise PermissionError(f"uvspec exists but is not executable: {uvspec_exe}")
+    uvspec_exe, data_dir = get_libradtran_paths(input_dic.get("data_files_path"))
+    input_dic["data_files_path"] = str(data_dir)
 
     input_text = ""
     parsed = {} 
@@ -58,14 +99,14 @@ def libRadtran(**input_dic: dict) -> 'tuple[pd.DataFrame, str]':
 
     try:
         result = subprocess.run(
-            ["./uvspec"],
+            [str(uvspec_exe)],
             input=input_text,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             errors="ignore",
-            cwd=libRadtran_bin
+            cwd=uvspec_exe.parent
         )
     except subprocess.CalledProcessError as exc:
         raise libRadtranError(f'\n{exc.stderr}\nInput File:\n{input_text}') from None 

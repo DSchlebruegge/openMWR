@@ -35,7 +35,7 @@ an Hatpro MWR.
 
 libRadtran is GPL-licensed third-party software. This project does not bundle or distribute libRadtran.
 Users install libRadtran separately. See: <https://www.libradtran.org/doku.php?id=download>
-To install libRadtran, follow these steps in the openMWR root directory:
+You can build libRadtran in your retrieval project's working directory or in a directory of your choice:
 
 Check for the latest version and download it:
 ```bash
@@ -64,9 +64,19 @@ make check
 
 Download data for the REPTRAN absorption parameterization
 ```bash
-wget http://www.meteo.physik.uni-muenchen.de/~libradtran/lib/exe/fetch.php?media=download:reptran_2024_all.tar.gz -O reptran_2024_all.tar.gz
+wget 'https://www.libradtran.org/lib/exe/fetch.php?media=download:reptran_2024_all.tar.gz' -O reptran_2024_all.tar.gz
 
 gzip -d reptran_2024_all.tar.gz
 tar -xvf reptran_2024_all.tar
 rm reptran_2024_all.tar
 ```
+
+openMWR first looks for a `libRadtran-*` directory in the current working directory, then for `uvspec` on `PATH`.
+For an installation elsewhere, add its `bin` directory to `PATH` once in your shell configuration (e.g. `~/.bashrc` or `~/.zshrc`):
+
+```bash
+export PATH="$HOME/opt/libRadtran-2.0.6/bin:$PATH"
+```
+
+The data directory is found automatically at `data/` or `share/libRadtran/data/` under the installation prefix.
+If you keep the data elsewhere, set `LIBRADTRAN_DATA_FILES` to that directory.
