@@ -1,6 +1,7 @@
 import json
 import sys
 import warnings
+from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
 
@@ -16,13 +17,8 @@ if str(SRC) not in sys.path:
 from torchMWRT import RTModel, AtmProfile
 from torchMWRT.lineshape import H2OLL, O2LL
 from pyrtlib.tb_spectrum import TbCloudRTE
-from openMWR.utils import patch_pyrtlib_numpy_compat
 
 warnings.filterwarnings("ignore", message="Number of levels too low", module="pyrtlib")
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="pyrtlib")
-
-
-patch_pyrtlib_numpy_compat()
 
 # Frequencies used for HATPRO 14-channel configuration.
 HATPRO_14 = np.array([
@@ -67,11 +63,14 @@ def _ensure_dataset_available() -> None:
         raise FileNotFoundError(f"Required dataset missing: {DATASET_PATH}")
 
 
-def _dataset_signature() -> dict:
+def _baseline_signature() -> dict:
+    """Invalidate reference results when the dataset or RT dependencies change."""
     stat = DATASET_PATH.stat()
     return {
         "dataset_path": str(DATASET_PATH.resolve()),
         "dataset_mtime_ns": stat.st_mtime_ns,
+        "pyrtlib_version": version("pyrtlib"),
+        "numpy_version": np.__version__,
     }
 
 
@@ -85,7 +84,7 @@ def _cache_key(time_idx: int, angles: np.ndarray, abs_model: str, ray_tracing: b
 
 
 def _load_baseline_cache() -> dict:
-    sig = _dataset_signature()
+    sig = _baseline_signature()
     if not BASELINE_PATH.exists():
         return {"cases": {}, **sig}
     try:
@@ -94,7 +93,7 @@ def _load_baseline_cache() -> dict:
     except json.JSONDecodeError:
         return {"cases": {}, **sig}
 
-    if cached.get("dataset_path") != sig["dataset_path"] or cached.get("dataset_mtime_ns") != sig["dataset_mtime_ns"]:
+    if not isinstance(cached, dict) or any(cached.get(key) != value for key, value in sig.items()):
         return {"cases": {}, **sig}
     return cached
 
@@ -220,6 +219,57 @@ def _run_torchrt(ds: xr.Dataset, angles: np.ndarray, abs_model: str, ray_tracing
     tb_torch = rtmodel.execute(atm_profile, return_ds=True)
     duration = perf_counter() - start
     return tb_torch["tbtotal"].to_numpy(), duration
+
+
+def test_tb_matches_live_pyrtlib():
+    """Exercise unpatched PyRTlib on every run, regardless of cached baselines."""
+    _ensure_dataset_available()
+    ds = xr.load_dataset(DATASET_PATH).isel(time=11)
+    angles = np.array([90.0])
+    expected_tb = _calc_pyrtlib_tb(ds, angles, "R24", False, False, True)
+    torch_tb, _ = _run_torchrt(ds, angles, "R24", False, False, True)
+    assert np.isfinite(expected_tb).all()
+    np.testing.assert_allclose(torch_tb, expected_tb, rtol=5e-5, atol=1e-6)
+
+
+@pytest.fixture
+def isolated_baseline_cache(tmp_path, monkeypatch):
+    baseline_path = tmp_path / "pyrtlib_hatpro14.json"
+    monkeypatch.setattr(sys.modules[__name__], "BASELINE_PATH", baseline_path)
+    monkeypatch.setattr(sys.modules[__name__], "_BASELINE_CACHE", None)
+    return baseline_path
+
+
+@pytest.mark.parametrize("outdated", ["legacy", "pyrtlib_version", "numpy_version"])
+def test_baseline_cache_recomputes_after_dependency_change(isolated_baseline_cache, monkeypatch, outdated):
+    angles = np.array([90.0])
+    key = _cache_key(11, angles, "R17", False, False, True)
+    stale = {**_baseline_signature(), "cases": {key: {"tb": [[-999.0]]}}}
+    if outdated == "legacy":
+        stale.pop("pyrtlib_version")
+        stale.pop("numpy_version")
+    else:
+        stale[outdated] = "0.0.0"
+    isolated_baseline_cache.write_text(json.dumps(stale))
+
+    calls = []
+    expected_tb = np.array([[123.0]])
+
+    def calculate(*args):
+        calls.append(args)
+        return expected_tb
+
+    monkeypatch.setattr(sys.modules[__name__], "_calc_pyrtlib_tb", calculate)
+    args = (xr.Dataset(), 11, angles, "R17", False, False, True)
+    np.testing.assert_array_equal(_get_expected_tb(*args), expected_tb)
+    stored = json.loads(isolated_baseline_cache.read_text())
+    assert stored["pyrtlib_version"] == version("pyrtlib")
+    assert stored["numpy_version"] == np.__version__
+
+    # Simulate a later test run: a valid cache must avoid another RT calculation.
+    monkeypatch.setattr(sys.modules[__name__], "_BASELINE_CACHE", None)
+    np.testing.assert_array_equal(_get_expected_tb(*args), expected_tb)
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)

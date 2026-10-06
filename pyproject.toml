@@ -7,7 +7,7 @@ dependencies = [
     "torch",
     "matplotlib",
     "scikit-learn",
-    "pyrtlib",
+    "pyrtlib>=1.2.0",
     "pandas",
     "numpy",
     "scipy",

@@ -5,14 +5,11 @@ import xarray as xr
 from pyrtlib.tb_spectrum import TbCloudRTE
 
 from torchMWRT import AtmProfile, RTModel
-from openMWR.utils import patch_pyrtlib_numpy_compat
 
 HATPRO_14 = np.array(
     [22.24, 23.04, 23.84, 25.44, 26.24, 27.84, 31.40, 51.26, 52.28, 53.86, 54.94, 56.66, 57.30, 58.00],
     dtype=float,
 )
-
-patch_pyrtlib_numpy_compat()
 
 
 def run_torchMWRT(ds: xr.Dataset, angles) -> xr.DataArray:

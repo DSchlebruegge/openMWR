@@ -11,7 +11,7 @@ from pyrtlib.tb_spectrum import TbCloudRTE
 from torchMWRT import RTModel, AtmProfile
 
 from openMWR.libRadtran import libRadtran
-from openMWR.utils import remove_files_in_dir, patch_pyrtlib_numpy_compat
+from openMWR.utils import remove_files_in_dir
 from openMWR.parallel import run_pool
 from openMWR.site import get_config_parameter
 from openMWR.paths import libRadtran_dir
@@ -230,8 +230,6 @@ def _run_pyrtlib_date(ds_date, site, data_dir, freqs, angles, freq_shift: np.nda
     xarray.Dataset
         Dataset with added ``TB`` (microwave) and ``TB_IR`` (infrared) fields.
     """
-
-    patch_pyrtlib_numpy_compat()
 
     z_m = ds_date.height.values
     z_km = z_m / 1000
