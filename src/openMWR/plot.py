@@ -1278,7 +1278,7 @@ class TimeSeriesCreator:
         return lwc
     
 
-def plot_err(err_ds_height, label_dic=None, err='RMSE', zero_xlim=True, xlabel_T='Temperature in K', xlabel_RH='Relative Humidity in %', xlabel_LWC='LWC in g/m³', colors=None):
+def plot_err(err_ds_height, label_dic=None, err='RMSE', zero_xlim=True, xlabel_T='Temperature in K', xlabel_RH='Relative Humidity in %', xlabel_LWC='LWC in g/m³', colors=None, *, figure=None, show=True):
     """
     Plot vertical error profiles (e.g., RMSE, MAE) for multiple models.
 
@@ -1310,6 +1310,11 @@ def plot_err(err_ds_height, label_dic=None, err='RMSE', zero_xlim=True, xlabel_T
     colors : dict, optional
         Optional dictionary mapping models to plot colors. New models are added
         with their automatically chosen Matplotlib color.
+    figure : matplotlib.figure.Figure, optional
+        Figure to draw into. Supply a Figure with ``show=False`` to save or embed
+        plots without creating a pyplot window.
+    show : bool, optional
+        Display the plot with pyplot. Defaults to True.
 
     Returns
     -------
@@ -1319,92 +1324,55 @@ def plot_err(err_ds_height, label_dic=None, err='RMSE', zero_xlim=True, xlabel_T
     if label_dic is None:
         label_dic = {str(model.values): str(model.values) for model in err_ds_height.model}
 
-    #plt.figure(figsize=(10, 6))
-    plt.figure(figsize=(12, 8))
-    plt.suptitle(err, y=0.92)
-    
-    if 'lwc' in err_ds_height:
-        plt.subplot(1, 3, 1)
-    else:
-        plt.subplot(1, 2, 1)
-
+    if figure is None:
+        figure = plt.figure(figsize=(12, 8))
+    figure.suptitle(err, y=0.92)
+    variables = ['T', 'rh', 'lwc'] if 'lwc' in err_ds_height else ['T', 'rh']
+    axes = figure.subplots(1, len(variables))
     if colors is None:
         colors = {}
-
-    for model in err_ds_height.model.values:
-        line = plt.plot(err_ds_height.T.sel(model=model), err_ds_height.height/1000, label=label_dic[model], color=colors.get(model, None))
-        colors[model] = line[0].get_color()
-
-    
-    if err in ['RMSE','MAE'] and zero_xlim:
-        plt.xlim(left=0)
-    else:
-        plt.axvline(x=0, color='black')
-    plt.xlabel(xlabel_T)
-    plt.ylabel("Height above ground in km")
-    plt.ylim(bottom=0)
-    plt.grid()
-
-    if 'lwc' in err_ds_height:
-        plt.subplot(1, 3, 2)
-    else:
-        plt.subplot(1, 2, 2)
-
-    for model in err_ds_height.model.values:
-        plt.plot(err_ds_height.rh.sel(model=model), err_ds_height.height/1000, label=label_dic[model], color=colors[model])
-
-    if err in ['RMSE','MAE'] and zero_xlim:
-        plt.xlim(left=0)
-    else:
-        plt.axvline(x=0, color='black')
-    plt.xlabel(xlabel_RH)
-    plt.ylim(bottom=0)
-    plt.grid()
-
-    if 'lwc' in err_ds_height:
-        plt.subplot(1, 3, 3)
+    for ax, var, xlabel in zip(axes, variables, [xlabel_T, xlabel_RH, xlabel_LWC]):
         for model in err_ds_height.model.values:
-            plt.plot(err_ds_height.lwc.sel(model=model), err_ds_height.height/1000, label=label_dic[model], color=colors[model])
-
+            line = ax.plot(err_ds_height[var].sel(model=model), err_ds_height.height/1000,
+                           label=label_dic[model], color=colors.get(model))
+            colors[model] = line[0].get_color()
         if err in ['RMSE','MAE'] and zero_xlim:
-            plt.xlim(left=0)
+            ax.set_xlim(left=0)
         else:
-            plt.axvline(x=0, color='black')
-        plt.xlabel(xlabel_LWC)
-        plt.ylim(bottom=0)
-        plt.grid()
-
-    plt.legend()
-    plt.show()
+            ax.axvline(x=0, color='black')
+        ax.set_xlabel(xlabel)
+        ax.set_ylim(bottom=0)
+        ax.grid()
+    axes[0].set_ylabel("Height above ground in km")
+    axes[-1].legend()
+    if show:
+        plt.show()
     return colors
 
-def plot_scatter_lwp(pred, data):
+def plot_scatter_lwp(pred, data, *, figure=None, show=True):
     """
     Plot scatter plots comparing predicted and form radiosonde profiles calculated Liquid Water Path (LWP).
+
+    Supply ``figure`` and ``show=False`` to save or embed the plot without
+    creating a pyplot window. By default a figure is created and displayed.
     """
 
     combined_ds = xr.Dataset({'pred_lwp': pred.lwp, 'data_lwp': data.lwp})
     
-    plt.figure(figsize=(10, 5))
-    plt.suptitle(pred.model.values, y=0.95)
-
-    plt.subplot(1, 2, 1)
-    for station in pred.station:
-        plt.scatter(combined_ds.data_lwp.sel(station=station), combined_ds.pred_lwp.sel(station=station), s=3, edgecolor='none', facecolor='#1f77b4')
-    plt.plot(np.arange(combined_ds.pred_lwp.max()), color='red')
-    plt.ylabel('Predicted LWP in g/m²')
-    plt.xlabel('Radiosonde LWP in g/m²')
-    plt.grid()
-
-    plt.subplot(1, 2, 2)
-    for station in pred.station:
-        plt.scatter(combined_ds.data_lwp.sel(station=station), combined_ds.pred_lwp.sel(station=station), s=3, edgecolor='none', facecolor='#1f77b4')
-    plt.plot(np.arange(combined_ds.pred_lwp.max()), color='red')
-    plt.ylabel('Predicted LWP in g/m²')
-    plt.xlabel('Radiosonde LWP in g/m²')
-    #plt.xscale('log')
-    #plt.yscale('log')
-    plt.ylim(-20, 200)
-    plt.xlim(-20, 200)
-    plt.grid()
-    plt.show()
+    if figure is None:
+        figure = plt.figure(figsize=(10, 5))
+    figure.suptitle(pred.model.values, y=0.95)
+    axes = figure.subplots(1, 2)
+    finite_lwp = combined_ds.pred_lwp.values[np.isfinite(combined_ds.pred_lwp.values)]
+    identity = np.arange(finite_lwp.max()) if finite_lwp.size else np.array([])
+    for ax in axes:
+        for station in pred.station:
+            ax.scatter(combined_ds.data_lwp.sel(station=station), combined_ds.pred_lwp.sel(station=station), s=3, edgecolor='none', facecolor='#1f77b4')
+        ax.plot(identity, color='red')
+        ax.set_ylabel('Predicted LWP in g/m²')
+        ax.set_xlabel('Radiosonde LWP in g/m²')
+        ax.grid()
+    axes[1].set_ylim(-20, 200)
+    axes[1].set_xlim(-20, 200)
+    if show:
+        plt.show()
