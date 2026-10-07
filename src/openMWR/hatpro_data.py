@@ -547,6 +547,7 @@ def create_hatpro_dataset(
       them into `hatpro_data(_bls).nc`, removing the daily files after a
       successful merge.
     - The date range is derived from `mwr_measurement_start_date` up to today.
+    - Combined-build failures are logged and re-raised to the caller.
     """
 
     if import_retrieval_data is None:
@@ -561,6 +562,7 @@ def create_hatpro_dataset(
         logger.info(f'{"Updating" if update_only else "Creating"} Hatpro data for site {site} with BLS: {bls}')
 
         bls_attribute = '_bls' if bls else ''
+        daily_pattern = f'hatpro_data{bls_attribute}_' + '[0-9]' * 8 + '.nc'
         combined_file = hatpro_out_dir / f'hatpro_data{bls_attribute}.nc'
         tmp_file = None
 
@@ -617,7 +619,7 @@ def create_hatpro_dataset(
 
             logger.info(f'Finished creating daily files for Hatpro data with BLS: {bls}')
 
-            files = glob.glob(str(hatpro_out_dir / f'hatpro_data{bls_attribute}_*.nc'))
+            files = glob.glob(str(hatpro_out_dir / daily_pattern))
 
             if len(files) == 0:
                 logger.info(f'No Hatpro daily files created for site {site} with BLS: {bls}')
@@ -652,6 +654,7 @@ def create_hatpro_dataset(
 
         except Exception as e:
             logger.error(f"Error creating Hatpro dataset for site {site} with BLS: {bls}: {e}", exc_info=True)
+            raise
 
         finally:
             if tmp_file is not None and os.path.exists(tmp_file):
@@ -660,7 +663,7 @@ def create_hatpro_dataset(
                 except OSError:
                     logger.exception(f"Failed to remove temporary file: {tmp_file}")
 
-            files = glob.glob(str(hatpro_out_dir / f'hatpro_data{bls_attribute}_*.nc'))
+            files = glob.glob(str(hatpro_out_dir / daily_pattern))
             # Delete old files
             for f in files:
                 try:
