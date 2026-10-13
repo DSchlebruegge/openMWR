@@ -1,6 +1,6 @@
 import xarray as xr
 import numpy as np
-from openMWR.paths import site_subdir
+from openMWR.paths import site_data_dir
 
 def _get_indices_to_interpolate(old_coord: np.ndarray, new_coord: np.ndarray, extrapolate_lower_end=False, extrapolate_upper_end=False):
     delta_new_coord = np.diff(new_coord) / 2
@@ -259,7 +259,7 @@ def mean_n_min(ds: xr.Dataset, n_min: int):
 
     return mean
 
-def load_combined_dataset(site, data_dir, file, sources, file_extension=''):
+def load_combined_dataset(site, project_dir, file, sources, file_extension=''):
     """
     Loads and combines multiple NetCDF datasets for specified station IDs into a single xarray Dataset.
 
@@ -280,7 +280,7 @@ def load_combined_dataset(site, data_dir, file, sources, file_extension=''):
     ds : xarray.Dataset
         The concatenated xarray Dataset containing data from all specified stations along a new 'station' dimension.
     """
-    forward_calc_dir = site_subdir(data_dir, site, "training")
+    forward_calc_dir = site_data_dir(project_dir, site, "training")
 
     if file_extension != '':
         file_extension = '_' + file_extension

@@ -347,7 +347,7 @@ def run_model_list(
 def import_data_and_run_retrieval(
     date: datetime,
     site: str,
-    data_dir: str,
+    project_dir: str,
     model_list: Sequence[BaseModel],
     import_retrieval_data: bool = True,
     bls: bool = False,
@@ -362,8 +362,8 @@ def import_data_and_run_retrieval(
         Date to process.
     site : str
         Site name used for data import.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     model_list : list
         Models to run.
     import_retrieval_data : bool, optional
@@ -385,9 +385,9 @@ def import_data_and_run_retrieval(
 
     # Import MWR measurement data
     if not bls:
-        ds_hatpro = import_hatpro_data(date, site, data_dir, import_retrieval_data=import_retrieval_data, mean_one_min=True)
+        ds_hatpro = import_hatpro_data(date, site, project_dir, import_retrieval_data=import_retrieval_data, mean_one_min=True)
     else:
-        ds_hatpro = import_hatpro_data_bls(date, site, data_dir, import_retrieval_data=import_retrieval_data)
+        ds_hatpro = import_hatpro_data_bls(date, site, project_dir, import_retrieval_data=import_retrieval_data)
 
     # Apply model to measurement data
     pred = run_model_list(model_list, ds_hatpro, device)

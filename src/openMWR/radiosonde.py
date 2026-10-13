@@ -11,7 +11,7 @@ from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, selec
 from openMWR.site import get_config_parameter
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
-from openMWR.paths import site_subdir, radiosonde_station_dir
+from openMWR.paths import site_data_dir, radiosonde_station_dir
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def _scale_rh_profiles_for_clear_sky_cases(
 def create_radiosonde_dataset_for_RT(
     site: str,
     station_id: str,
-    data_dir: str,
+    project_dir: str,
     heights: np.ndarray,
     update_only: bool = False,
     first_year: Optional[int] = None,
@@ -188,8 +188,8 @@ def create_radiosonde_dataset_for_RT(
         The site identifier used for configuration and output path.
     station_id: str
         The identifier of the radiosonde station.
-    data_dir: str
-        Base directory containing all openMWR-managed data.
+    project_dir: str
+        Working-project root containing data/ and sites/.
     heights: np.array
         Array of heights (in meters) to which the profiles will be interpolated.
     update_only: bool, optional
@@ -211,15 +211,15 @@ def create_radiosonde_dataset_for_RT(
     Notes
     -----
     - The function expects raw radiosonde NetCDF files to be located under
-        ``{data_dir}/radiosondes/station_{station_id}/raw_data_{year}.nc``.
+        ``{project_dir}/data/radiosondes/station_{station_id}/raw_data_{year}.nc``.
             -> Can be created using :func:`openMWR.radiosonde.download_all_radiosondes`
     - The processed dataset is saved to
-        ``{data_dir}/sites/{site}/radiosonde/radiosonde_data_{station_id}.nc``.
+        ``{project_dir}/data/sites/{site}/radiosonde/radiosonde_data_{station_id}.nc``.
     - Profiles are filtered based on minimum and maximum height, number of measurements, and presence of NaN values.
     - Derived variables such as absolute humidity, dew point, LWP, and IWV are added.
     - Surface variables (temperature, relative humidity, pressure at ground level) are extracted.
     """
-    radiosonde_dir = site_subdir(data_dir, site, "radiosonde")
+    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
 
     if file_extension != '':
         target_file = radiosonde_dir / f'radiosonde_data_{station_id}_{file_extension}.nc'
@@ -239,7 +239,7 @@ def create_radiosonde_dataset_for_RT(
         ds_old = xr.load_dataset(target_file)
 
     #Find all files for the station
-    station_dir = radiosonde_station_dir(data_dir, station_id)
+    station_dir = radiosonde_station_dir(project_dir, station_id)
     raw_data_files = sorted(glob.glob(str(station_dir / 'raw_data_*.nc')))
     if not raw_data_files:
         logger.error(f"No raw radiosonde data files found for station {station_id}.")
@@ -248,7 +248,7 @@ def create_radiosonde_dataset_for_RT(
     if first_year is not None:
         raw_data_files = [f for f in raw_data_files if int(os.path.basename(f).split('_')[-1].split('.')[0]) >= first_year]
     
-    mwr_height = get_config_parameter(site, 'mwr_height', data_dir)
+    mwr_height = get_config_parameter(site, 'mwr_height', project_dir)
 
     ds_list = []
 
@@ -398,7 +398,7 @@ def create_radiosonde_dataset_for_RT(
     ds_new.to_netcdf(target_file)
     logger.info(f"Radiosonde dataset saved to {target_file}")
 
-def create_radiosonde_dataset_with_RT(station_id: str, site: str, data_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
+def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
            freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', file_extension_in: str = '', 
            file_extension_out: str = '', RT_model: str = 'torchMWRT'):
     """
@@ -410,8 +410,8 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, data_dir: str,
         Radiosonde station identifier used in file names.
     site : str
         Site name used to resolve input and output paths.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
     angles : numpy.ndarray, optional
@@ -442,7 +442,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, data_dir: str,
     """
     logger.info(f'calc RT for station {station_id}:')
 
-    radiosonde_dir = site_subdir(data_dir, site, "radiosonde")
+    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
 
     if file_extension_out != '':
         file = radiosonde_dir / f"radiosonde_data_with_RT_{station_id}_{file_extension_out}.nc"
@@ -477,7 +477,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, data_dir: str,
     ds_new = run_RT(
         ds_RS,
         site,
-        data_dir,
+        project_dir,
         freqs,
         angles,
         num_of_processes=num_of_processes,
@@ -505,7 +505,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, data_dir: str,
 def create_analysis_dataset(
     site: str,
     station_ids: Sequence[str],
-    data_dir: str,
+    project_dir: str,
     from_forward_calc: bool = True,
     save: bool = True,
     file_extension: str = ''
@@ -519,8 +519,8 @@ def create_analysis_dataset(
         Site name used to locate Hatpro and radiosonde files.
     station_ids : Sequence[str]
         Radiosonde station IDs to include (strings preserve leading zeros).
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     from_forward_calc : bool, optional
         If True, use radiosonde datasets with forward-calculated brightness
         temperatures (`radiosonde_data_with_RT_*`). If False, use the prepared
@@ -555,9 +555,9 @@ def create_analysis_dataset(
     logger.info(f'Creating analysis dataset for site {site} from radiosonde and hatpro data')
 
     # Hatpro data
-    hatpro_dir = site_subdir(data_dir, site, "hatpro")
-    analysis_dir = site_subdir(data_dir, site, "analysis")
-    radiosonde_dir = site_subdir(data_dir, site, "radiosonde")
+    hatpro_dir = site_data_dir(project_dir, site, "hatpro")
+    analysis_dir = site_data_dir(project_dir, site, "analysis")
+    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
 
     ds_hatpro = xr.load_dataset(hatpro_dir / 'hatpro_data.nc').dropna(dim='time')
     ds_hatpro_bls = xr.load_dataset(hatpro_dir / 'hatpro_data_bls.nc').dropna(dim='time')

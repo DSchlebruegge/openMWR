@@ -32,7 +32,7 @@ warnings.filterwarnings(
     module="pyrtlib.rt_equation"
 ) #only important for cloud radiating temperature, which is not used here
 
-def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, ang=np.array([90])):
+def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, ang=np.array([90])):
     """
     Calculate band-integrated infrared brightness temperatures with libRadtran.
 
@@ -40,8 +40,8 @@ def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, eff
     ----------
     site : str
         Site name used to read configuration (determines wavelength band).
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     z_km : array-like
         Heights in kilometers for each model level.
     T_K : array-like
@@ -75,7 +75,7 @@ def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, eff
 
     zeitstempel_ns = time.time_ns()
 
-    libRadtran_data_dir = Path(libRadtran_dir(data_dir)).resolve()
+    libRadtran_data_dir = Path(libRadtran_dir(project_dir)).resolve()
     os.makedirs(libRadtran_data_dir, exist_ok=True)
     
     radio_file = libRadtran_data_dir / f"radio_{zeitstempel_ns}.dat"
@@ -103,7 +103,7 @@ def calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, eff
 
     umu = np.cos(np.radians(90 + ang))
 
-    gen = get_config_parameter(site, 'gen', data_dir)
+    gen = get_config_parameter(site, 'gen', project_dir)
 
     if gen == 'G5':
         wavelengths = '9600 11500'
@@ -177,7 +177,7 @@ def _effective_droplet_radius_mum(lwc_gpm3: np.ndarray) -> np.ndarray:
     effective_droplet_radius_mum[effective_droplet_radius_mum < 2.5] = 2.5
     return effective_droplet_radius_mum
 
-def _run_IR_date(ds_date: xr.Dataset, site: str, data_dir: str) -> xr.DataArray:
+def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str) -> xr.DataArray:
     """
     Calculate infrared brightness temperature for one profile.
 
@@ -189,8 +189,8 @@ def _run_IR_date(ds_date: xr.Dataset, site: str, data_dir: str) -> xr.DataArray:
         ``height`` dimension. A ``height`` coordinate (m) is required.
     site : str
         Site name used to resolve libRadtran wavelength settings.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
 
     Returns
     -------
@@ -205,10 +205,10 @@ def _run_IR_date(ds_date: xr.Dataset, site: str, data_dir: str) -> xr.DataArray:
     lwc_gpm3 = ds_date.lwc.values
 
     effective_droplet_radius_mum = _effective_droplet_radius_mum(lwc_gpm3)
-    TB_IR = calculate_IR_band_TB(site, data_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum)
+    TB_IR = calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum)
     return xr.DataArray(TB_IR)
 
-def _run_pyrtlib_date(ds_date, site, data_dir, freqs, angles, freq_shift: np.ndarray = None, absmdl: str = 'R20'):
+def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift: np.ndarray = None, absmdl: str = 'R20'):
     """
     Run radiative transfer for a single time slice of radiosonde data.
 
@@ -220,8 +220,8 @@ def _run_pyrtlib_date(ds_date, site, data_dir, freqs, angles, freq_shift: np.nda
         A ``height`` coordinate (m) is required.
     site : str
         Site name used to resolve configuration for the infrared calculation.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
     angles : numpy.ndarray
@@ -277,11 +277,11 @@ def _run_pyrtlib_date(ds_date, site, data_dir, freqs, angles, freq_shift: np.nda
     ds_date['TB'] = xr.DataArray(df_tb.values, dims=['frq', 'ang'], coords={"frq": freqs, "ang": angles})
 
     #IR with libRadtran    
-    ds_date['TB_IR'] = _run_IR_date(ds_date, site, data_dir)
+    ds_date['TB_IR'] = _run_IR_date(ds_date, site, project_dir)
 
     return ds_date
 
-def run_pyrtlib(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12):
+def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12):
     """
     Run pyrtlib-based radiative transfer for one or many profiles.
 
@@ -294,8 +294,8 @@ def run_pyrtlib(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_of
         provided, a ``time`` dimension is expected.
     site : str
         Site name used for infrared calculations.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
     angles : numpy.ndarray
@@ -314,13 +314,13 @@ def run_pyrtlib(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_of
     """
 
     if 'time' in ds_RS.dims and ds_RS.sizes['time'] > 1:
-        ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, data_dir, freqs, angles, freq_shift, absmdl)
+        ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl)
     else:
-        ds_new = _run_pyrtlib_date(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl)
+        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl)
 
     return ds_new
 
-def run_torchMWRT(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12):
+def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12):
     """
     Run torchMWRT for microwave TB and libRadtran for infrared TB.
 
@@ -332,8 +332,8 @@ def run_torchMWRT(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_
         A ``height`` coordinate (m) and a ``time`` dimension are required.
     site : str
         Site name used for infrared calculations.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
     angles : numpy.ndarray
@@ -393,7 +393,7 @@ def run_torchMWRT(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_
     n_proc = max(1, min(int(num_of_processes), n_times))
 
     logger.info(f"Running IR calculation in parallel with {n_proc} processes")
-    TB_IR = run_pool(ds_RS, n_proc, _run_IR_date, site, data_dir)
+    TB_IR = run_pool(ds_RS, n_proc, _run_IR_date, site, project_dir)
 
     logger.info("Finished IR calculation")
     
@@ -401,7 +401,7 @@ def run_torchMWRT(ds_RS, site, data_dir, freqs, angles, freq_shift, absmdl, num_
 
     return ds_new
 
-def run_RT(ds: xr.Dataset, site: str, data_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), num_of_processes: int = 12,
+def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), num_of_processes: int = 12,
            freq_shift: np.ndarray = None, absmdl: str = 'R20', RT_model: str = 'torchMWRT'):
     """
     Run forward radiative transfer with the selected backend.
@@ -415,8 +415,8 @@ def run_RT(ds: xr.Dataset, site: str, data_dir: str, freqs: np.ndarray, angles: 
         a ``time`` dimension is expected.
     site : str
         Site name used for infrared calculations.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
     angles : numpy.ndarray, optional
@@ -439,9 +439,9 @@ def run_RT(ds: xr.Dataset, site: str, data_dir: str, freqs: np.ndarray, angles: 
     logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')
 
     if RT_model == 'pyrtlib':
-        ds_new = run_pyrtlib(ds, site, data_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes)
+        ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes)
     elif RT_model == 'torchMWRT':
-        ds_new = run_torchMWRT(ds, site, data_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes)
+        ds_new = run_torchMWRT(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes)
     else:
         raise ValueError(f"Unknown RT model: {RT_model}")
     
@@ -451,7 +451,7 @@ def run_RT(ds: xr.Dataset, site: str, data_dir: str, freqs: np.ndarray, angles: 
     logger.info('Finished RT')
 
     # Remove temporary libRadtran files
-    libRadtran_data_dir = libRadtran_dir(data_dir)
+    libRadtran_data_dir = libRadtran_dir(project_dir)
     if os.path.isdir(libRadtran_data_dir):
         remove_files_in_dir(libRadtran_data_dir)
 

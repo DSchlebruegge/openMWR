@@ -11,7 +11,7 @@ from openMWR.xr_utils import change_coord_of_ds, add_time_data, select_closest_t
 from openMWR.parallel import run_pool
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.radiosonde import add_derived_data
-from openMWR.paths import data_root, site_subdir
+from openMWR.paths import data_root, site_data_dir
 
 # deactivate cdsapi-Logger
 # cds_logger = logging.getLogger("cdsapi")
@@ -47,8 +47,8 @@ class ERA5Processor:
     site : str
         Name of the site for which ERA5 data should be processed. Must exist in
         the openMWR site configuration.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     start_date : str or None, optional
         Start date of the ERA5 data range (`'YYYY-MM-DD'`).  
         If None, uses the site's configured ``mwr_measurement_start_date``.
@@ -78,7 +78,7 @@ class ERA5Processor:
 
         from openMWR.era5 import ERA5Processor
         from openMWR.consts import std_freqs, std_heights, std_angles
-        era5 = ERA5Processor("munich_G5", data_dir="data")
+        era5 = ERA5Processor("munich_G5", project_dir=".")
         era5.create_original_dataset(h_freq=2)
         era5.create_forward_calc_dataset(std_freqs, std_heights, std_angles, num_of_processes=12)
 
@@ -94,9 +94,9 @@ class ERA5Processor:
 
         era5.create_analysis_dataset_from_scratch(num_of_processes=16)
     """
-    def __init__(self, site: str, data_dir: str, start_date: str = None, end_date: str = None, update_only: bool = True, file_extension: str = '') -> None:
+    def __init__(self, site: str, project_dir: str, start_date: str = None, end_date: str = None, update_only: bool = True, file_extension: str = '') -> None:
         self.site = site
-        self.data_dir = data_dir
+        self.project_dir = project_dir
         self.start_date = start_date
         self.end_date = end_date
         self.update_only = update_only
@@ -104,7 +104,7 @@ class ERA5Processor:
 
         # Load site parameters
         self.lat, self.lon, start_date_str = get_config_parameter(
-            site, ["latitude", "longitude", "mwr_measurement_start_date"], data_dir
+            site, ["latitude", "longitude", "mwr_measurement_start_date"], project_dir
         )
 
         if start_date is None:
@@ -125,9 +125,9 @@ class ERA5Processor:
         if file_extension != '':
             file_extension = '_' + file_extension
 
-        self.raw_data_file = data_root(data_dir) / f"era5/era5_{self.lat_round}_{self.lon_round}.nc"
-        self.forward_calc_file = site_subdir(data_dir, site, "era5") / f"forward_calc_era5{file_extension}.nc"
-        self.analysis_file = site_subdir(data_dir, site, "analysis") / f"analysis_data_era5{file_extension}.nc"
+        self.raw_data_file = data_root(project_dir) / f"era5/era5_{self.lat_round}_{self.lon_round}.nc"
+        self.forward_calc_file = site_data_dir(project_dir, site, "era5") / f"forward_calc_era5{file_extension}.nc"
+        self.analysis_file = site_data_dir(project_dir, site, "analysis") / f"analysis_data_era5{file_extension}.nc"
 
     def download_era5(self, start_time, end_time, h_freq=6):
         """
@@ -304,7 +304,7 @@ class ERA5Processor:
             ds_sel = ds_raw
 
         # Change height to be relative to MWR
-        mwr_height = get_config_parameter(self.site, "mwr_height", self.data_dir)
+        mwr_height = get_config_parameter(self.site, "mwr_height", self.project_dir)
         ds_sel["height"] = ds_sel["height"] - mwr_height
 
         # Process RT in parallel
@@ -321,7 +321,7 @@ class ERA5Processor:
         ds_new = run_RT(
             ds_new,
             site=self.site,
-            data_dir=self.data_dir,
+            project_dir=self.project_dir,
             freqs=freqs,
             angles=angles,
             absmdl=absmdl,
@@ -377,7 +377,7 @@ class ERA5Processor:
         self.logger.info(f'Creating analysis dataset for site {self.site} from era5 data and hatpro data')
 
         #Hatpro Data
-        hatpro_dir = site_subdir(self.data_dir, self.site, "hatpro")
+        hatpro_dir = site_data_dir(self.project_dir, self.site, "hatpro")
         ds_hatpro = xr.load_dataset(hatpro_dir / 'hatpro_data.nc').dropna(dim='time')
         ds_hatpro_bls = xr.load_dataset(hatpro_dir / 'hatpro_data_bls.nc').dropna(dim='time')
 
@@ -425,14 +425,14 @@ class ERA5Processor:
         # Save datasets
         if save:
             if an_data.time.size > 0:
-                file = site_subdir(self.data_dir, self.site, "analysis") / 'analysis_data_era5.nc'
+                file = site_data_dir(self.project_dir, self.site, "analysis") / 'analysis_data_era5.nc'
                 an_data.to_netcdf(file)
                 self.logger.info(f'{file} saved')
             else:
                 self.logger.info('an_data is empty, not saved')
 
             if an_data_bls.time.size > 0:
-                file = site_subdir(self.data_dir, self.site, "analysis") / 'analysis_data_era5_bls.nc'
+                file = site_data_dir(self.project_dir, self.site, "analysis") / 'analysis_data_era5_bls.nc'
                 an_data_bls.to_netcdf(file)
                 self.logger.info(f'{file} saved')
             else:

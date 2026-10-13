@@ -1,6 +1,7 @@
 [project]
 name = "openMWR"
 version = "0.1"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "xarray",
@@ -22,6 +23,7 @@ dependencies = [
     "netCDF4",
     "pytest",
     "dask",
+    "tomli-w",
 ]
 
 [project.optional-dependencies]

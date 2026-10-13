@@ -1,7 +1,7 @@
 import xarray as xr
 import numpy as np
 from typing import Optional, Sequence, Dict, Tuple, TYPE_CHECKING
-from openMWR.paths import site_subdir
+from openMWR.paths import site_data_dir
 
 if TYPE_CHECKING:
     from openMWR.models import BaseModel
@@ -20,8 +20,8 @@ class Omb_Analysis:
     site : str
         Site name used to locate analysis data under
         `data/sites/{site}/analysis/`.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     data_source : str, optional
         Background source to compare against observations. Options are
         ``"radiosonde"`` and ``"era5"``.
@@ -41,14 +41,14 @@ class Omb_Analysis:
     def __init__(
         self,
         site: str,
-        data_dir: str,
+        project_dir: str,
         data_source: str = 'radiosonde',
         station_ids_for_analysis: Optional[Sequence[str]] = None,
         load_existing_analysis_dataset: bool = False,
         file_extension: str = ''
     ) -> None:
         self.site = site
-        self.data_dir = data_dir
+        self.project_dir = project_dir
         self.data_source = data_source
         self.station_ids_for_analysis = station_ids_for_analysis
         self.station_id_for_analysis = station_ids_for_analysis[0] # Currently only one station is supported for the analysis
@@ -59,7 +59,7 @@ class Omb_Analysis:
         if load_existing_analysis_dataset:
             if file_extension != '':
                 file_extension = '_' + file_extension
-            analysis_file = site_subdir(self.data_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
+            analysis_file = site_data_dir(self.project_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
             self.an_data = xr.load_dataset(analysis_file)
             if data_source == 'radiosonde':
                 self.an_data = self.an_data.sel(station=self.station_id_for_analysis, drop=True)
@@ -155,7 +155,7 @@ class Omb_Analysis:
         """
         from openMWR.era5 import ERA5Processor
 
-        era5 = ERA5Processor(self.site, self.data_dir)
+        era5 = ERA5Processor(self.site, self.project_dir)
         self.an_data, self.an_data_bls = era5.create_analysis_dataset_from_forward_calc(save=False)
 
     def create_analysis_dataset_from_radiosonde(self) -> None:
@@ -171,7 +171,7 @@ class Omb_Analysis:
         self.an_data, self.an_data_bls = create_analysis_dataset(
             self.site,
             [self.station_id_for_analysis],
-            self.data_dir,
+            self.project_dir,
             save=False,
             from_forward_calc=True,
         )

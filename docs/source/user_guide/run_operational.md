@@ -33,28 +33,32 @@ The `cron_job.py` script needs to be personalized. Site name, plot titles, and r
 
 There is also an `update.py` script in the `bin` directory that can be run like this:
 
-    ./run_py_script.sh update.py
+    .venv/bin/python bin/update.py
 
 This script updates all the datasets created in [Create a Retrieval](#create_retrieval) or with `bin/main.py` with the latest available data.
 
-In the list below, `DATA_DIR` refers to the data root configured in your scripts and passed to the openMWR functions.
+Run from the working-project root. In the list below, `PROJECT_DIR` refers to
+that directory, containing both `data/` and `sites/` and passed to openMWR as
+`project_dir`. Site settings live in `sites/{site}/site.toml`, trained models in
+`sites/{site}/retrieval/{name}/model.pth`, and optimization history in
+`sites/{site}/optimization_studies.db`.
 
 Specifically, the script updates the following datasets:
 - The raw, unchanged radiosonde data:<br>
- `{DATA_DIR}/radiosondes/station_{station}/raw_data_{year}.nc`.
+ `{PROJECT_DIR}/data/radiosondes/station_{station}/raw_data_{year}.nc`.
 - The filtered and interpolated radiosonde data:<br>
-`{DATA_DIR}/sites/{site}/radiosonde/radiosonde_data_{station}.nc`.
+`{PROJECT_DIR}/data/sites/{site}/radiosonde/radiosonde_data_{station}.nc`.
 - The radiosonde data with forward-calculated brightness temperatures:<br>
-`{DATA_DIR}/sites/{site}/radiosonde/radiosonde_data_with_RT_{station}.nc`.
+`{PROJECT_DIR}/data/sites/{site}/radiosonde/radiosonde_data_with_RT_{station}.nc`.
 - The Hatpro dataset with all the measurements:<br>
-`{DATA_DIR}/sites/{site}/hatpro/hatpro_data.nc`.
+`{PROJECT_DIR}/data/sites/{site}/hatpro/hatpro_data.nc`.
 - The radiosonde analysis dataset:<br>
-`{DATA_DIR}/sites/{site}/analysis/analysis_data_radiosonde.nc`.
+`{PROJECT_DIR}/data/sites/{site}/analysis/analysis_data_radiosonde.nc`.
 - The raw, unchanged ERA5 data:<br>
-`{DATA_DIR}/era5/era5_{lat}_{lon}.nc`.
+`{PROJECT_DIR}/data/era5/era5_{lat}_{lon}.nc`.
 - The interpolated ERA5 data with forward calculation:<br>
-`{DATA_DIR}/sites/{site}/era5/forward_calc_era5.nc`.
+`{PROJECT_DIR}/data/sites/{site}/era5/forward_calc_era5.nc`.
 - The ERA5 analysis dataset:<br>
-`{DATA_DIR}/sites/{site}/analysis/analysis_data_era5.nc`.
+`{PROJECT_DIR}/data/sites/{site}/analysis/analysis_data_era5.nc`.
 
 The `update.py` script also needs to be personalized. Site names and radiosonde station IDs are set in the script itself.

@@ -11,7 +11,7 @@ import torch
 import xarray as xr
 from torch import nn
 from openMWR.consts import std_angles
-from openMWR.paths import site_subdir
+from openMWR.paths import checkpoint_file
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class BaseModel(nn.Module):
         Parameters
         ----------
         name : str
-            Identifier for the model; also used as checkpoint file name.
+            Identifier for the model and its retrieval directory.
         """
         super().__init__()
 
@@ -75,7 +75,7 @@ class BaseModel(nn.Module):
             original_init = cls.__dict__["__init__"]
             cls.__init__ = _capture_init_args(original_init)
 
-    def save(self, site: str, data_dir: str, hyper_params: dict):
+    def save(self, site: str, project_dir: str, hyper_params: dict):
         """
         Persist model weights and training metadata.
 
@@ -83,9 +83,9 @@ class BaseModel(nn.Module):
         ----------
         site : str
             Site identifier; determines the target checkpoint directory
-            ``data/sites/{site}/retrieval/``.
-        data_dir : str
-            Base directory containing all openMWR-managed data.
+            ``sites/{site}/retrieval/{name}/``.
+        project_dir : str
+            Working-project root containing data/ and sites/.
         hyper_params : dict
             Hyperparameters used during training (e.g., learning rate, noise
             configuration). Stored so training settings can be inspected or
@@ -105,13 +105,13 @@ class BaseModel(nn.Module):
             'structure': self.structure,
         }
 
-        file = site_subdir(data_dir, site, "retrieval") / f'{self.name}.pth'
+        file = checkpoint_file(project_dir, site, self.name)
         os.makedirs(file.parent, exist_ok=True)
         torch.save(checkpoint, file)
         logger.info(f'saved model under {file}')
     
     @classmethod
-    def load(cls, name, site: str, data_dir: str, file_path=None):
+    def load(cls, name, site: str, project_dir: str, file_path=None):
         """
         Load a saved model checkpoint.
 
@@ -122,11 +122,11 @@ class BaseModel(nn.Module):
             the name stored in the checkpoint; the provided name is enforced.
         site : str
             Site identifier; used to resolve the default checkpoint path.
-        data_dir : str
-            Base directory containing all openMWR-managed data.
+        project_dir : str
+            Working-project root containing data/ and sites/.
         file_path : str, optional
             Explicit path to a ``.pth`` checkpoint. If omitted, the default
-            ``data/sites/{site}/retrieval/{name}.pth`` is used.
+            ``sites/{site}/retrieval/{name}/model.pth`` is used.
 
         Returns
         -------
@@ -140,7 +140,7 @@ class BaseModel(nn.Module):
             If the checkpoint file cannot be located.
         """
         if file_path is None:
-            file_path = site_subdir(data_dir, site, "retrieval") / f'{name}.pth'
+            file_path = checkpoint_file(project_dir, site, name)
 
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file {file_path} does not exist.")
@@ -163,7 +163,7 @@ class BaseModel(nn.Module):
         return model
 
     @classmethod
-    def load_hyper_params(cls, site=None, name=None, data_dir=None, file_path=None):
+    def load_hyper_params(cls, site=None, name=None, project_dir=None, file_path=None):
         """
         Load only the hyperparameter dictionary from a checkpoint.
 
@@ -173,8 +173,8 @@ class BaseModel(nn.Module):
             Site identifier used to resolve the default path.
         name : str, optional
             Model name used to resolve the default path.
-        data_dir : str, optional
-            Base directory containing all openMWR-managed data.
+        project_dir : str, optional
+            Working-project root containing data/ and sites/.
         file_path : str, optional
             Explicit checkpoint path. If provided, ``site`` and ``name`` are
             ignored.
@@ -196,10 +196,10 @@ class BaseModel(nn.Module):
         This is used by :class:`~openMWR.train.TrainingWorkflow` to
         reuse training settings without loading the full model.
         """
-        if (name is None or site is None or data_dir is None) and file_path is None:
-            raise ValueError("Either name, site and data_dir or file_path must be provided.")
+        if (name is None or site is None or project_dir is None) and file_path is None:
+            raise ValueError("Either name, site and project_dir or file_path must be provided.")
         if file_path is None:
-            file_path = site_subdir(data_dir, site, "retrieval") / f'{name}.pth'
+            file_path = checkpoint_file(project_dir, site, name)
 
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file {file_path} does not exist.")

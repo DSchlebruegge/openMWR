@@ -36,8 +36,8 @@ class SkewT(metpy_SkewT):
     date : datetime-like
         Reference datetime for the plot. Used to align retrieval and radiosonde
         times when selecting data from xarray datasets.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     min_pressure : int, optional
         Minimum pressure (hPa) to include on the plot (top of the plot). Default is
         100 hPa.
@@ -56,17 +56,17 @@ class SkewT(metpy_SkewT):
 
     .. code-block:: python
 
-        skew = SkewT(date=date, data_dir='data')
+        skew = SkewT(date=date, project_dir='.')
         skew.plot_radiosonde('03715')
         skew.plot_retrieval(pred, label='NN Retrieval', color='red')
         skew.finalize()
         skew.save('skewt_profile.svg')
     """
 
-    def __init__(self, date, data_dir, min_pressure=100, max_pressure=1000, T_range=70, station_alt=550):
+    def __init__(self, date, project_dir, min_pressure=100, max_pressure=1000, T_range=70, station_alt=550):
 
         self.date = date
-        self.data_dir = data_dir
+        self.project_dir = project_dir
         self.min_pressure = min_pressure
         self.max_pressure = max_pressure
         self.T_range = T_range
@@ -95,14 +95,14 @@ class SkewT(metpy_SkewT):
         """Load radiosonde data for station_id and select the synop nearest to self.date.
 
         Loads the file
-        ``{data_dir}/radiosondes/station_{station_id}/raw_data_{year}.nc``,
+        ``{project_dir}/data/radiosondes/station_{station_id}/raw_data_{year}.nc``,
         restricts synops to the same calendar date as self.date, selects the nearest
         synop, drops NaNs along "meastime", swaps dims to "height", and removes
         duplicate heights. Raises ValueError if no synops are found for the date.
         """
         
 
-        station_dir = radiosonde_station_dir(self.data_dir, station_id)
+        station_dir = radiosonde_station_dir(self.project_dir, station_id)
         raso_data = xr.load_dataset(station_dir / f'raw_data_{self.date.year}.nc')
 
         synops_on_date = raso_data.synop.where(raso_data.synop.dt.date == self.date.date(), drop=True)

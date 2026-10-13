@@ -10,6 +10,11 @@ algorithms to measurements operationally.
 
 For a full user guide, please refer to the [Documentation](https://dschlebruegge.github.io/openMWR/).
 
+Working projects contain `data/` for datasets and `sites/` for site TOML settings
+and named retrievals. Affected Python APIs take this root as `project_dir`.
+The scripts under `bin/` are Munich-specific examples: run them with your working
+project as the current directory and adapt their site/model choices as needed.
+
 
 ## Installation
 

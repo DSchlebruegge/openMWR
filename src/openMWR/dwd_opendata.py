@@ -191,7 +191,7 @@ def get_df_stations(log: bool = False) -> pd.DataFrame:
     return df_stations
 
 
-def download_radiosondes(station_id: str, data_dir: str, start_year = 1990, end_year = datetime.now().year) -> None:
+def download_radiosondes(station_id: str, project_dir: str, start_year = 1990, end_year = datetime.now().year) -> None:
     """
     Downloads and saves radiosonde data for a given station across all available years.
 
@@ -207,8 +207,8 @@ def download_radiosondes(station_id: str, data_dir: str, start_year = 1990, end_
     ----------
         station_id: str 
             The identifier of the station for which to download radiosonde data.
-        data_dir: str
-            Base directory containing all openMWR-managed data.
+        project_dir: str
+            Working-project root containing data/ and sites/.
         start_year: int, optional
             The starting year for downloading data (default is 1990).
         end_year: int, optional
@@ -219,7 +219,7 @@ def download_radiosondes(station_id: str, data_dir: str, start_year = 1990, end_
 
     df_stations = get_df_stations(log=False)
 
-    station_dir = radiosonde_station_dir(data_dir, station_id)
+    station_dir = radiosonde_station_dir(project_dir, station_id)
     os.makedirs(station_dir, exist_ok=True)
 
     for year in range(start_year, end_year + 1):
@@ -227,14 +227,14 @@ def download_radiosondes(station_id: str, data_dir: str, start_year = 1990, end_
         try:
             ds_year = _download_radiosondes_year(station_id, year, df_stations)
 
-            file = radiosonde_year_file(data_dir, station_id, year)
+            file = radiosonde_year_file(project_dir, station_id, year)
             ds_year.to_netcdf(file)
             logger.info(f"Downloaded data for {year} and saved to {file}.")
 
         except FileNotFoundError as e:
             logger.info(f"Skipping {year}: {e}")
 
-def update_radiosonde_data(station_id: str, year: int, data_dir: str):
+def update_radiosonde_data(station_id: str, year: int, project_dir: str):
     """
     Refresh radiosonde data for a specific station and year.
 
@@ -244,8 +244,8 @@ def update_radiosonde_data(station_id: str, year: int, data_dir: str):
         Identifier of the radiosonde station.
     year : int
         Year to update.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
 
     Returns
     -------
@@ -260,7 +260,7 @@ def update_radiosonde_data(station_id: str, year: int, data_dir: str):
 
     logger.info(f"Updating radiosonde data for station {station_id} for year {year}")
 
-    file = radiosonde_year_file(data_dir, station_id, year)
+    file = radiosonde_year_file(project_dir, station_id, year)
 
     if os.path.exists(file):
         ds_old = xr.load_dataset(file)

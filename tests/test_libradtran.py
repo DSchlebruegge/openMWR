@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -11,6 +10,7 @@ if str(SRC) not in sys.path:
 
 from openMWR.libRadtran import get_libradtran_paths, libRadtran
 from openMWR.run_RT import calculate_IR_band_TB
+from openMWR.site import create_site
 
 
 @pytest.fixture(autouse=True)
@@ -145,12 +145,10 @@ def test_relative_data_path_keeps_uvspec_working_directory(tmp_path, monkeypatch
 def test_ir_uses_discovered_atmosphere(tmp_path, monkeypatch, installation, gen, band, angles):
     executable, data, recorded = installation(tmp_path / "install", "share/libRadtran/data")
     monkeypatch.setenv("PATH", str(executable.parent))
-    data_dir = tmp_path / "retrieval_data"
-    config = data_dir / "sites" / "test" / "config.json"
-    config.parent.mkdir(parents=True)
-    config.write_text(json.dumps({"gen": gen}))
+    project_dir = tmp_path / "retrieval_project"
+    create_site("test", project_dir, gen=gen)
     result = calculate_IR_band_TB(
-        "test", data_dir,
+        "test", project_dir,
         z_km=[0.0, 1.0], T_K=[290.0, 280.0], rh_100=[50.0, 50.0],
         p_hPa=[1000.0, 900.0], lwc_gpm3=[0.0, 0.0],
         effective_droplet_radius_mum=[10.0, 10.0], ang=np.array(angles),
@@ -160,4 +158,4 @@ def test_ir_uses_discovered_atmosphere(tmp_path, monkeypatch, installation, gen,
     assert f"atmosphere_file {data / 'atmmod/afglus.dat'}\n" in text
     assert f"data_files_path {data}\n" in text
     assert f"wavelength {band}\n" in text
-    assert not list((data_dir / "libRadtran").iterdir())
+    assert not list((project_dir / "data/libRadtran").iterdir())

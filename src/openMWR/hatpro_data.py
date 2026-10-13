@@ -15,7 +15,7 @@ from openMWR.parallel import run_pool_date_range
 from openMWR.xr_utils import change_coord_of_ds, swap_dims_and_rename, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
 from openMWR.site import get_config_parameter
-from openMWR.paths import site_subdir
+from openMWR.paths import site_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ def _get_naming_convention(ds_BRT: xr.Dataset) -> tuple[dict[str, str], dict[str
 def import_hatpro_data(
     date: Union[datetime, pd.Timestamp],
     site: str,
-    data_dir: str,
+    project_dir: str,
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
@@ -190,8 +190,8 @@ def import_hatpro_data(
         `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>.NC`.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     mean_one_min : bool, optional
         If True, average all variables to 1-minute resolution.
     import_retrieval_data : bool, optional
@@ -221,7 +221,7 @@ def import_hatpro_data(
     - IR brightness temperatures are converted to Kelvin.
     - A standard frequency grid is enforced if unexpected values are found.
     """
-    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', data_dir)
+    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
 
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
@@ -328,7 +328,7 @@ def import_hatpro_data(
 def import_hatpro_data_bls(
     date: Union[datetime, pd.Timestamp],
     site: str,
-    data_dir: str,
+    project_dir: str,
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
@@ -343,8 +343,8 @@ def import_hatpro_data_bls(
         `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>.NC`.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     mean_one_min : bool, optional
         If True, average surface meteorology to 1-minute resolution.
     import_retrieval_data : bool, optional
@@ -373,7 +373,7 @@ def import_hatpro_data_bls(
     - The smallest elevation angle (0 deg) is dropped after sorting.
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
-    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', data_dir)
+    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
 
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
@@ -474,7 +474,7 @@ def _create_hatpro_day_file(
     bls: bool,
     bls_attribute: str,
     site: str,
-    data_dir: str,
+    project_dir: str,
     hatpro_out_dir: Union[str, os.PathLike],
     import_retrieval_data: bool,
 ) -> None:
@@ -486,7 +486,7 @@ def _create_hatpro_day_file(
             import_hatpro_data_bls(
                 date,
                 site,
-                data_dir,
+                project_dir,
                 import_retrieval_data=import_retrieval_data,
                 out_file=daily_file,
             )
@@ -494,7 +494,7 @@ def _create_hatpro_day_file(
             import_hatpro_data(
                 date,
                 site,
-                data_dir,
+                project_dir,
                 mean_one_min=True,
                 import_retrieval_data=import_retrieval_data,
                 out_file=daily_file,
@@ -513,7 +513,7 @@ def _create_hatpro_day_file(
 
 def create_hatpro_dataset(
     site: str,
-    data_dir: str,
+    project_dir: str,
     import_retrieval_data: Optional[bool] = None,
     num_of_processes: int = 1,
     update_only: bool = False,
@@ -525,8 +525,8 @@ def create_hatpro_dataset(
     ----------
     site : str
         Site name used for configuration and output paths.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     import_retrieval_data : bool, optional
         If None, the site config parameter `rpg_retrieval_exists` is used.
         When True, RPG retrieval products are included in the output.
@@ -551,11 +551,11 @@ def create_hatpro_dataset(
     """
 
     if import_retrieval_data is None:
-        import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', data_dir)
+        import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', project_dir)
 
-    mwr_measurement_start_date = get_config_parameter(site, 'mwr_measurement_start_date', data_dir)
+    mwr_measurement_start_date = get_config_parameter(site, 'mwr_measurement_start_date', project_dir)
     dr_full = pd.date_range(mwr_measurement_start_date, pd.Timestamp.now().normalize())
-    hatpro_out_dir = site_subdir(data_dir, site, "hatpro")
+    hatpro_out_dir = site_data_dir(project_dir, site, "hatpro")
 
     for bls in [False, True]:
 
@@ -600,7 +600,7 @@ def create_hatpro_dataset(
                         bls,
                         bls_attribute,
                         site,
-                        data_dir,
+                        project_dir,
                         hatpro_out_dir,
                         import_retrieval_data,
                     )
@@ -612,7 +612,7 @@ def create_hatpro_dataset(
                     bls,
                     bls_attribute,
                     site,
-                    data_dir,
+                    project_dir,
                     hatpro_out_dir,
                     import_retrieval_data,
                 )

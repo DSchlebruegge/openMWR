@@ -1,4 +1,6 @@
-#!/home/m/met-hatpro/scripts/mwr_retrieval/venv/bin/python
+#!/usr/bin/env python3
+
+from pathlib import Path
 
 import pandas as pd
 from datetime import datetime, timedelta
@@ -15,12 +17,12 @@ from openMWR.utils import setup_logging
 
 #logger = setup_daily_logger()
 logger = setup_logging()
-DATA_DIR = "../data"
+PROJECT_DIR = Path.cwd()
 
 def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
     logger.info(f"Run retrival and plot for the {date.strftime('%Y-%m-%d')} for {site}")
 
-    plot_dir = get_config_parameter(site, 'plot_dir', DATA_DIR)
+    plot_dir = get_config_parameter(site, 'plot_dir', PROJECT_DIR)
 
     plot_dir_month = plot_dir + '/' + date.strftime('%Y/%m/')
     if not os.path.exists(plot_dir_month):
@@ -36,14 +38,14 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
         NN_model_name = 'NN_opt_era5_biased_05'
         MLR_model_name = 'MLR'
 
-    model_list = [Model.load(NN_model_name, site, DATA_DIR), Model.load(MLR_model_name, site, DATA_DIR)]
+    model_list = [Model.load(NN_model_name, site, PROJECT_DIR), Model.load(MLR_model_name, site, PROJECT_DIR)]
 
     if site == 'zugspitze':
-        model_list.append(Model.load('NN_opt_era5', site, DATA_DIR))
+        model_list.append(Model.load('NN_opt_era5', site, PROJECT_DIR))
 
 
     try:
-        pred, ds_hatpro = import_data_and_run_retrieval(date, site, DATA_DIR, model_list, import_retrieval_data=plot_rbg_retrieval)
+        pred, ds_hatpro = import_data_and_run_retrieval(date, site, PROJECT_DIR, model_list, import_retrieval_data=plot_rbg_retrieval)
     except FileNotFoundError as e:
         logger.error(e)
         logger.debug(e, exc_info=True)
@@ -53,7 +55,7 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
         logger.debug(e, exc_info=True)
         return None
     
-    retrieval_output_dir = get_config_parameter(site, 'retrieval_output_dir', DATA_DIR)
+    retrieval_output_dir = get_config_parameter(site, 'retrieval_output_dir', PROJECT_DIR)
     ret_dir_day = retrieval_output_dir + f'/{date.strftime("%Y/%m/")}'
 
     os.makedirs(ret_dir_day, exist_ok=True)
@@ -69,10 +71,10 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
         else:
             NN_BLS_name = 'NN_BLS_opt_var_ang_lin'
 
-        model_list_bls = [Model.load(NN_BLS_name, site, DATA_DIR)]
+        model_list_bls = [Model.load(NN_BLS_name, site, PROJECT_DIR)]
 
         try:
-            pred_bls, ds_hatpro_bls = import_data_and_run_retrieval(date, site, DATA_DIR, model_list_bls, import_retrieval_data=plot_rbg_retrieval, bls=True)
+            pred_bls, ds_hatpro_bls = import_data_and_run_retrieval(date, site, PROJECT_DIR, model_list_bls, import_retrieval_data=plot_rbg_retrieval, bls=True)
         except FileNotFoundError as e:
             logger.error(e)
             logger.debug(e, exc_info=True)
@@ -111,7 +113,7 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
         min_pressure_la=500
         max_pressure_la=1000
 
-    station_alt = get_config_parameter(site, 'mwr_height', DATA_DIR)
+    station_alt = get_config_parameter(site, 'mwr_height', PROJECT_DIR)
 
     if date == datetime.now(tz=pytz.utc).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None):
         skew_T_date = pd.to_datetime(pred.time.values[-1])
@@ -124,7 +126,7 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
 
 
     # Full atmosphere
-    skew = SkewT(skew_T_date, DATA_DIR, station_alt=station_alt)
+    skew = SkewT(skew_T_date, PROJECT_DIR, station_alt=station_alt)
     if plot_radiosonde:
         skew.plot_radiosonde(raso_station_id)
     if plot_rbg_retrieval:
@@ -134,7 +136,7 @@ def run_retrival_and_plot(date, site, plt_bls=True, plot_rbg_retrieval=True):
     skew.save(file_name + 'radiosonde.svg')
 
     #Lower atmosphere
-    skew = SkewT(skew_T_date, DATA_DIR, station_alt=station_alt, min_pressure=min_pressure_la, max_pressure=max_pressure_la, T_range=40)
+    skew = SkewT(skew_T_date, PROJECT_DIR, station_alt=station_alt, min_pressure=min_pressure_la, max_pressure=max_pressure_la, T_range=40)
     if plot_radiosonde:
         skew.plot_radiosonde(raso_station_id)
     if plot_rbg_retrieval:
@@ -200,15 +202,15 @@ def run_today_and_update(site, raso_station_id, plt_bls=True, plot_rbg_retrieval
         years = [now.year - 1, now.year] if (now.month == 1 and now.day < 4) or (now.month <= 3 and now.day == 1) else [now.year]
 
         for year in years:
-            added_synop = update_radiosonde_data(raso_station_id, year, DATA_DIR)
+            added_synop = update_radiosonde_data(raso_station_id, year, PROJECT_DIR)
             new_dates = pd.Series(added_synop).dt.normalize().drop_duplicates()
 
             for date in new_dates:
                 run_retrival_and_plot(date, site, plt_bls=plt_bls, plot_rbg_retrieval=plot_rbg_retrieval)
 
 def main():
-    #Change to script directory
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    # Resolve local paths from the caller's working project.
+    os.chdir(PROJECT_DIR)
 
     args=sys.argv
 

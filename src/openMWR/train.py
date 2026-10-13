@@ -18,7 +18,7 @@ from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
 from openMWR.run import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel
-from openMWR.paths import data_root, site_root, site_subdir
+from openMWR.paths import site_root, site_data_dir, retrieval_dir
 
 #__all__ = ["separate_training_data", "TrainingWorkflow"]
 
@@ -39,8 +39,8 @@ class TrainingWorkflow:
         Site identifier for which the model is trained.
     device : str
         Device identifier (e.g., "cpu" or "cuda") used for training.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
 
     Attributes
     ----------
@@ -50,8 +50,8 @@ class TrainingWorkflow:
         Site for which the training data is loaded.
     device : str
         Device used for training computations.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     hyper_params : dict
         Dictionary of training and input-noise hyperparameters.
     training_data : xr.Dataset
@@ -72,7 +72,7 @@ class TrainingWorkflow:
         from openMWR.models import Model
         from openMWR.train import TrainingWorkflow
         model = Model('NN_1', std_heights, std_freqs)
-        workflow = TrainingWorkflow(model, site='munich', device='cuda', data_dir='data')
+        workflow = TrainingWorkflow(model, site='munich', device='cuda', project_dir='.')
         workflow.load_training_data(['03715'], end_date_training='2024-10-31')
 
     Training a model with default hyperparameters and input noise:
@@ -118,11 +118,11 @@ class TrainingWorkflow:
         workflow.train()
 
     """
-    def __init__(self, model: BaseModel, site: str, device: str, data_dir: str):
+    def __init__(self, model: BaseModel, site: str, device: str, project_dir: str):
         self.model = model
         self.site = site
         self.device = device
-        self.data_dir = data_dir
+        self.project_dir = project_dir
 
         self.hyper_params = {}
 
@@ -159,8 +159,8 @@ class TrainingWorkflow:
             'station_ids': [s for s in sources if s != 'era5']
         })
 
-        self.training_data = load_combined_dataset(self.site, self.data_dir, 'training_data', sources, file_extension=file_extension)
-        self.validation_data = load_combined_dataset(self.site, self.data_dir, 'validation_data', sources, file_extension=file_extension)
+        self.training_data = load_combined_dataset(self.site, self.project_dir, 'training_data', sources, file_extension=file_extension)
+        self.validation_data = load_combined_dataset(self.site, self.project_dir, 'validation_data', sources, file_extension=file_extension)
 
         if end_date_training is not None:
             # Filter the training data to only include data before the end date
@@ -258,7 +258,7 @@ class TrainingWorkflow:
         if site_old_model is None:
             site_old_model = self.site
 
-        hyper_params_old = Model.load_hyper_params(site=site_old_model, name=old_model_name, data_dir=self.data_dir)
+        hyper_params_old = Model.load_hyper_params(site=site_old_model, name=old_model_name, project_dir=self.project_dir)
 
         self.hyper_params.update(hyper_params_old)
 
@@ -277,7 +277,7 @@ class TrainingWorkflow:
         -----
         Loads best parameters from the Optuna study database.
         """
-        study_file = site_root(self.data_dir, study_site) / "optimization_studies.db"
+        study_file = site_root(self.project_dir, study_site) / "optimization_studies.db"
         study = optuna.load_study(study_name=old_model_name, storage=f"sqlite:///{study_file}")
 
         self.hyper_params.update(study.best_params)
@@ -381,7 +381,7 @@ class TrainingWorkflow:
 
         self.omb = Omb_Analysis(
             self.site,
-            self.data_dir,
+            self.project_dir,
             data_source=data_source,
             station_ids_for_analysis=station_ids_for_analysis,
             load_existing_analysis_dataset=True,
@@ -621,7 +621,7 @@ class TrainingWorkflow:
             plt.show()
 
         else:
-            plot_dir = data_root(self.data_dir) / 'plots'
+            plot_dir = retrieval_dir(self.project_dir, self.site, self.model.name)
             if not os.path.exists(plot_dir):
                 os.makedirs(plot_dir)
 
@@ -841,7 +841,7 @@ class TrainingWorkflow:
             self.model = self._training_loop(self.model, x_training, y_training, x_val, y_val, self.hyper_params, device=self.device, quiet=False)
 
         # Save model
-        self.model.save(self.site, self.data_dir, self.hyper_params)
+        self.model.save(self.site, self.project_dir, self.hyper_params)
 
     def _external_stop_callback(self, study, trial):
         """
@@ -920,7 +920,7 @@ class TrainingWorkflow:
         - Each trial trains a model using suggested parameters.
         - Evaluation is performed on real atmospheric profiles.
         - Best models are saved automatically.
-        - Study is stored under `data/sites/{site}/optimization_studies.db`.
+        - Study is stored under `sites/{site}/optimization_studies.db`.
         """
         if n_trials is None:
             n_trials = 300 if self.model.is_bls_model else 200
@@ -932,7 +932,7 @@ class TrainingWorkflow:
         #Real test data
         file_extension = '_bls' if self.model.is_bls_model else ''
 
-        analysis_file = site_subdir(self.data_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
+        analysis_file = site_data_dir(self.project_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
         an_data = xr.load_dataset(analysis_file)
 
         # Only select days with day smaller than 20. The other days are used for model validation.
@@ -1001,11 +1001,11 @@ class TrainingWorkflow:
                 best_value = float('inf')   
 
             if total_raso_loss < best_value:
-                model_trial.save(self.site, self.data_dir, hyper_params_trial)
+                model_trial.save(self.site, self.project_dir, hyper_params_trial)
                 
             return total_raso_loss
 
-        study_file = site_root(self.data_dir, self.site) / "optimization_studies.db"
+        study_file = site_root(self.project_dir, self.site) / "optimization_studies.db"
         study = optuna.create_study(study_name=self.model.name, storage=f"sqlite:///{study_file}", load_if_exists=True, direction="minimize")
 
         self.logger.info('Starting hyperparameter optimization with Optuna...')
@@ -1016,7 +1016,7 @@ class TrainingWorkflow:
         self.logger.info(f'Best study params: {study.best_params}')
 
 
-def separate_training_data(site: str, source: Union[str, List[str]], data_dir: str, test_fraction: float = 0.1, val_fraction: float = 0.1, file_extension: str = ''):
+def separate_training_data(site: str, source: Union[str, List[str]], project_dir: str, test_fraction: float = 0.1, val_fraction: float = 0.1, file_extension: str = ''):
     """
     Split forward-calculation data into training, validation, and test sets.
 
@@ -1027,8 +1027,8 @@ def separate_training_data(site: str, source: Union[str, List[str]], data_dir: s
     source : str or list of str
         Either ``'era5'`` or a radiosonde station ID; lists are processed
         recursively per entry.
-    data_dir : str
-        Base directory containing all openMWR-managed data.
+    project_dir : str
+        Working-project root containing data/ and sites/.
     test_fraction : float, default=0.1
         Fraction of time indices assigned to the test set.
     val_fraction : float, default=0.1
@@ -1052,16 +1052,16 @@ def separate_training_data(site: str, source: Union[str, List[str]], data_dir: s
 
     if isinstance(source, list):
         for s in source:
-            separate_training_data(site, s, data_dir, test_fraction=test_fraction, val_fraction=val_fraction, file_extension=file_extension)
+            separate_training_data(site, s, project_dir, test_fraction=test_fraction, val_fraction=val_fraction, file_extension=file_extension)
 
     # Load the dataset with RT
     if file_extension != '':
         file_extension = '_' + file_extension
 
     if source == 'era5':
-        file = site_subdir(data_dir, site, "era5") / f"forward_calc_era5{file_extension}.nc"
+        file = site_data_dir(project_dir, site, "era5") / f"forward_calc_era5{file_extension}.nc"
     else:
-        file = site_subdir(data_dir, site, "radiosonde") / f"radiosonde_data_with_RT_{source}{file_extension}.nc"
+        file = site_data_dir(project_dir, site, "radiosonde") / f"radiosonde_data_with_RT_{source}{file_extension}.nc"
 
     if not os.path.exists(file):
         raise FileNotFoundError(f"File {file} does not exist. Please create it with mwr_retrieval.run_RT.run_RT")
@@ -1094,7 +1094,7 @@ def separate_training_data(site: str, source: Union[str, List[str]], data_dir: s
     validation_data = ds.sel(time=val_time_indices)
 
     # Save the datasets to NetCDF files
-    dir = site_subdir(data_dir, site, "training")
+    dir = site_data_dir(project_dir, site, "training")
 
     os.makedirs(dir, exist_ok=True)
 
