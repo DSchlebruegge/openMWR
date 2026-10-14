@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title</title>
+  <style>
+    .retrieval-report { font: 16px/1.55 system-ui, sans-serif; color: #24323b; background: #fff; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    .retrieval-report h1, .retrieval-report h2, .retrieval-report h3 { line-height: 1.25; }
+    .retrieval-report section { border-top: 1px solid #d8e0e5; margin-top: 2rem; padding-top: 1rem; scroll-margin-top: 1rem; }
+    .retrieval-report nav { background: #f2f6f8; padding: 1rem 1.5rem; border-radius: .5rem; }
+    .retrieval-report nav ul { columns: 2; }
+    .retrieval-report a { color: #17627a; }
+    .retrieval-report table { display: block; overflow-x: auto; border-collapse: collapse; margin: 1rem 0; font-size: .9rem; }
+    .retrieval-report th, .retrieval-report td { padding: .45rem .7rem; border: 1px solid #d8e0e5; text-align: right; white-space: nowrap; }
+    .retrieval-report th { background: #f2f6f8; }
+    .retrieval-report figure { margin: 1.5rem 0; }
+    .retrieval-report img { max-width: 100%; height: auto; }
+    .retrieval-report figcaption, .retrieval-report .samples { color: #526775; font-size: .9rem; }
+    .retrieval-report details { margin: 1rem 0; }
+    .retrieval-report summary { cursor: pointer; }
+    .retrieval-report pre { overflow-x: auto; background: #f2f6f8; padding: 1rem; font-size: .8rem; }
+    @media (max-width: 650px) { .retrieval-report nav ul { columns: 1; } }
+    @media print { .retrieval-report nav { display: none; } .retrieval-report figure { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <main class="retrieval-report">
+    <header>
+      <h1>$title</h1>
+      <p>Reference: $source · Started: $started</p>
+      <p>Observations: $filters. $prediction_scope Test stations: $stations.</p>
+    </header>
+    $content
+  </main>
+</body>
+</html>

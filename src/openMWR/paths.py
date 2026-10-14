@@ -42,6 +42,11 @@ def checkpoint_file(project_dir: PathLike, site: str, name: str) -> Path:
     return retrieval_dir(project_dir, site, name) / "model.pth"
 
 
+def optimization_file(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the Optuna database owned by one named retrieval."""
+    return retrieval_dir(project_dir, site, name) / "optimization.db"
+
+
 def radiosonde_station_dir(project_dir: PathLike, station_id: str) -> Path:
     """Return the directory containing raw files for one station."""
     return data_root(project_dir) / "radiosondes" / f"station_{station_id}"

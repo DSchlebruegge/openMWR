@@ -51,10 +51,12 @@ class Omb_Analysis:
         self.project_dir = project_dir
         self.data_source = data_source
         self.station_ids_for_analysis = station_ids_for_analysis
-        self.station_id_for_analysis = station_ids_for_analysis[0] # Currently only one station is supported for the analysis
-
         if data_source not in ['radiosonde', 'era5']:
             raise ValueError(f"Data source '{data_source}' not supported. Choose either 'radiosonde' or 'era5'.")
+        if data_source == 'radiosonde' and not station_ids_for_analysis:
+            raise ValueError('Radiosonde OMB analysis requires at least one station ID.')
+        # ERA5 analysis has no radiosonde station selection.
+        self.station_id_for_analysis = station_ids_for_analysis[0] if station_ids_for_analysis else None
 
         if load_existing_analysis_dataset:
             if file_extension != '':

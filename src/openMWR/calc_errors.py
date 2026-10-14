@@ -73,7 +73,7 @@ def _get_error_func(name: str):
         raise ValueError(f"Unknown error type: {name}")
     return fn
 
-def calculate_errors(ds1, ds2, error_types = ['ME', 'MAE', 'RMSE']):
+def calculate_errors(ds1, ds2, error_types = ['ME', 'MAE', 'RMSE'], variables=None):
     """
     Compute error metrics between two xarray datasets.
 
@@ -87,6 +87,9 @@ def calculate_errors(ds1, ds2, error_types = ['ME', 'MAE', 'RMSE']):
         List of error metric names to compute. Each name must correspond
         to an existing ``cal_<name>`` function. Default is ['ME', 'MAE', 'RMSE'].
         Options include: 'ME', 'MRE', 'MAE', 'MARE', 'RMSE'.
+    variables : sequence of str, optional
+        Explicit variables to evaluate, including TB for spectral models. When
+        omitted, retains the usual exclusion of instrument input variables.
 
     Returns
     -------
@@ -116,7 +119,8 @@ def calculate_errors(ds1, ds2, error_types = ['ME', 'MAE', 'RMSE']):
     common_vars = list(set(ds1.data_vars).intersection(ds2.data_vars))
     
     input_vars = ['input', 'TB', 'TB_IR', 'surface_T', 'surface_p', 'surface_rh', 'doy_cos', 'doy_sin']
-    common_vars = [var for var in common_vars if var not in input_vars]
+    common_vars = ([var for var in common_vars if var not in input_vars]
+                   if variables is None else list(variables))
 
 
     dims_to_mean = ['time', 'station'] if ('station' in ds1.dims) or ('station' in ds2.dims) else ['time']

@@ -9,6 +9,37 @@ from openMWR.models import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+def validate_device(device):
+    """Validate a PyTorch device without allocating tensors."""
+    selected = torch.device(device)
+    if selected.type == 'cuda' and (not torch.cuda.is_available() or (selected.index is not None and selected.index >= torch.cuda.device_count())):
+        raise ValueError(f'Requested device {device!r} is unavailable.')
+
+
+def validate_model_data(specification, data, label='data'):
+    """Check variables, coordinates and complete samples without building tensors."""
+    if not data.sizes.get('time', 0):
+        raise ValueError(f'{label} contains no time samples after filtering.')
+    for coordinate in ('time', 'height', 'frq', 'ang'):
+        if coordinate in data.indexes and not data.indexes[coordinate].is_unique:
+            raise ValueError(f'{label} has duplicate {coordinate} coordinates.')
+    valid = None
+    for name, expected in specification.items():
+        if name not in data:
+            raise ValueError(f'{label} is missing variable {name!r}.')
+        values = data[name]
+        if set(values.dims) - {'station', 'time'} != set(expected.dims):
+            raise ValueError(f'{label}.{name} dimensions {values.dims} do not match model dimensions {expected.dims}.')
+        try:
+            values = values.sel(**expected.coords)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f'{label}.{name} coordinates do not match the model: {exc}') from exc
+        finite = np.isfinite(values).all(list(expected.dims))
+        valid = finite if valid is None else valid & finite
+    if valid is None or not bool(valid.any()):
+        raise ValueError(f'{label} contains no complete finite samples for this model.')
+
 def create_tensor_from_ds(model_ds: xr.Dataset, data_ds: xr.Dataset, device: str, dim_0: str = 'station_time') -> torch.Tensor:
     """
     Create a PyTorch tensor by aligning and concatenating variables from two xarray Datasets.
@@ -287,7 +318,7 @@ def run_model(
     pred_de = denormalize(pred_nor, model)
 
     if include_input_vars:
-        pred_de = xr.merge([ds_sel, pred_de], join='outer', compat='no_conflicts')
+        pred_de = xr.merge([ds_sel.drop_vars(model.output_vars, errors='ignore'), pred_de], join='outer', compat='no_conflicts')
     
     return pred_de
 

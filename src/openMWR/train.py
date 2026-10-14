@@ -8,6 +8,7 @@ import copy
 import os
 import optuna
 import logging
+from functools import wraps
 from sklearn.linear_model import LinearRegression
 from collections import namedtuple
 
@@ -15,10 +16,26 @@ from typing import Union, List
 
 from openMWR.utils import progress_bar, is_called_from_notebook, progress_log
 from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
-from openMWR.run import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats
+from openMWR.run import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data, validate_device
 from openMWR.calc_errors import cal_RMSE
-from openMWR.models import Model, BaseModel
-from openMWR.paths import site_root, site_data_dir, retrieval_dir
+from openMWR.models import Model, BaseModel, load_model
+from openMWR.paths import site_data_dir, retrieval_dir, checkpoint_file, optimization_file
+from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now
+
+
+def _logged_run(action):
+    def decorate(method):
+        @wraps(method)
+        def run(self, *args, **kwargs):
+            with retrieval_log(self.project_dir, self.site, self.model.name, action):
+                self._run_record = {'action': action, 'started_utc': utc_now(),
+                                    'software': software_identity(), 'device': self.device}
+                try:
+                    return method(self, *args, **kwargs)
+                finally:
+                    self._run_record = None
+        return run
+    return decorate
 
 #__all__ = ["separate_training_data", "TrainingWorkflow"]
 
@@ -125,12 +142,179 @@ class TrainingWorkflow:
         self.project_dir = project_dir
 
         self.hyper_params = {}
+        self.recipe = None
 
         self.logger = logging.getLogger(__name__)
 
         self.suggest_int = namedtuple('suggest_int', ['low', 'high', 'step', 'log'], defaults=[None, None, 1, False])
         self.suggest_float = namedtuple('suggest_float', ['low', 'high', 'step', 'log'], defaults=[None, None, None, False])
         self.suggest_categorical = namedtuple('suggest_categorical', ['choices'])
+
+    @classmethod
+    def from_recipe(cls, project_dir, site, retrieval, device='cpu'):
+        """Load a recipe and configure a workflow; no training or download runs.
+
+        The returned datasets and settings remain available for custom Python
+        processing before calling train() or optimize().
+        """
+        from openMWR.recipes import RetrievalRecipe, _known
+
+        recipe = RetrievalRecipe.load(project_dir, site, retrieval)
+        workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
+        workflow.recipe = recipe
+        validate_device(workflow.device)
+        workflow.add_standard_training_hyper_params(**recipe.training_params(workflow))
+        noise_settings = recipe.section('input_noise')
+        method = noise_settings['method']
+        noise = recipe.input_noise_params(workflow)
+        workflow.add_input_noise_params(**noise)
+        allowed_noise = {key.removeprefix('input_noise_') for key in workflow.hyper_params if key.startswith('input_noise_')}
+        _known(noise, allowed_noise, 'input_noise')
+        recipe.require_data(('training_data', 'validation_data'))
+        data = recipe.section('data')
+        workflow.load_training_data(sources=data['sources'],
+                                    end_date_training=data.get('end_date_training'),
+                                    file_extension=data.get('variant', ''))
+        bias = recipe.section('bias_correction')
+        if bias:
+            sources = bias.get('sources', workflow.hyper_params['station_ids'])
+            workflow.make_omb_analysis(sources, data_source=bias.get('data_source', 'radiosonde'))
+            workflow.make_bias_correction(**{key: bias[key] for key in ('specific_freqs', 'factor') if key in bias})
+        if method == 'omb':
+            source = noise_settings.get('data_source', 'radiosonde')
+            sources = noise_settings.get('sources', workflow.hyper_params['station_ids'])
+            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources:
+                workflow.make_omb_analysis(sources, data_source=source)
+            workflow.select_omb_input_noise_hyper_params(factor=noise_settings.get('factor'))
+            workflow.hyper_params.update({f'input_noise_{key}': value for key, value in noise.items()})
+        workflow.validate()
+        return workflow
+
+    @property
+    def requires_optimization(self):
+        """Whether the current parameters contain unresolved search definitions."""
+        suggestions = (self.suggest_int, self.suggest_float, self.suggest_categorical)
+        return any(isinstance(value, suggestions) for value in self.hyper_params.values())
+
+    def validate(self):
+        """Check current Python settings and prepared datasets before computation."""
+        from openMWR.recipes import validate_training_settings, validate_parameter_usage
+
+        validate_device(self.device)
+        required = ('epochs', 'batch_size', 'lr_height', 'lr_low', 'epoch_max_lr',
+                    'loss_fn', 'weight_decay', 'repeats_for_linear_regression')
+        missing = set(required) - self.hyper_params.keys()
+        if missing:
+            raise ValueError(f"Missing training settings: {', '.join(sorted(missing))}. Call add_standard_training_hyper_params() first.")
+        searches = {key: value for key, value in self.hyper_params.items()
+                    if isinstance(value, (self.suggest_int, self.suggest_float, self.suggest_categorical))}
+        validate_parameter_usage(self.model.is_MLR, searches)
+        for key, value in self.hyper_params.items():
+            candidates = (value.choices if isinstance(value, self.suggest_categorical)
+                          else (value.low, value.high) if isinstance(value, (self.suggest_int, self.suggest_float))
+                          else (value,))
+            for candidate in candidates:
+                validate_training_settings({key: candidate})
+        noise_keys = [f'input_noise_TB_{f}' for f in self.model.freqs]
+        noise_keys += [f'input_noise_{v}' for v in self.model.input_vars if v != 'TB']
+        if self.model.is_bls_model:
+            if self.model.vary_input_noise_with_angle:
+                noise_keys += [f'input_noise_TB_{a}' for a in self.model.angles]
+            elif self.model.vary_input_noise_with_angle_linear:
+                noise_keys.append('input_noise_TB_angle_factor')
+        missing_noise = set(noise_keys) - self.hyper_params.keys()
+        if missing_noise:
+            raise ValueError(f"Missing input noise settings: {', '.join(sorted(missing_noise))}. Call add_input_noise_params() first.")
+        expected = xr.merge([self.model.input, self.model.output], compat='override')
+        missing_norm = set(expected.data_vars) - self.model.norm_functions.keys()
+        if missing_norm:
+            raise ValueError(f"Missing normalization functions: {', '.join(sorted(missing_norm))}.")
+        for label in ('training_data', 'validation_data'):
+            if not hasattr(self, label):
+                raise ValueError('Load training and validation data before training.')
+            data = getattr(self, label)
+            validate_model_data(expected, data, label)
+        return self
+
+    def _save_model(self, model, hyper_params, **details):
+        metadata = {**self._run_record, 'saved_utc': utc_now(),
+                    'site': self.site, 'retrieval': model.name,
+                    'model_class': type(model).__name__,
+                    'effective': plain_value({'model': model.checkpoint_structure(), 'hyper_params': hyper_params}),
+                    **details}
+        if self.recipe is not None:
+            metadata['recipe'] = plain_value(self.recipe.values)
+        model.save(self.site, self.project_dir, hyper_params, training_metadata=metadata)
+
+    def _prepare_run(self, run_mode, optimization=False):
+        """Apply the selected retrieval's fresh/continue choice after validation."""
+        from openMWR.recipes import _component
+
+        _component(self.site, 'site')
+        _component(self.model.name, 'retrieval')
+        if run_mode not in (None, 'fresh', 'continue'):
+            raise ValueError("run_mode must be 'fresh' or 'continue'.")
+        if run_mode == 'continue' and not optimization:
+            raise ValueError('Continuing is available only for optimization. Use --fresh or run_mode="fresh" to train one new model.')
+        study_path = optimization_file(self.project_dir, self.site, self.model.name)
+        storage = f'sqlite:///{study_path}'
+        has_study = run_mode != 'fresh' and study_path.is_file() and self.model.name in optuna.study.get_all_study_names(storage=storage)
+        path = checkpoint_file(self.project_dir, self.site, self.model.name)
+        if run_mode is None and self.recipe is not None and (path.is_file() or has_study):
+            choice = 'Choose --fresh to replace its model and study'
+            if optimization:
+                choice += ', or --continue to add optimization trials'
+            raise ValueError(f'Results already exist for this retrieval. {choice}; Python callers can set run_mode explicitly.')
+        if run_mode == 'continue' and not has_study:
+            raise ValueError('No optimization study exists for this retrieval. Use --fresh or run_mode="fresh" to start one.')
+        if run_mode == 'fresh':
+            for artifact in (path, path.with_name('training_progress.pdf'), study_path):
+                artifact.unlink(missing_ok=True)
+        continuing = optimization and has_study and run_mode != 'fresh'
+        self.logger.info('%s retrieval %s.', 'Continuing' if continuing else 'Starting fresh', self.model.name)
+        return storage
+
+    def _log_training_setup(self, data_source=None):
+        """Record the actual fitting data and the separate trial-ranking rule."""
+        setup = {'training_sources': self.hyper_params.get('sources', self.hyper_params.get('station_ids', [])),
+                 'training_cutoff': self.hyper_params.get('end_date_training'),
+                 'prepared_variant': self.hyper_params.get('file_extension', ''),
+                 'fitting': 'ordinary least squares with input-noise repeats' if self.model.is_MLR else self.hyper_params['loss_fn']}
+        self.logger.info('Training sources: %s; cutoff: %s; prepared variant: %s.', setup['training_sources'], setup['training_cutoff'] or 'none', setup['prepared_variant'] or 'standard')
+        self.logger.info('Fitting: %s.', setup['fitting'])
+        if data_source is not None:
+            if 'T' not in self.model.output:
+                score = 'mean channel TB RMSE'
+            elif hasattr(self.model, 'loss_weights'):
+                score = 'mean height-weighted T RMSE + mean height-weighted RH RMSE / 10, on the full model height grid'
+            else:
+                score = 'mean heightwise T RMSE + mean heightwise RH RMSE / 10, on the full model height grid'
+            setup['optimization'] = {'data_source': data_source, 'days_of_month': [1, 20], 'score': score}
+            self.logger.info('Optimization reference: %s; days of month: 1-20; all stations in the analysis dataset.', data_source)
+            self.logger.info('Optimization score (separate from fitting loss): %s.', score)
+        self._run_record['setup'] = plain_value(setup)
+
+    def validate_optimization(self, data_source=None):
+        """Check search definitions and analysis inputs without starting trials."""
+        self.validate()
+        settings = self.recipe.section('optimization') if self.recipe is not None else {}
+        if self.recipe is not None and not self.requires_optimization:
+            raise ValueError('Optimization needs a search definition in training or input_noise: use optimize = true, low/high, or choices on a parameter.')
+        source = data_source or settings.get('data_source', 'radiosonde')
+        if source not in ('radiosonde', 'era5'):
+            raise ValueError("data_source must be 'radiosonde' or 'era5'.")
+        suffix = '_bls' if self.model.is_bls_model else ''
+        path = site_data_dir(self.project_dir, self.site, 'analysis') / f'analysis_data_{source}{suffix}.nc'
+        if not path.is_file():
+            raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
+        data = xr.load_dataset(path)
+        data = data.where(data.time.dt.day <= 20, drop=True)
+        if not self.model.is_bls_model and 'ang' in data.dims:
+            data = data.sel(ang=90, drop=True)
+        validate_model_data(self.model.input, data.sel(data_source='hatpro', drop=True), 'optimization observations')
+        variables = ['T', 'rh'] if 'T' in self.model.output else ['TB']
+        validate_model_data(self.model.output[variables], data.sel(data_source=source, drop=True), 'optimization reference')
+        return self
 
     def load_training_data(self, sources: List[str], end_date_training: str = None, file_extension: str = ''):
         """
@@ -156,6 +340,7 @@ class TrainingWorkflow:
         self.hyper_params.update({
             'end_date_training': end_date_training,
             'sources': sources,
+            'file_extension': file_extension,
             'station_ids': [s for s in sources if s != 'era5']
         })
 
@@ -277,10 +462,31 @@ class TrainingWorkflow:
         -----
         Loads best parameters from the Optuna study database.
         """
-        study_file = site_root(self.project_dir, study_site) / "optimization_studies.db"
+        study_file = optimization_file(self.project_dir, study_site, old_model_name)
+        if not study_file.is_file():
+            raise FileNotFoundError(f'Missing optimization database: {study_file}.')
         study = optuna.load_study(study_name=old_model_name, storage=f"sqlite:///{study_file}")
 
         self.hyper_params.update(study.best_params)
+
+    def default_search_spaces(self):
+        """Shared default ranges for explicit recipe searches and Python workflows."""
+        noise = {f'TB_{f}': self.suggest_float(0., 1.5) for f in self.model.freqs}
+        if self.model.is_bls_model:
+            noise.update({f'TB_{a}': self.suggest_float(0., 5.0) for a in self.model.angles})
+            noise['TB_angle_factor'] = self.suggest_float(1.0, 3.0)
+        noise.update({
+            'TB_IR': self.suggest_float(0.0, 2.0),
+            'surface_T': self.suggest_float(0.1, 1.5),
+            'surface_p': self.suggest_float(0.1, 2.0),
+            'surface_rh': self.suggest_float(0.1, 2.0),
+            'doy_cos': self.suggest_float(0.05, 0.5),
+            'doy_sin': self.suggest_float(0.05, 0.5),
+            'years_since_1970': self.suggest_float(0.5, 3),
+        })
+        training = {} if self.model.is_MLR else {'weight_decay': self.suggest_float(1e-8, 1e-4, log=True)}
+        return {**training,
+                **{f'input_noise_{key}': value for key, value in noise.items()}}
 
     def add_input_noise_params(self, optimization=False, **kwargs):
         """
@@ -318,30 +524,15 @@ class TrainingWorkflow:
             'years_since_1970': 1.5,
         })
 
-        # Define bounds for optimization
-        standard_input_noise_bounds = {f'TB_{f}': self.suggest_float(0., 1.5) for f in self.model.freqs}
-        # For BLS models, add angle dependent noise parameters
-        if self.model.is_bls_model:
-            standard_input_noise_bounds.update({f"TB_{a}": self.suggest_float(0., 5.0) for a in self.model.angles})
-            standard_input_noise_bounds[f"TB_angle_factor"] = self.suggest_float(1.0, 3.0)
-
-        standard_input_noise_bounds.update({
-            'TB_IR': self.suggest_float(0.0, 2.0),
-            'surface_T': self.suggest_float(0.1, 1.5),
-            'surface_p': self.suggest_float(0.1, 2.0),
-            'surface_rh': self.suggest_float(0.1, 2.0),
-            'doy_cos': self.suggest_float(0.05, 0.5), 
-            'doy_sin': self.suggest_float(0.05, 0.5),
-            'years_since_1970': self.suggest_float(0.5, 3),
-        })
+        standard_input_noise_bounds = self.default_search_spaces()
 
         def add_param(var):
             if var in kwargs:
                 param = kwargs[var]
             elif var in standard_input_noise_params and not optimization:
                 param = standard_input_noise_params[var]
-            elif var in standard_input_noise_bounds and optimization:
-                param = standard_input_noise_bounds[var]
+            elif f'input_noise_{var}' in standard_input_noise_bounds and optimization:
+                param = standard_input_noise_bounds[f'input_noise_{var}']
             else:
                 raise ValueError(f"No standard input noise parameter for variable {var} found. Please provide a value.")
             
@@ -755,15 +946,13 @@ class TrainingWorkflow:
                 loss = (loss_per_output * loss_weight).mean()
             eval_losses.append(loss.item())
 
-            if epoch == 0:
-                best_loss = loss.item()
-            elif loss.item() < best_loss:
+            if epoch == 0 or loss.item() < best_loss:
                 best_model = copy.deepcopy(model)
                 best_loss = loss.item()
             
             if not quiet:
-                if epoch % int(epochs / 100) == 0:
-                    if is_called_from_notebook():
+                if epoch % max(1, int(epochs / 100)) == 0:
+                    if is_called_from_notebook() and epochs > 1:
                         progress_bar(epoch, epochs, start_time)
                     else:
                         logger.info(progress_log(epoch, epochs, start_time))
@@ -821,9 +1010,14 @@ class TrainingWorkflow:
 
         return model
 
-    def train(self):
+    @_logged_run('train')
+    def train(self, run_mode=None):
         """
         Run training using current hyperparameters and data.
+
+        For recipe workflows with existing results, run_mode="fresh" explicitly
+        replaces only this retrieval's checkpoint and study after validation.
+        Direct Python workflows retain their original overwrite behavior.
 
         Notes
         -----
@@ -831,7 +1025,13 @@ class TrainingWorkflow:
         - Runs either linear regression (MLR) or neural network training.
         - Saves the trained model to disk.
         """
+        if self.requires_optimization:
+            raise ValueError('Training one model needs fixed parameter values. Call workflow.optimize(), use the train command for automatic selection, or replace the search definitions with fixed values.')
         self.logger.info(f'Using hyper parameters: {self.hyper_params}')
+
+        self.validate()
+        self._prepare_run(run_mode)
+        self._log_training_setup()
 
         x_training, y_training, x_val, y_val = self._create_training_tensors()
 
@@ -841,7 +1041,8 @@ class TrainingWorkflow:
             self.model = self._training_loop(self.model, x_training, y_training, x_val, y_val, self.hyper_params, device=self.device, quiet=False)
 
         # Save model
-        self.model.save(self.site, self.project_dir, self.hyper_params)
+        self._save_model(self.model, self.hyper_params)
+        return self.model
 
     def _external_stop_callback(self, study, trial):
         """
@@ -902,7 +1103,8 @@ class TrainingWorkflow:
         else:
             return value
 
-    def optimize(self, n_trials=None, data_source='radiosonde'):
+    @_logged_run('optimize')
+    def optimize(self, n_trials=None, data_source=None, run_mode=None):
         """
         Perform hyperparameter optimization using Optuna.
 
@@ -914,17 +1116,64 @@ class TrainingWorkflow:
         data_source : str, default='radiosonde'
             Data source used for real-data evaluation during optimization.
             Options include 'radiosonde' or 'era5'.
+        run_mode : {'fresh', 'continue'}, optional
+            Recipe workflows require a choice when results already exist.
+            Fresh clears this retrieval's checkpoint/study after validation;
+            continue adds trials to a compatible study. Direct Python workflows
+            retain automatic continuation when omitted.
 
         Notes
         -----
         - Each trial trains a model using suggested parameters.
         - Evaluation is performed on real atmospheric profiles.
         - Best models are saved automatically.
-        - Study is stored under `sites/{site}/optimization_studies.db`.
+        - Study is stored beside the retrieval in `optimization.db`.
         """
+        self.validate_optimization(data_source)
+        settings = self.recipe.section('optimization') if self.recipe is not None else {}
+        if n_trials is None:
+            n_trials = settings.get('n_trials')
         if n_trials is None:
             n_trials = 300 if self.model.is_bls_model else 200
+        if type(n_trials) is not int or n_trials < 1:
+            raise ValueError('n_trials must be a positive integer.')
+        data_source = data_source or settings.get('data_source', 'radiosonde')
+        if data_source not in ('radiosonde', 'era5'):
+            raise ValueError("data_source must be 'radiosonde' or 'era5'.")
+        hyper_params = dict(self.hyper_params)
+        self.logger.info('Optimizing %s (trial budget: %d, reference: %s).', self.model.name, n_trials, data_source)
+        for key, value in hyper_params.items():
+            if isinstance(value, (self.suggest_int, self.suggest_float, self.suggest_categorical)):
+                label = f'input_noise.{key.removeprefix("input_noise_")}' if key.startswith('input_noise_') else f'training.{key}'
+                self.logger.info('Search %s: %s', label, value)
 
+        file_extension = '_bls' if self.model.is_bls_model else ''
+        analysis_file = site_data_dir(self.project_dir, self.site, 'analysis') / f'analysis_data_{data_source}{file_extension}.nc'
+        if not analysis_file.is_file():
+            raise FileNotFoundError(f'Missing optimization analysis dataset: {analysis_file}. Prepare it before optimization.')
+        storage = self._prepare_run(run_mode, optimization=True)
+        retrieval_dir(self.project_dir, self.site, self.model.name).mkdir(parents=True, exist_ok=True)
+        study = optuna.create_study(study_name=self.model.name, storage=storage, load_if_exists=True, direction='minimize')
+        if self.recipe is not None:
+            experiment = plain_value({'model': self.model.checkpoint_structure(), 'hyper_params': hyper_params,
+                                      'bias_correction': self.recipe.section('bias_correction'),
+                                      'data_source': data_source})
+            previous = study.user_attrs.get('openMWR_experiment')
+            if (previous is not None and previous != experiment) or (previous is None and study.trials):
+                raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
+            try:
+                best_trial = study.best_trial
+            except ValueError:
+                best_trial = None
+            if best_trial is not None:
+                path = checkpoint_file(self.project_dir, self.site, self.model.name)
+                metadata = load_model(self.model.name, self.site, self.project_dir).training_metadata if path.is_file() else None
+                expected = {'study_name': study.study_name, 'trial_number': best_trial.number}
+                if (metadata or {}).get('optimization') != expected:
+                    raise ValueError('The best study checkpoint is missing or has been replaced. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
+            study.set_user_attr('openMWR_experiment', experiment)
+
+        self._log_training_setup(data_source)
         self.logger.info(f'Using hyper parameters: {self.hyper_params}')
 
         x_training, y_training, x_val, y_val = self._create_training_tensors()
@@ -937,6 +1186,8 @@ class TrainingWorkflow:
 
         # Only select days with day smaller than 20. The other days are used for model validation.
         an_data = an_data.where(an_data['time'].dt.day <= 20, drop=True)
+        if not self.model.is_bls_model and 'ang' in an_data.dims:
+            an_data = an_data.sel(ang=90, drop=True)
 
         ds_hatpro = an_data.sel(data_source='hatpro', drop=True)
         truth = an_data.sel(data_source=data_source, drop=True)
@@ -959,7 +1210,7 @@ class TrainingWorkflow:
 
             model_trial.nor = self.model.nor.copy(deep=True)
 
-            hyper_params_trial = self._suggest_values(trial, self.hyper_params)
+            hyper_params_trial = self._suggest_values(trial, hyper_params)
 
             if model_trial.is_MLR:
                 model_trial = self._calc_linear_regression(model_trial, x_training, y_training, hyper_params_trial)
@@ -985,7 +1236,8 @@ class TrainingWorkflow:
                 if var in pred.data_vars:
                     raso_loss_height = cal_RMSE(pred[var], truth[var], dims_to_mean=['time', 'station'] if use_station_time else ['time'])
 
-                    raso_loss = (raso_loss_height * model_trial.loss_weights[var]).mean().item()
+                    weights = model_trial.loss_weights[var] if hasattr(model_trial, 'loss_weights') else 1
+                    raso_loss = (raso_loss_height * weights).mean().item()
 
                     self.logger.info(f'{var}: {raso_loss}')
 
@@ -994,6 +1246,12 @@ class TrainingWorkflow:
 
                     total_raso_loss += raso_loss
 
+            if 'TB' in pred and 'T' not in pred:
+                total_raso_loss = cal_RMSE(pred.TB, truth.TB, dims_to_mean=['time', 'station'] if use_station_time else ['time']).mean().item()
+
+            if not np.isfinite(total_raso_loss):
+                raise ValueError('Optimization produced a non-finite score; check analysis data and model outputs.')
+
             # save the model if it is better than the best one so far
             try:
                 best_value = trial.study.best_value
@@ -1001,12 +1259,10 @@ class TrainingWorkflow:
                 best_value = float('inf')   
 
             if total_raso_loss < best_value:
-                model_trial.save(self.site, self.project_dir, hyper_params_trial)
+                self._save_model(model_trial, hyper_params_trial,
+                                 optimization={'study_name': study.study_name, 'trial_number': trial.number})
                 
             return total_raso_loss
-
-        study_file = site_root(self.project_dir, self.site) / "optimization_studies.db"
-        study = optuna.create_study(study_name=self.model.name, storage=f"sqlite:///{study_file}", load_if_exists=True, direction="minimize")
 
         self.logger.info('Starting hyperparameter optimization with Optuna...')
 
@@ -1014,6 +1270,7 @@ class TrainingWorkflow:
 
         self.logger.info('Optimization completed.')
         self.logger.info(f'Best study params: {study.best_params}')
+        return study
 
 
 def separate_training_data(site: str, source: Union[str, List[str]], project_dir: str, test_fraction: float = 0.1, val_fraction: float = 0.1, file_extension: str = ''):

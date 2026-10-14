@@ -51,11 +51,13 @@ def test_named_retrieval_roundtrip_and_replacement(tmp_path):
     assert replacement.hyper_params == {"epochs": 2}
 
 
-def test_workflow_reuses_site_optimization_history(tmp_path):
+def test_workflow_loads_retrieval_optimization_history(tmp_path):
     create_site("test", tmp_path, gen="G5")
+    directory = tmp_path / 'sites/reference/retrieval/existing_model'
+    directory.mkdir(parents=True)
     study = optuna.create_study(
         study_name="existing_model",
-        storage=f"sqlite:///{tmp_path / 'sites/test/optimization_studies.db'}",
+        storage=f"sqlite:///{directory / 'optimization.db'}",
     )
     study.add_trial(optuna.trial.create_trial(
         params={"learning_rate": 0.01},
@@ -64,5 +66,5 @@ def test_workflow_reuses_site_optimization_history(tmp_path):
     ))
     model = Model("MLR", heights=np.array([0.0, 100.0]), freqs=np.array([22.24]), is_MLR=True)
     workflow = TrainingWorkflow(model, "test", "cpu", tmp_path)
-    workflow.get_hyper_params_from_existing_study("test", "existing_model")
+    workflow.get_hyper_params_from_existing_study("reference", "existing_model")
     assert workflow.hyper_params["learning_rate"] == 0.01

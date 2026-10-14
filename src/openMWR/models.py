@@ -75,7 +75,7 @@ class BaseModel(nn.Module):
             original_init = cls.__dict__["__init__"]
             cls.__init__ = _capture_init_args(original_init)
 
-    def save(self, site: str, project_dir: str, hyper_params: dict):
+    def save(self, site: str, project_dir: str, hyper_params: dict, training_metadata=None):
         """
         Persist model weights and training metadata.
 
@@ -103,12 +103,26 @@ class BaseModel(nn.Module):
             'hyper_params': hyper_params,
             'normalization': self.nor.to_dict(),
             'structure': self.structure,
+            'model_class': type(self).__name__,
         }
+        # Freeze defaults in new checkpoints, so a later library default cannot
+        # change their architecture, variables, or normalization on load.
+        checkpoint['structure'] = self.checkpoint_structure()
+        if training_metadata is not None:
+            checkpoint['training_metadata'] = training_metadata
 
         file = checkpoint_file(project_dir, site, self.name)
         os.makedirs(file.parent, exist_ok=True)
         torch.save(checkpoint, file)
         logger.info(f'saved model under {file}')
+
+    def checkpoint_structure(self):
+        """Return constructor settings with mutable library defaults resolved."""
+        structure = dict(self.structure)
+        for key in ('hidden_layers', 'angles', 'additional_input_vars', 'norm_functions'):
+            if key in structure and hasattr(self, key):
+                structure[key] = getattr(self, key)
+        return structure
     
     @classmethod
     def load(cls, name, site: str, project_dir: str, file_path=None):
@@ -147,7 +161,12 @@ class BaseModel(nn.Module):
 
         checkpoint = torch.load(file_path, map_location=torch.device('cpu'), weights_only=False)
 
-        if name in checkpoint['structure']:
+        return cls._from_checkpoint(checkpoint, name)
+
+    @classmethod
+    def _from_checkpoint(cls, checkpoint, name):
+
+        if 'name' in checkpoint['structure']:
             if name != checkpoint['structure']['name']:
                 logger.warning(f"Model name '{name}' does not match the name stored in the checkpoint '{checkpoint['structure']['name']}'. Using the provided name.")
             
@@ -159,6 +178,7 @@ class BaseModel(nn.Module):
         model.nor = xr.Dataset.from_dict(checkpoint['normalization'])
 
         model.hyper_params = checkpoint['hyper_params']
+        model.training_metadata = checkpoint.get('training_metadata')
 
         return model
 
@@ -221,6 +241,19 @@ class BaseModel(nn.Module):
             self.output_slices[var] = slice(idx, idx + da.size)
             idx += da.size
     
+def load_model(name, site, project_dir, file_path=None):
+    """Load a built-in model using its checkpoint, without consulting a recipe."""
+    path = file_path if file_path is not None else checkpoint_file(project_dir, site, name)
+    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    kind = checkpoint.get('model_class')
+    if kind is None:
+        kind = 'Model' if 'heights' in checkpoint['structure'] else 'SpectralConsistencyModel'
+    classes = {'Model': Model, 'SpectralConsistencyModel': SpectralConsistencyModel}
+    if kind not in classes:
+        raise ValueError(f"Unsupported checkpoint model class {kind!r}; load custom models with their Python class.")
+    return classes[kind]._from_checkpoint(checkpoint, name)
+
+
 class Model(BaseModel):
     """
     Default feed-forward retrieval architecture.
