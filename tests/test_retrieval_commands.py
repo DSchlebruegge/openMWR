@@ -223,11 +223,42 @@ def test_resuming_requires_the_best_study_checkpoint(replacement, tmp_path):
 
 
 @pytest.mark.parametrize(('kind', 'mode'), [('nn', 'bls'), ('spectral', 'zenith')])
-def test_optimization_runs_for_scan_and_spectral_models(kind, mode, tmp_path):
+def test_optimization_runs_for_scan_and_spectral_models(kind, mode, tmp_path, monkeypatch):
     project(tmp_path, kind, mode)
-    study = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize()
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    loaded = []
+    load = xr.load_dataset
+
+    def read(path, *args, **kwargs):
+        loaded.append(Path(path))
+        return load(path, *args, **kwargs)
+
+    monkeypatch.setattr(xr, 'load_dataset', read)
+    filename = 'bls.nc' if mode == 'bls' else 'zenith.nc'
+    assert workflow.validate_optimization() is workflow
+    assert loaded == [tmp_path / f'data/sites/test/analysis_radiosonde/{filename}']
+    # A separate validation reads current inputs rather than retaining old data.
+    analysis = loaded[0]
+    temporary = analysis.with_suffix('.disabled')
+    analysis.rename(temporary)
+    with pytest.raises(FileNotFoundError, match='Missing optimization analysis dataset'):
+        workflow.validate_optimization()
+    temporary.rename(analysis)
+    loaded.clear()
+    study = workflow.optimize()
+    assert loaded == [analysis]
     assert np.isfinite(study.best_value)
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
+
+
+def test_recipe_training_requires_only_selected_training_and_validation_files(tmp_path):
+    project(tmp_path, search=False)
+    (tmp_path / 'data/sites/test/training_variant/test_03715.nc').unlink()
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert workflow.training_data.time.size == 6
+    (tmp_path / 'data/sites/test/training_variant/validation_03715.nc').unlink()
+    with pytest.raises(FileNotFoundError, match='validation_03715.nc'):
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
 
 
 @pytest.mark.parametrize('space', ['default', 'custom'])
@@ -408,7 +439,7 @@ def test_missing_data_and_coordinate_mismatch_are_clear(tmp_path):
     recipe, data = project(tmp_path)
     file = tmp_path / 'data/sites/test/training_variant/validation_03715.nc'
     file.unlink()
-    with pytest.raises(FileNotFoundError, match='Missing prepared dataset'):
+    with pytest.raises(FileNotFoundError, match='Missing input dataset'):
         TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     data.assign_coords(frq=[23.0, 31.4]).to_netcdf(file)
     with pytest.raises(ValueError, match='coordinates do not match'):

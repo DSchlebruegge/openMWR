@@ -368,10 +368,7 @@ def run_model_list(
 
         pred = run_model(model, ds, device, include_input_vars=include_input_vars)
 
-        for var in pred.data_vars:
-            pred[var] = pred[var].expand_dims(model=[model.name])
-
-        pred_list.append(pred)
+        pred_list.append(pred.expand_dims(model=[model.name]))
 
     ds_predicted = xr.concat(pred_list, dim='model')
 

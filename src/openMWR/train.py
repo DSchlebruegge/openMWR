@@ -21,6 +21,8 @@ from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, load_model
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
 from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now
+from openMWR.config import (TRAINING_PARAMETERS, check_keys, check_name,
+                            validate_training_settings, validate_parameter_usage)
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +161,8 @@ class TrainingWorkflow:
         The returned datasets and settings remain available for custom Python
         processing before calling train() or optimize().
         """
-        from openMWR.recipes import RetrievalRecipe, _known
+        from openMWR.recipes import RetrievalRecipe
+        from openMWR.datasets import DatasetWorkflow
 
         recipe = RetrievalRecipe.load(project_dir, site, retrieval)
         workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
@@ -171,9 +174,10 @@ class TrainingWorkflow:
         noise = recipe.input_noise_params(workflow)
         workflow.add_input_noise_params(**noise)
         allowed_noise = {key.removeprefix('input_noise_') for key in workflow.hyper_params if key.startswith('input_noise_')}
-        _known(noise, allowed_noise, 'input_noise')
-        recipe.require_data(('training_data', 'validation_data'))
+        check_keys(noise, allowed_noise, 'input_noise')
         data = recipe.section('data')
+        DatasetWorkflow(recipe.project_dir, site).require(
+            data['dataset'], sources=data.get('sources'), splits=('training', 'validation'))
         workflow.load_training_data(sources=data.get('sources'),
                                     end_date_training=data.get('end_date_training'),
                                     dataset=data['dataset'])
@@ -200,12 +204,8 @@ class TrainingWorkflow:
 
     def validate(self):
         """Check current Python settings and prepared datasets before computation."""
-        from openMWR.recipes import validate_training_settings, validate_parameter_usage
-
         validate_device(self.device)
-        required = ('epochs', 'batch_size', 'lr_height', 'lr_low', 'epoch_max_lr',
-                    'loss_fn', 'weight_decay', 'repeats_for_linear_regression')
-        missing = set(required) - self.hyper_params.keys()
+        missing = TRAINING_PARAMETERS - self.hyper_params.keys()
         if missing:
             raise ValueError(f"Missing training settings: {', '.join(sorted(missing))}. Call add_standard_training_hyper_params() first.")
         searches = {key: value for key, value in self.hyper_params.items()
@@ -250,10 +250,8 @@ class TrainingWorkflow:
 
     def _prepare_run(self, run_mode, optimization=False):
         """Apply the selected retrieval's fresh/continue choice after validation."""
-        from openMWR.recipes import _component
-
-        _component(self.site, 'site')
-        _component(self.model.name, 'retrieval')
+        check_name(self.site, 'site')
+        check_name(self.model.name, 'retrieval')
         if run_mode not in (None, 'fresh', 'continue'):
             raise ValueError("run_mode must be 'fresh' or 'continue'.")
         if run_mode == 'continue' and not optimization:
@@ -298,6 +296,11 @@ class TrainingWorkflow:
 
     def validate_optimization(self, data_source=None, dataset=None):
         """Check search definitions and analysis inputs without starting trials."""
+        self._optimization_inputs(data_source, dataset)
+        return self
+
+    def _optimization_inputs(self, data_source=None, dataset=None):
+        """Load, select and validate the reference data used to rank trials."""
         self.validate()
         settings = self.recipe.section('optimization') if self.recipe is not None else {}
         if self.recipe is not None and not self.requires_optimization:
@@ -316,7 +319,7 @@ class TrainingWorkflow:
         validate_model_data(self.model.input, data.sel(data_source='hatpro', drop=True), 'optimization observations')
         variables = ['T', 'rh'] if 'T' in self.model.output else ['TB']
         validate_model_data(self.model.output[variables], data.sel(data_source=source, drop=True), 'optimization reference')
-        return self
+        return source, analysis_name, data
 
     def load_training_data(self, sources: List[str] = None, end_date_training: str = None, dataset: str = 'training'):
         """
@@ -1135,7 +1138,7 @@ class TrainingWorkflow:
         - Best models are saved automatically.
         - Study is stored beside the retrieval in `optimization.db`.
         """
-        self.validate_optimization(data_source, dataset)
+        data_source, analysis_name, an_data = self._optimization_inputs(data_source, dataset)
         settings = self.recipe.section('optimization') if self.recipe is not None else {}
         if n_trials is None:
             n_trials = settings.get('n_trials')
@@ -1143,9 +1146,6 @@ class TrainingWorkflow:
             n_trials = 300 if self.model.is_bls_model else 200
         if type(n_trials) is not int or n_trials < 1:
             raise ValueError('n_trials must be a positive integer.')
-        data_source = data_source or settings.get('data_source', 'radiosonde')
-        if data_source not in ('radiosonde', 'era5'):
-            raise ValueError("data_source must be 'radiosonde' or 'era5'.")
         hyper_params = dict(self.hyper_params)
         self.logger.info('Optimizing %s (trial budget: %d, reference: %s).', self.model.name, n_trials, data_source)
         for key, value in hyper_params.items():
@@ -1153,10 +1153,6 @@ class TrainingWorkflow:
                 label = f'input_noise.{key.removeprefix("input_noise_")}' if key.startswith('input_noise_') else f'training.{key}'
                 self.logger.info('Search %s: %s', label, value)
 
-        analysis_name = dataset or settings.get('dataset', f'analysis_{data_source}')
-        analysis_file = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
-        if not analysis_file.is_file():
-            raise FileNotFoundError(f'Missing optimization analysis dataset: {analysis_file}. Prepare it before optimization.')
         storage = self._prepare_run(run_mode, optimization=True)
         retrieval_dir(self.project_dir, self.site, self.model.name).mkdir(parents=True, exist_ok=True)
         study = optuna.create_study(study_name=self.model.name, storage=storage, load_if_exists=True, direction='minimize')
@@ -1183,15 +1179,6 @@ class TrainingWorkflow:
         self.logger.info(f'Using hyper parameters: {self.hyper_params}')
 
         x_training, y_training, x_val, y_val = self._create_training_tensors()
-
-        #Real test data
-        analysis_file = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
-        an_data = xr.load_dataset(analysis_file)
-
-        # Only select days with day smaller than 20. The other days are used for model validation.
-        an_data = an_data.where(an_data['time'].dt.day <= 20, drop=True)
-        if not self.model.is_bls_model and 'ang' in an_data.dims:
-            an_data = an_data.sel(ang=90, drop=True)
 
         ds_hatpro = an_data.sel(data_source='hatpro', drop=True)
         truth = an_data.sel(data_source=data_source, drop=True)

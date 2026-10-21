@@ -2,78 +2,13 @@
 
 from dataclasses import dataclass
 from datetime import date
-from difflib import get_close_matches
-import inspect
-import math
-from numbers import Integral, Real
 from pathlib import Path
 import tomllib
 
-from openMWR.paths import project_root, retrieval_dir, site_config_file, dataset_file
-
-_INTEGER_TRAINING = ("epochs", "batch_size", "repeats_for_linear_regression", "epoch_max_lr")
-_NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
-
-
-def _known(table, allowed, section):
-    if not isinstance(table, dict):
-        raise ValueError(f"{section} must be a TOML table.")
-    for key in table.keys() - set(allowed):
-        matches = get_close_matches(key, allowed, n=1)
-        hint = f" Did you mean '{matches[0]}'?" if matches else ""
-        raise ValueError(f"Unknown {section} setting '{key}'.{hint}")
-
-
-def _number(value, label, minimum=None, integer=False):
-    expected = Integral if integer else Real
-    if isinstance(value, bool) or not isinstance(value, expected) or not math.isfinite(value):
-        raise ValueError(f"{label} must be a finite {'integer' if integer else 'number'}.")
-    if minimum is not None and value < minimum:
-        raise ValueError(f"{label} must be at least {minimum}.")
-
-
-def _component(value, label):
-    if not isinstance(value, str) or not value or value in (".", "..") or "/" in value or "\\" in value:
-        raise ValueError(f"{label} must be a nonempty name without directory separators.")
-
-
-def _strings(values, label):
-    if not isinstance(values, list) or any(not isinstance(v, str) or not v for v in values):
-        raise ValueError(f"{label} must be a list of nonempty strings.")
-    if len(set(values)) != len(values):
-        raise ValueError(f"{label} must not contain duplicates.")
-
-
-def _coordinates(values, label, minimum=0):
-    if not isinstance(values, list) or not values:
-        raise ValueError(f"{label} must be a nonempty list.")
-    for value in values:
-        _number(value, label, minimum)
-    if len(set(values)) != len(values):
-        raise ValueError(f"{label} must not contain duplicates.")
-
-
-def validate_training_settings(settings):
-    """Check fixed training values, also used for resolved optimization trials."""
-    for key in _INTEGER_TRAINING:
-        if key in settings:
-            _number(settings[key], f"training.{key}", 0 if key == "epoch_max_lr" else 1, integer=True)
-    for key in ("lr_height", "lr_low", "weight_decay"):
-        if key in settings:
-            _number(settings[key], f"training.{key}", 0)
-    if "loss_fn" in settings and settings["loss_fn"] not in ("MAE", "MSE", "MAEPlusBiasLoss", "MSEPlusBiasLoss"):
-        raise ValueError(f"Unknown training.loss_fn: {settings['loss_fn']!r}.")
-    for key, value in settings.items():
-        if key.startswith("input_noise_"):
-            _number(value, key, 0)
-
-
-def validate_parameter_usage(is_mlr, settings):
-    """Reject explicit parameters that the chosen fitting method ignores."""
-    unused = _NN_TRAINING if is_mlr else {"repeats_for_linear_regression"}
-    for key in sorted(unused.intersection(settings)):
-        model = "mlr" if is_mlr else "neural"
-        raise ValueError(f"training.{key} is not used by {model} models.")
+from openMWR.config import (INTEGER_TRAINING, TRAINING_PARAMETERS, check_keys,
+                            check_number, check_name, check_strings, check_coordinates,
+                            validate_training_settings, validate_parameter_usage)
+from openMWR.paths import project_root, retrieval_dir, site_config_file
 
 
 def _parameter(value, key, label, workflow=None):
@@ -82,7 +17,7 @@ def _parameter(value, key, label, workflow=None):
         validate_training_settings({key: value})
         return value
     if "optimize" in value:
-        _known(value, ("optimize",), label)
+        check_keys(value, ("optimize",), label)
         if value["optimize"] is not True:
             raise ValueError(f"{label}.optimize must be true; use a fixed value to disable optimization.")
         if workflow is None:
@@ -92,20 +27,20 @@ def _parameter(value, key, label, workflow=None):
             raise ValueError(f"No default search space for {label}. Specify low/high or choices explicitly.")
         return spaces[key]
     if "choices" in value:
-        _known(value, ("choices",), label)
+        check_keys(value, ("choices",), label)
         choices = value["choices"]
         if not isinstance(choices, list) or not choices:
             raise ValueError(f"{label}.choices must be a nonempty list.")
         candidates = choices
         kind, args = "categorical", (choices,)
     else:
-        _known(value, ("low", "high", "step", "log"), label)
+        check_keys(value, ("low", "high", "step", "log"), label)
         if key == "loss_fn":
             raise ValueError(f"{label} requires choices rather than numeric bounds.")
-        integer = key in _INTEGER_TRAINING
+        integer = key in INTEGER_TRAINING
         low, high = value.get("low"), value.get("high")
-        _number(low, f"{label}.low", integer=integer)
-        _number(high, f"{label}.high", integer=integer)
+        check_number(low, f"{label}.low", integer=integer)
+        check_number(high, f"{label}.high", integer=integer)
         if high < low:
             raise ValueError(f"{label}.high must be at least low.")
         log = value.get("log", False)
@@ -113,7 +48,7 @@ def _parameter(value, key, label, workflow=None):
             raise ValueError(f"{label}: log must be boolean and requires positive bounds.")
         step = value.get("step", 1 if integer else None)
         if step is not None:
-            _number(step, f"{label}.step", integer=integer)
+            check_number(step, f"{label}.step", integer=integer)
             if step <= 0 or (log and (not integer or step != 1)):
                 raise ValueError(f"{label}: invalid step for this distribution.")
         candidates = (low, high)
@@ -134,8 +69,8 @@ class RetrievalRecipe:
 
     @classmethod
     def load(cls, project_dir, site, retrieval):
-        _component(site, "site")
-        _component(retrieval, "retrieval")
+        check_name(site, "site")
+        check_name(retrieval, "retrieval")
         root = project_root(project_dir)
         config = site_config_file(root, site)
         if not config.is_file():
@@ -154,9 +89,7 @@ class RetrievalRecipe:
         return self.values.get(name, {})
 
     def _validate(self):
-        from openMWR.train import TrainingWorkflow
-
-        _known(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization", "evaluation"), "recipe")
+        check_keys(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization", "evaluation"), "recipe")
         if type(self.values.get("schema_version")) is not int or self.values["schema_version"] != 1:
             raise ValueError("Recipe schema_version must be 1.")
         for section in ("model", "data", "bias_correction", "optimization", "evaluation"):
@@ -166,14 +99,14 @@ class RetrievalRecipe:
                     if isinstance(value, dict) and (section, key) != ("model", "norm_functions"):
                         raise ValueError(f"Search definitions are supported only in training and input_noise; {section}.{key} does not support a search.")
         model = self.section("model")
-        _known(model, ("kind", "mode", "freqs", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "norm_functions", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"), "model")
+        check_keys(model, ("kind", "mode", "freqs", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "norm_functions", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"), "model")
         if model.get("kind") not in ("nn", "mlr", "spectral"):
             raise ValueError("model.kind must be 'nn', 'mlr', or 'spectral'.")
         if model.get("mode", "zenith") not in ("zenith", "bls"):
             raise ValueError("model.mode must be 'zenith' or 'bls'.")
         for key in ("freqs", "heights", "angles"):
             if key in model:
-                _coordinates(model[key], f"model.{key}")
+                check_coordinates(model[key], f"model.{key}")
         if "heights" in model and model["heights"] != sorted(model["heights"]):
             raise ValueError("model.heights must be increasing (metres).")
         if "angles" in model and any(v > 90 for v in model["angles"]):
@@ -182,11 +115,11 @@ class RetrievalRecipe:
             if not isinstance(model["hidden_layers"], list) or not model["hidden_layers"]:
                 raise ValueError("model.hidden_layers must be a nonempty list.")
             for width in model["hidden_layers"]:
-                _number(width, "model.hidden_layers", 1, integer=True)
+                check_number(width, "model.hidden_layers", 1, integer=True)
         if "hidden_layer_size" in model:
-            _number(model["hidden_layer_size"], "model.hidden_layer_size", 1, integer=True)
+            check_number(model["hidden_layer_size"], "model.hidden_layer_size", 1, integer=True)
         if "dropout_rate" in model:
-            _number(model["dropout_rate"], "model.dropout_rate", 0)
+            check_number(model["dropout_rate"], "model.dropout_rate", 0)
             if model["dropout_rate"] >= 1:
                 raise ValueError("model.dropout_rate must be below 1.")
         for key in ("vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"):
@@ -197,7 +130,7 @@ class RetrievalRecipe:
         if model.get("mode", "zenith") != "bls" and any(k in model for k in ("angles", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear")):
             raise ValueError("Angles and angle-dependent noise require model.mode = 'bls'.")
         if model["kind"] == "spectral":
-            _known(model, ("kind", "mode", "freqs", "hidden_layer_size", "norm_functions"), "spectral model")
+            check_keys(model, ("kind", "mode", "freqs", "hidden_layer_size", "norm_functions"), "spectral model")
             if model.get("mode", "zenith") != "zenith":
                 raise ValueError("Spectral models use zenith observations.")
             if "freqs" in model and len(model["freqs"]) < 2:
@@ -209,26 +142,25 @@ class RetrievalRecipe:
                 if key in model:
                     raise ValueError(f"model.{key} is not used by mlr models.")
         if "additional_input_vars" in model:
-            _strings(model["additional_input_vars"], "model.additional_input_vars")
+            check_strings(model["additional_input_vars"], "model.additional_input_vars")
         if "norm_functions" in model:
             if not isinstance(model["norm_functions"], dict) or any(v not in ("z_norm", "std_norm", "log_norm", "max_norm") for v in model["norm_functions"].values()):
                 raise ValueError("model.norm_functions must map variables to supported normalization functions.")
 
         data = self.section("data")
-        _known(data, ('dataset', 'sources', 'end_date_training'), 'data')
-        _component(data.get('dataset'), 'data.dataset')
+        check_keys(data, ('dataset', 'sources', 'end_date_training'), 'data')
+        check_name(data.get('dataset'), 'data.dataset')
         if 'sources' in data:
-            _strings(data['sources'], 'data.sources')
+            check_strings(data['sources'], 'data.sources')
             if not data['sources']:
                 raise ValueError('data.sources must not be empty.')
             for source in data['sources']:
-                _component(source, 'data.sources')
+                check_name(source, 'data.sources')
         if 'end_date_training' in data:
             if not isinstance(data['end_date_training'], str):
                 raise ValueError('data.end_date_training must be a quoted ISO date.')
             date.fromisoformat(data['end_date_training'])
-        allowed_training = set(inspect.signature(TrainingWorkflow.add_standard_training_hyper_params).parameters) - {"self"}
-        _known(self.section("training"), allowed_training, "training")
+        check_keys(self.section("training"), TRAINING_PARAMETERS, "training")
         validate_parameter_usage(model["kind"] == "mlr", self.section("training"))
         for key, value in self.section("training").items():
             _parameter(value, key, f"training.{key}")
@@ -249,40 +181,40 @@ class RetrievalRecipe:
             if noise.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
                 raise ValueError("input_noise.data_source must be 'radiosonde' or 'era5'.")
             if "sources" in noise:
-                _strings(noise["sources"], "input_noise.sources")
+                check_strings(noise["sources"], "input_noise.sources")
             if "factor" in noise:
                 if isinstance(noise["factor"], dict):
                     raise ValueError("input_noise.factor does not support a search; use a fixed OMB scaling factor.")
-                _number(noise["factor"], "input_noise.factor", 0)
+                check_number(noise["factor"], "input_noise.factor", 0)
         bias = self.section("bias_correction")
-        _known(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs"), "bias_correction")
+        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs"), "bias_correction")
         if bias:
             if bias.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
                 raise ValueError("bias_correction.data_source must be 'radiosonde' or 'era5'.")
             if "factor" in bias:
-                _number(bias["factor"], "bias_correction.factor")
+                check_number(bias["factor"], "bias_correction.factor")
             if "sources" in bias:
-                _strings(bias["sources"], "bias_correction.sources")
+                check_strings(bias["sources"], "bias_correction.sources")
             if "specific_freqs" in bias:
-                _coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
+                check_coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
         optimization = self.section("optimization")
-        _known(optimization, ("n_trials", "data_source", "dataset"), "optimization")
+        check_keys(optimization, ("n_trials", "data_source", "dataset"), "optimization")
         if "n_trials" in optimization:
-            _number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)
+            check_number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)
         if optimization.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
             raise ValueError("optimization.data_source must be 'radiosonde' or 'era5'.")
         evaluation = self.section("evaluation")
-        _known(evaluation, ("data_source", "dataset", "days_gt_20", "station_id", "observations", "test_data"), "evaluation")
+        check_keys(evaluation, ("data_source", "dataset", "days_gt_20", "station_id", "observations", "test_data"), "evaluation")
         if evaluation.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
             raise ValueError("evaluation.data_source must be 'radiosonde' or 'era5'.")
         for key in ("days_gt_20", "observations", "test_data"):
             if key in evaluation and type(evaluation[key]) is not bool:
                 raise ValueError(f"evaluation.{key} must be true or false.")
         if "station_id" in evaluation:
-            _component(evaluation["station_id"], "evaluation.station_id")
+            check_name(evaluation["station_id"], "evaluation.station_id")
         for section in ('input_noise', 'bias_correction', 'optimization', 'evaluation'):
             if 'dataset' in self.section(section):
-                _component(self.section(section)['dataset'], f'{section}.dataset')
+                check_name(self.section(section)['dataset'], f'{section}.dataset')
 
 
     def create_model(self):
@@ -298,25 +230,6 @@ class RetrievalRecipe:
             return SpectralConsistencyModel(self.name, **settings)
         settings["heights"] = np.asarray(settings.get("heights", std_heights), dtype=float)
         return Model(self.name, is_MLR=kind == "mlr", is_bls_model=mode == "bls", **settings)
-
-    def require_data(self, splits):
-        from openMWR.datasets import DatasetWorkflow
-
-        data = self.section('data')
-        workflow = DatasetWorkflow(self.project_dir, self.site)
-        workflow._graph([data['dataset']])
-        if workflow.recipe(data['dataset']).kind != 'split':
-            raise ValueError('data.dataset must select a split dataset.')
-        workflow._check_state(data['dataset'])
-        available = workflow.sources(data['dataset'])
-        sources = data.get('sources', available)
-        if set(sources) - set(available):
-            raise ValueError(f'data.sources must be a subset of {available}.')
-        for split in splits:
-            for source in sources:
-                path = dataset_file(self.project_dir, self.site, data['dataset'], source, split=split.removesuffix('_data'))
-                if not path.is_file():
-                    raise FileNotFoundError(f'Missing prepared dataset: {path}. Prepare this dataset before running the selected action.')
 
     def training_params(self, workflow):
         """Resolve fixed values and searches where training parameters are defined."""

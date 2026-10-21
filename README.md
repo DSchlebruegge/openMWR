@@ -129,7 +129,12 @@ from openMWR.datasets import DatasetWorkflow
 data = DatasetWorkflow(project_dir=".", site="munich_G5")
 data.build("rt_r17")
 data.build(["analysis_radiosonde", "analysis_era5"], with_dependencies=True)
+data.require("training", sources=["03715"], splits=("training", "validation"))
 ```
+
+`require` checks recipe lineage, rebuild requirements and the selected files
+without processing anything. Each build resolves settings and today's date once,
+so execution and its processing records use the same defaults throughout the run.
 
 Direct functions remain available with named `dataset`, `profiles_dataset` or
 `simulation_dataset` arguments. ERA5 uses separate `create_profile_dataset` and

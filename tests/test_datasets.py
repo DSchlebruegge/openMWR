@@ -1,6 +1,7 @@
 """Offline data workflows with real NetCDF, preparation, RT and split outputs."""
 
 import json
+from datetime import date
 from pathlib import Path
 import subprocess
 import sys
@@ -189,6 +190,94 @@ def test_changed_settings_require_rebuild_before_any_deletion(project):
     workflow.record('r17', rebuilt=True)
     with pytest.raises(ValueError, match='input r17 was rebuilt'):
         workflow.build('training')
+
+
+def test_readiness_checks_selected_sources_and_splits(project):
+    workflow = DatasetWorkflow(project, 'test')
+    workflow.recipe('source').values['stations'].append('02290')
+    for split in ('training', 'validation'):
+        path = dataset_file(project, 'test', 'training', '03715', split=split)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        synthetic_simulation(pd.date_range('2020-01-01', periods=2)).to_netcdf(path)
+    workflow.record('training')
+    workflow.require('training', sources=['03715'], splits=('training', 'validation'))
+    with pytest.raises(FileNotFoundError, match='02290.nc'):
+        workflow.require('training', splits=('training', 'validation'))
+    with pytest.raises(ValueError, match='subset'):
+        workflow.require('training', sources=['missing'])
+    with pytest.raises(ValueError, match='split dataset'):
+        workflow.require('r17', splits=('training',))
+    with pytest.raises(ValueError, match='splits must select'):
+        workflow.require('training', splits=('typo',))
+
+
+@pytest.mark.parametrize('change', ['definition', 'input_generation', 'unknown_history'])
+def test_readiness_rejects_datasets_that_need_rebuilding(project, change):
+    workflow = saved_simulation(project, pd.date_range('2020-01-01', periods=20).values)
+    workflow.build('training')
+    if change == 'definition':
+        workflow.recipe('training').values['split']['seed'] = 13
+    elif change == 'input_generation':
+        workflow.record('r17', rebuilt=True)
+    else:
+        workflow.record('training', requires_rebuild=True)
+    with pytest.raises(ValueError, match='Rebuild this dataset explicitly'):
+        workflow.require('training', sources=['03715'], splits=('training', 'validation'))
+
+
+def test_build_keeps_one_date_snapshot_and_refreshes_next_time(project, monkeypatch):
+    class Clock(date):
+        current = date(2020, 1, 6)
+
+        @classmethod
+        def today(cls):
+            return cls.current
+
+    monkeypatch.setattr('openMWR.datasets.date', Clock)
+    recipe(project, 'era5', kind='era5', start_date='2020-01-01')
+    recipe(project, 'era5_profiles', kind='profiles', inputs={'source': 'era5'},
+           preparation={'heights': [0., 1000., 2000.]})
+    requested = []
+
+    def download(self, start, end, h_freq=6):
+        requested.append((start, end))
+        Clock.current = date(2020, 1, 7)  # The download crosses midnight.
+        times = pd.date_range(start, end + pd.Timedelta(days=1), freq=f'{h_freq}h', inclusive='left')
+        return xr.Dataset({name: (('time', 'p'), np.broadcast_to(values, (len(times), 3)).copy())
+            for name, values in {'height': [550., 1550., 2550.], 'T': [280., 274., 268.],
+                                 'rh': [40., 50., 60.], 'lwc': [0., 0., 0.]}.items()},
+            coords={'time': times, 'p': [950., 850., 750.]})
+
+    monkeypatch.setattr(ERA5Processor, 'download_era5', download)
+    workflow = DatasetWorkflow(project, 'test')
+    workflow.build('era5_profiles', with_dependencies=True)
+    state_dir = project / 'data/sites/test'
+    source = json.loads((state_dir / 'era5/state.json').read_text())
+    profiles = json.loads((state_dir / 'era5_profiles/state.json').read_text())
+    assert source['effective']['end_date'] == '2020-01-01'
+    assert profiles['coverage']['inputs']['source']['range']['end_date'] == '2020-01-01'
+    output = dataset_file(project, 'test', 'era5_profiles', 'era5')
+    assert xr.load_dataset(output).time.size == 4
+    assert workflow.settings('era5')['end_date'] == '2020-01-02'
+    workflow.build('era5_profiles', with_dependencies=True)
+    assert xr.load_dataset(output).time.size == 8
+    assert requested == [(pd.Timestamp('2020-01-01'), pd.Timestamp('2020-01-01')),
+                         (pd.Timestamp('2020-01-02'), pd.Timestamp('2020-01-02'))]
+    before = output.read_bytes()
+    workflow.build('era5_profiles', with_dependencies=True)
+    assert output.read_bytes() == before
+    assert len(requested) == 2
+
+    def failed_download(*args, **kwargs):
+        Clock.current = date(2020, 1, 9)
+        raise OSError('Download interrupted')
+
+    Clock.current = date(2020, 1, 8)
+    monkeypatch.setattr(ERA5Processor, 'download_era5', failed_download)
+    with pytest.raises(OSError, match='Download interrupted'):
+        workflow.build('era5_profiles', with_dependencies=True)
+    assert output.read_bytes() == before
+    assert workflow.settings('era5')['end_date'] == '2020-01-04'
 
 
 def test_shared_era5_cache_appends_after_last_day_and_preserves_other_coverage(project, monkeypatch):

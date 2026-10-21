@@ -4,6 +4,7 @@ The workflow owns identities, settings and ordering. Scientific processing stays
 in radiosonde, era5, hatpro_data and train, which are also usable from Python.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 import json
@@ -20,7 +21,7 @@ from openMWR.consts import std_angles, std_freqs, std_heights
 from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            era5_cache_file, project_root, radiosonde_station_dir,
                            radiosonde_year_file, site_config_file)
-from openMWR.recipes import _component, _coordinates, _known, _number, _strings
+from openMWR.config import check_name, check_coordinates, check_keys, check_number, check_strings
 
 logger = logging.getLogger(__name__)
 
@@ -85,23 +86,23 @@ class DatasetRecipe:
         kind = self.values.get('kind')
         if kind not in _INPUTS:
             raise ValueError(f'{self.name}: kind must be one of {", ".join(_INPUTS)}.')
-        _known(self.values, ('kind', 'inputs', *_OPTIONS[kind]), self.name)
-        _known(self.inputs, _INPUTS[kind], f'{self.name}.inputs')
+        check_keys(self.values, ('kind', 'inputs', *_OPTIONS[kind]), self.name)
+        check_keys(self.inputs, _INPUTS[kind], f'{self.name}.inputs')
         if set(self.inputs) != set(_INPUTS[kind]):
             raise ValueError(f'{self.name}: inputs must name {", ".join(_INPUTS[kind])}.')
         for name in self.inputs.values():
-            _component(name, f'{self.name}.inputs')
+            check_name(name, f'{self.name}.inputs')
         if 'stations' in self.values:
-            _strings(self.values['stations'], f'{self.name}.stations')
+            check_strings(self.values['stations'], f'{self.name}.stations')
             if not self.values['stations']:
                 raise ValueError(f'{self.name}.stations must not be empty.')
             for station in self.values['stations']:
-                _component(station, 'station')
+                check_name(station, 'station')
         if kind == 'radiosonde' and 'stations' not in self.values:
             raise ValueError(f'{self.name}: radiosonde sources require stations.')
         for key in ('start_year', 'end_year', 'refresh_years', 'hour_interval', 'delay_days'):
             if key in self.values:
-                _number(self.values[key], f'{self.name}.{key}', 0 if key == 'delay_days' else 1, integer=True)
+                check_number(self.values[key], f'{self.name}.{key}', 0 if key == 'delay_days' else 1, integer=True)
         if kind == 'era5' and self.values.get('hour_interval', 6) not in (1, 2, 3, 4, 6, 8, 12, 24):
             raise ValueError('hour_interval must divide 24.')
         for key in ('start_date', 'end_date'):
@@ -110,36 +111,36 @@ class DatasetRecipe:
                     raise ValueError(f'{key} must be a quoted ISO date.')
                 date.fromisoformat(self.values[key])
         execution = self.values.get('execution', {})
-        _known(execution, ('processes',), f'{self.name}.execution')
+        check_keys(execution, ('processes',), f'{self.name}.execution')
         if 'processes' in execution:
-            _number(execution['processes'], 'execution.processes', 1, integer=True)
+            check_number(execution['processes'], 'execution.processes', 1, integer=True)
         preparation = self.values.get('preparation', {})
-        _known(preparation, ('heights', 'cut_off_at_mwr_height', 'scale_rh_clear_sky',
+        check_keys(preparation, ('heights', 'cut_off_at_mwr_height', 'scale_rh_clear_sky',
                              'scale_rh_clear_sky_seed', 'scale_rh_clear_sky_fraction',
                              'scale_rh_clear_sky_factor'), f'{self.name}.preparation')
         if 'heights' in preparation:
-            _coordinates(preparation['heights'], 'preparation.heights')
+            check_coordinates(preparation['heights'], 'preparation.heights')
             if preparation['heights'][0] != 0 or preparation['heights'] != sorted(preparation['heights']):
                 raise ValueError('preparation.heights must increase from zero (metres above the profile origin).')
         for key in ('cut_off_at_mwr_height', 'scale_rh_clear_sky'):
             if key in preparation and type(preparation[key]) is not bool:
                 raise ValueError(f'preparation.{key} must be true or false.')
         if 'scale_rh_clear_sky_seed' in preparation:
-            _number(preparation['scale_rh_clear_sky_seed'], 'scale_rh_clear_sky_seed', 0, integer=True)
+            check_number(preparation['scale_rh_clear_sky_seed'], 'scale_rh_clear_sky_seed', 0, integer=True)
         for key in ('scale_rh_clear_sky_fraction', 'scale_rh_clear_sky_factor'):
             if key in preparation:
-                _number(preparation[key], key, 0)
+                check_number(preparation[key], key, 0)
                 if preparation[key] <= 0 or (key.endswith('fraction') and preparation[key] > 1):
                     raise ValueError(f'{key} must be positive; fractions cannot exceed one.')
         rt = self.values.get('radiative_transfer', {})
-        _known(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift'), f'{self.name}.radiative_transfer')
+        check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift'), f'{self.name}.radiative_transfer')
         if rt.get('backend', 'torchMWRT') not in ('torchMWRT', 'pyrtlib'):
             raise ValueError('radiative_transfer.backend must be torchMWRT or pyrtlib.')
         if 'absorption_model' in rt:
-            _component(rt['absorption_model'], 'radiative_transfer.absorption_model')
+            check_name(rt['absorption_model'], 'radiative_transfer.absorption_model')
         for key in ('frequencies', 'angles'):
             if key in rt:
-                _coordinates(rt[key], f'radiative_transfer.{key}')
+                check_coordinates(rt[key], f'radiative_transfer.{key}')
         if 'angles' in rt and (min(rt['angles']) <= 0 or max(rt['angles']) > 90):
             raise ValueError('RT angles must be between zero (exclusive) and 90 degrees.')
         if 'frequency_shift' in rt:
@@ -147,18 +148,18 @@ class DatasetRecipe:
             if not isinstance(shifts, list) or len(shifts) != len(rt.get('frequencies', std_freqs)):
                 raise ValueError('RT frequency_shift must contain one offset per frequency.')
             for value in shifts:
-                _number(value, 'radiative_transfer.frequency_shift')
+                check_number(value, 'radiative_transfer.frequency_shift')
         split = self.values.get('split', {})
-        _known(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
+        check_keys(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
         for key in ('test_fraction', 'validation_fraction'):
             if key in split:
-                _number(split[key], f'split.{key}', 0)
+                check_number(split[key], f'split.{key}', 0)
                 if split[key] >= 1:
                     raise ValueError(f'split.{key} must be smaller than one.')
         if 'seed' in split:
-            _number(split['seed'], 'split.seed', 0, integer=True)
+            check_number(split['seed'], 'split.seed', 0, integer=True)
         observations = self.values.get('observations', {})
-        _known(observations, ('import_retrieval_data',), f'{self.name}.observations')
+        check_keys(observations, ('import_retrieval_data',), f'{self.name}.observations')
         if 'import_retrieval_data' in observations and type(observations['import_retrieval_data']) is not bool:
             raise ValueError('observations.import_retrieval_data must be true or false.')
         return self
@@ -173,11 +174,27 @@ class DatasetWorkflow:
     """
 
     def __init__(self, project_dir, site):
-        _component(site, 'site')
+        check_name(site, 'site')
         self.project_dir, self.site = project_root(project_dir), site
         with site_config_file(self.project_dir, site).open('rb') as stream:
             self.site_settings = tomllib.load(stream)
         self._recipes = {}
+        self._settings_cache = None
+        self._settings_date = None
+
+    @contextmanager
+    def _resolved_settings(self):
+        """Share one settings/date snapshot throughout an operation."""
+        if self._settings_cache is not None:
+            yield
+            return
+        self._settings_cache = {}
+        self._settings_date = date.today()
+        try:
+            yield
+        finally:
+            self._settings_cache = None
+            self._settings_date = None
 
     def recipe(self, name):
         if name not in self._recipes:
@@ -230,19 +247,22 @@ class DatasetWorkflow:
         return self.source_kind(recipe.inputs[role])
 
     def settings(self, name):
-        """Resolve effective scientific defaults once for execution and records."""
+        """Resolve defaults; a build shares its snapshot with processing records."""
+        if self._settings_cache is not None and name in self._settings_cache:
+            return self._settings_cache[name]
+        today = self._settings_date or date.today()
         recipe = self.recipe(name)
         values, kind = recipe.values, recipe.kind
         settings = {'kind': kind, 'inputs': recipe.inputs, 'sources': self.sources(name)}
         if kind == 'radiosonde':
-            settings.update(start_year=values.get('start_year', 1990), end_year=values.get('end_year', date.today().year),
+            settings.update(start_year=values.get('start_year', 1990), end_year=values.get('end_year', today.year),
                             refresh_years=values.get('refresh_years', 2))
             if settings['start_year'] > settings['end_year']:
                 raise ValueError(f'{name}: start_year is after end_year.')
         elif kind in ('era5', 'hatpro'):
             delay = values.get('delay_days', 5) if kind == 'era5' else 0
             settings.update(start_date=values.get('start_date', self.site_settings.get('mwr_measurement_start_date')),
-                            end_date=values.get('end_date', str((pd.Timestamp.now().normalize() - pd.Timedelta(days=delay)).date())))
+                            end_date=values.get('end_date', str(today - pd.Timedelta(days=delay))))
             if not settings['start_date']:
                 raise ValueError(f'{name}: provide start_date or the site mwr_measurement_start_date.')
             if pd.Timestamp(settings['start_date']) > pd.Timestamp(settings['end_date']):
@@ -277,6 +297,8 @@ class DatasetWorkflow:
         elif kind == 'split':
             settings.update(test_fraction=0.1, validation_fraction=0.1, seed=42)
             settings.update(values.get('split', {}))
+        if self._settings_cache is not None:
+            self._settings_cache[name] = settings
         return settings
 
     def _definition(self, name):
@@ -287,7 +309,7 @@ class DatasetWorkflow:
         return {'settings': settings, 'inputs': {role: self._definition(input_name)
                 for role, input_name in self.recipe(name).inputs.items()}}
 
-    def files(self, name):
+    def files(self, name, *, sources=None, splits=None):
         recipe = self.recipe(name)
         if recipe.kind == 'radiosonde':
             settings = self.settings(name)
@@ -299,12 +321,40 @@ class DatasetWorkflow:
             return [era5_cache_file(self.project_dir, settings['latitude'], settings['longitude'], settings['hour_interval'])]
         if recipe.kind in ('hatpro', 'analysis'):
             return [dataset_file(self.project_dir, self.site, name, bls=bls) for bls in (False, True)]
-        splits = ('training', 'validation', 'test') if recipe.kind == 'split' else (None,)
+        if splits is None:
+            splits = ('training', 'validation', 'test') if recipe.kind == 'split' else (None,)
+        if sources is None:
+            sources = self.sources(name)
         return [dataset_file(self.project_dir, self.site, name, source, split=split)
-                for source in self.sources(name) for split in splits]
+                for source in sources for split in splits]
 
-    def require(self, name):
-        paths = self.files(name)
+    def require(self, name, *, sources=None, splits=None):
+        """Check a prepared dataset's definition, state and selected files.
+
+        Selecting splits/sources requires a split dataset. Unselected split files
+        are not needed, so training need not load or require held-out test data.
+        This performs no processing or downloads.
+        """
+        with self._resolved_settings():
+            self._graph([name])
+            if sources is not None or splits is not None:
+                if self.recipe(name).kind != 'split':
+                    raise ValueError(f'{name}: select a split dataset when requesting sources or splits.')
+                if sources is not None:
+                    check_strings(sources, 'sources')
+                    available = self.sources(name)
+                    if set(sources) - set(available):
+                        raise ValueError(f'sources must be a subset of {available}.')
+                if splits is not None:
+                    splits = list(splits)
+                    check_strings(splits, 'splits')
+                    if not splits or set(splits) - {'training', 'validation', 'test'}:
+                        raise ValueError('splits must select training, validation or test.')
+            self._check_state(name)
+            self._require_files(name, sources=sources, splits=splits)
+
+    def _require_files(self, name, *, sources=None, splits=None):
+        paths = self.files(name, sources=sources, splits=splits)
         if self.recipe(name).kind == 'radiosonde':
             for source in self.sources(name):
                 if not any(p.parent == radiosonde_station_dir(self.project_dir, source) for p in paths):
@@ -357,73 +407,75 @@ class DatasetWorkflow:
 
     def record(self, name, *, rebuilt=False, provenance=None, requires_rebuild=False, source_years_checked=None):
         """Record processing settings; migration may explicitly describe inferred provenance."""
-        recipe = self.recipe(name)
-        old = self._state(name)
-        state = {'definition': self._definition(name), 'effective': self.settings(name),
-                 'generation': uuid4().hex if rebuilt or not old else old['generation'],
-                 'input_generations': {n: self._state(n).get('generation') for n in recipe.inputs.values()},
-                 'input_files': self._input_stats(name),
-                 'coverage': self._coverage(name),
-                 'updated_utc': pd.Timestamp.now(tz='UTC').isoformat()}
-        if provenance is not None:
-            state['provenance'] = provenance
-        elif old.get('provenance'):
-            state['provenance'] = old['provenance']
-        if requires_rebuild:
-            state['requires_rebuild'] = True
-        if source_years_checked is not None:
-            state['source_years_checked'] = source_years_checked
-        recipe.directory.mkdir(parents=True, exist_ok=True)
-        path = recipe.directory / 'state.json'
-        temporary = path.with_suffix('.json.tmp')
-        temporary.write_text(json.dumps(state, indent=2) + '\n')
-        temporary.replace(path)
-        return state
+        with self._resolved_settings():
+            recipe = self.recipe(name)
+            old = self._state(name)
+            state = {'definition': self._definition(name), 'effective': self.settings(name),
+                     'generation': uuid4().hex if rebuilt or not old else old['generation'],
+                     'input_generations': {n: self._state(n).get('generation') for n in recipe.inputs.values()},
+                     'input_files': self._input_stats(name),
+                     'coverage': self._coverage(name),
+                     'updated_utc': pd.Timestamp.now(tz='UTC').isoformat()}
+            if provenance is not None:
+                state['provenance'] = provenance
+            elif old.get('provenance'):
+                state['provenance'] = old['provenance']
+            if requires_rebuild:
+                state['requires_rebuild'] = True
+            if source_years_checked is not None:
+                state['source_years_checked'] = source_years_checked
+            recipe.directory.mkdir(parents=True, exist_ok=True)
+            path = recipe.directory / 'state.json'
+            temporary = path.with_suffix('.json.tmp')
+            temporary.write_text(json.dumps(state, indent=2) + '\n')
+            temporary.replace(path)
+            return state
 
     def build(self, datasets, *, with_dependencies=False, rebuild=False, dry_run=False):
-        names = [datasets] if isinstance(datasets, str) else list(datasets)
-        if not names:
-            raise ValueError('Select at least one dataset.')
-        graph = self._graph(names)
-        selected = set(names)
-        order = graph if with_dependencies else [n for n in graph if n in selected]
-        logger.info('Dataset order: %s', ' -> '.join(order))
-        # Validate the whole selected operation before deleting any output or downloading.
-        for name in order:
-            self._check_state(name, rebuilding=rebuild and name in selected)
-            if rebuild and name not in selected and any(p.is_file() for p in self.files(name)):
-                ancestors = set(self._graph([name])) - {name}
-                if ancestors & selected:
-                    raise ValueError(f'{name}: a selected input will be rebuilt. Select {name} for rebuild too, or rebuild the input separately first.')
-            for input_name in self.recipe(name).inputs.values():
-                if input_name not in order:
-                    self.require(input_name)
+        with self._resolved_settings():
+            names = [datasets] if isinstance(datasets, str) else list(datasets)
+            if not names:
+                raise ValueError('Select at least one dataset.')
+            graph = self._graph(names)
+            selected = set(names)
+            order = graph if with_dependencies else [n for n in graph if n in selected]
+            logger.info('Dataset order: %s', ' -> '.join(order))
+            # Validate the whole selected operation before deleting any output or downloading.
+            for name in order:
+                self._check_state(name, rebuilding=rebuild and name in selected)
+                if rebuild and name not in selected and any(p.is_file() for p in self.files(name)):
+                    ancestors = set(self._graph([name])) - {name}
+                    if ancestors & selected:
+                        raise ValueError(f'{name}: a selected input will be rebuilt. Select {name} for rebuild too, or rebuild the input separately first.')
+                for input_name in self.recipe(name).inputs.values():
+                    if input_name not in order:
+                        self._require_files(input_name)
+                        self._check_state(input_name)
+            for name in order:
+                rebuilding = rebuild and name in selected
+                recipe = self.recipe(name)
+                logger.info('%s %s (%s)%s', 'Rebuild' if rebuilding else 'Build/update', name, recipe.kind,
+                            ' [download/check source]' if recipe.kind in ('radiosonde', 'era5') else '')
+                if dry_run:
+                    continue
+                for input_name in recipe.inputs.values():
+                    self._require_files(input_name)
                     self._check_state(input_name)
-        for name in order:
-            rebuilding = rebuild and name in selected
-            recipe = self.recipe(name)
-            logger.info('%s %s (%s)%s', 'Rebuild' if rebuilding else 'Build/update', name, recipe.kind,
-                        ' [download/check source]' if recipe.kind in ('radiosonde', 'era5') else '')
-            if dry_run:
-                continue
-            for input_name in recipe.inputs.values():
-                self.require(input_name)
-                self._check_state(input_name)
-            self._check_state(name, rebuilding=rebuilding)
-            if rebuilding and recipe.directory.exists():
-                shutil.rmtree(recipe.directory)
-            recipe.directory.mkdir(parents=True, exist_ok=True)
-            handler = logging.FileHandler(recipe.directory / 'build.log')
-            handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
-            logging.getLogger().addHandler(handler)
-            try:
-                details = self._build(recipe, rebuilding) or {}
-                self.require(name)
-                self.record(name, rebuilt=rebuilding, **details)
-            finally:
-                logging.getLogger().removeHandler(handler)
-                handler.close()
-        return order
+                self._check_state(name, rebuilding=rebuilding)
+                if rebuilding and recipe.directory.exists():
+                    shutil.rmtree(recipe.directory)
+                recipe.directory.mkdir(parents=True, exist_ok=True)
+                handler = logging.FileHandler(recipe.directory / 'build.log')
+                handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+                logging.getLogger().addHandler(handler)
+                try:
+                    details = self._build(recipe, rebuilding) or {}
+                    self._require_files(name)
+                    self.record(name, rebuilt=rebuilding, **details)
+                finally:
+                    logging.getLogger().removeHandler(handler)
+                    handler.close()
+            return order
 
     def _build(self, recipe, rebuilding):
         name, kind, settings = recipe.name, recipe.kind, self.settings(recipe.name)
@@ -436,7 +488,7 @@ class DatasetWorkflow:
             return
         if kind == 'radiosonde':
             from openMWR.dwd_opendata import update_radiosonde_data
-            recent = date.today().year - settings['refresh_years'] + 1
+            recent = self._settings_date.year - settings['refresh_years'] + 1
             checked = set(self._state(name).get('source_years_checked', []))
             for station in self.sources(name):
                 for year in range(settings['start_year'], settings['end_year'] + 1):

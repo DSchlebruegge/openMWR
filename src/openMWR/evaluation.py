@@ -127,10 +127,11 @@ def _observation_note(days_gt_20):
 
 
 def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_20=None, station_id=None, dataset=None):
-    from openMWR.recipes import RetrievalRecipe, _component
+    from openMWR.config import check_name
+    from openMWR.recipes import RetrievalRecipe
 
-    _component(site, 'site')
-    _component(retrieval, 'retrieval')
+    check_name(site, 'site')
+    check_name(retrieval, 'retrieval')
     root = project_root(project_dir)
     path = checkpoint_file(root, site, retrieval)
     if not path.is_file():
