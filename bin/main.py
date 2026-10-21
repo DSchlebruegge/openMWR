@@ -70,9 +70,10 @@ def era5_data_generation():
 
     ### Create an analysis dataset with ERA5 data and hatpro data
     from openMWR.era5 import ERA5Processor
-    era5 = ERA5Processor(site, PROJECT_DIR, update_only=False, start_date='2025-01-01', end_date='2025-02-01')
-    era5.create_original_dataset(h_freq=2)
-    era5.create_forward_calc_dataset(std_freqs, std_heights, std_angles, num_of_processes=12)
+    era5 = ERA5Processor(site, PROJECT_DIR, update_only=False, hour_interval=2, start_date='2025-01-01', end_date='2025-02-01')
+    era5.create_original_dataset()
+    era5.create_profile_dataset(std_heights)
+    era5.create_forward_calc_dataset(std_freqs, std_angles, num_of_processes=12)
     era5.create_analysis_dataset_from_forward_calc() # Expects call of create_hatpro_dataset(site) before, to get the hatpro data for the analysis dataset.
 
 def train():

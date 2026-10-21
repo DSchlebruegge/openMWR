@@ -22,7 +22,7 @@ from openMWR.models import Model, load_model
 from openMWR.plot import plot_err, plot_scatter_lwp
 from openMWR.run import run_model_list, validate_model_data, validate_device
 from openMWR.xr_utils import load_combined_dataset
-from openMWR.paths import project_root, site_root, site_data_dir, checkpoint_file, retrieval_dir
+from openMWR.paths import project_root, site_root, dataset_file, checkpoint_file, retrieval_dir
 from openMWR.provenance import checkpoint_id, git_identity, software_identity, retrieval_log, utc_now
 
 
@@ -43,6 +43,8 @@ class SiteSettings:
     include_rpg: bool
     days_gt_20: bool
     station_id: str | None = None
+    training_dataset: str = 'training'
+    analysis_dataset: str | None = None
 
 
 @dataclass
@@ -124,7 +126,7 @@ def _observation_note(days_gt_20):
     return 'All-days diagnostic evaluation: includes days 1-20, the standard optimization and OMB selection. This observation filter does not hold out those days.'
 
 
-def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_20=None, station_id=None):
+def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_20=None, station_id=None, dataset=None):
     from openMWR.recipes import RetrievalRecipe, _component
 
     _component(site, 'site')
@@ -137,7 +139,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_2
     recipe_file = retrieval_dir(root, site, retrieval) / 'retrieval.toml'
     recipe = RetrievalRecipe.load(root, site, retrieval) if recipe_file.is_file() else None
     settings = dict(recipe.section('evaluation')) if recipe is not None else {}
-    for key, value in (('data_source', data_source), ('days_gt_20', days_gt_20), ('station_id', station_id)):
+    for key, value in (('data_source', data_source), ('days_gt_20', days_gt_20), ('station_id', station_id), ('dataset', dataset)):
         if value is not None:
             settings[key] = value
     source = settings.get('data_source', 'radiosonde')
@@ -152,8 +154,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_2
     inputs = []
     paths = []
     if observed:
-        suffix = '_bls' if model.is_bls_model else ''
-        analysis_path = site_data_dir(root, site, 'analysis') / f'analysis_data_{source}{suffix}.nc'
+        analysis_path = dataset_file(root, site, settings.get('dataset', f'analysis_{source}'), bls=model.is_bls_model)
         if not analysis_path.is_file():
             raise FileNotFoundError(f'Missing evaluation analysis dataset: {analysis_path}. Prepare it before evaluation.')
         data = xr.load_dataset(analysis_path)
@@ -176,13 +177,12 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_2
         sources = model.hyper_params.get('sources', model.hyper_params.get('station_ids'))
         if not sources:
             raise ValueError('The checkpoint does not record training sources; set evaluation.test_data = false to evaluate observations only.')
-        suffix = model.hyper_params.get('file_extension', '')
         for source_id in sources:
-            path = site_data_dir(root, site, 'training') / f"test_data_{source_id}{'_' + suffix if suffix else ''}.nc"
+            path = dataset_file(root, site, model.training_dataset, source_id, split='test')
             if not path.is_file():
                 raise FileNotFoundError(f'Missing test dataset: {path}. Prepare it before evaluation.')
             paths.append(path)
-        data = load_combined_dataset(site, root, 'test_data', sources, file_extension=suffix)
+        data = load_combined_dataset(site, root, 'test', sources, dataset=model.training_dataset)
         variables = [v for v in ('T', 'rh', 'lwc', 'lwp') if v in model.output] or ['TB']
         inputs.append(('test', data, data, variables))
     prepared = []
@@ -295,17 +295,16 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     if data_source not in ("radiosonde", "era5"):
         raise ValueError("data_source must be 'radiosonde' or 'era5'.")
     project_dir = project_root(project_dir)
-    site_dir = site_data_dir(project_dir, site)
     started = datetime.now(timezone.utc).isoformat()
     models = [Model.load(name, site, str(project_dir)) for name in settings.models]
     bls_models = [Model.load(name, site, str(project_dir)) for name in settings.bls_models]
     station_ids = models[0].hyper_params["station_ids"]
     paths = [
-        site_dir / "analysis" / f"analysis_data_{data_source}{suffix}.nc"
-        for suffix in ("", "_bls")
+        dataset_file(project_dir, site, settings.analysis_dataset or f'analysis_{data_source}', bls=bls)
+        for bls in (False, True)
     ]
     paths += [
-        site_dir / "training" / f"test_data_{station}.nc" for station in station_ids
+        dataset_file(project_dir, site, settings.training_dataset, station, split='test') for station in station_ids
     ]
     for path in paths:
         if not path.is_file():
@@ -386,7 +385,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     del pred, hatpro, reference
 
     logger.info("Evaluating zenith retrievals on test data")
-    test_data = load_combined_dataset(site, str(project_dir), "test_data", station_ids)
+    test_data = load_combined_dataset(site, str(project_dir), 'test', station_ids, dataset=settings.training_dataset)
     if not test_data.sizes.get("time", 0):
         raise ValueError("The test data contain no time samples.")
     pred_test = _predict(models, test_data, device)

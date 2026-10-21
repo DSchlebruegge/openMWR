@@ -58,11 +58,9 @@ def create_site(site: str, project_dir: str, **config):
 
         sites/{site}/
             site.toml
+            datasets/
             retrieval/
         data/sites/{site}/
-            analysis/
-            radiosonde/
-            hatpro/
 
     Relative input/output paths in the configuration are resolved from
     ``project_dir`` when read. Absolute paths retain their meaning.
@@ -70,10 +68,8 @@ def create_site(site: str, project_dir: str, **config):
 
     document = tomli_w.dumps({key: value for key, value in config.items() if value is not None})
     (site_root(project_dir, site) / 'retrieval').mkdir(parents=True, exist_ok=True)
-    subdirs = ['analysis', 'radiosonde', 'hatpro', 'training', 'era5']
-    for dir in subdirs:
-        path = site_data_dir(project_dir, site, dir)
-        os.makedirs(path, exist_ok=True)
+    (site_root(project_dir, site) / 'datasets').mkdir(parents=True, exist_ok=True)
+    site_data_dir(project_dir, site).mkdir(parents=True, exist_ok=True)
 
     site_config_file(project_dir, site).write_text(document, encoding='utf-8')
 

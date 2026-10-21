@@ -17,7 +17,7 @@ from openMWR.train import TrainingWorkflow
 
 
 def project(tmp_path, kind='mlr', mode='zenith', suffix='variant', search=True):
-    create_site('test', tmp_path, gen='G5')
+    create_site('test', tmp_path, gen='G5', mwr_height=550)
     directory = tmp_path / 'sites/test/retrieval/example'
     directory.mkdir()
     settings = f'''schema_version = 1
@@ -35,7 +35,7 @@ freqs = [22.24, 31.4]
     if mode == 'bls':
         settings += 'angles = [90.0, 30.0]\nvary_input_noise_with_angle_linear = true\n'
     training = 'repeats_for_linear_regression = 1\n' if kind == 'mlr' else 'epochs = 1\nbatch_size = 4\n'
-    variant = f'variant = "{suffix}"\n' if suffix else ''
+    variant = f'dataset = "training_{suffix}"\n' if suffix else 'dataset = "training"\n'
     settings += f'''
 [data]
 sources = ["03715"]
@@ -64,6 +64,17 @@ station_id = "03715"
 '''
     recipe = directory / 'retrieval.toml'
     recipe.write_text(settings)
+    import tomli_w
+    dataset_name = f'training_{suffix}' if suffix else 'training'
+    for name, definition in {
+        'radiosondes': {'kind': 'radiosonde', 'stations': ['03715']},
+        'profiles_standard': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}},
+        'rt_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles_standard'}},
+        dataset_name: {'kind': 'split', 'inputs': {'simulation': 'rt_r20'}},
+    }.items():
+        (tmp_path / f'sites/test/datasets/{name}.toml').write_text(tomli_w.dumps(definition))
+    for name in (dataset_name, 'analysis_radiosonde', 'analysis_era5'):
+        (tmp_path / f'data/sites/test/{name}').mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(12)
     times = np.array(['2024-01-10', '2024-01-11', '2024-01-12', '2024-01-21', '2024-01-22', '2024-01-23'], dtype='datetime64[ns]')
     data = xr.Dataset(
@@ -76,11 +87,13 @@ station_id = "03715"
     )
     # Common training files can contain scans; zenith workflows select 90 degrees.
     for split in ('training_data', 'validation_data', 'test_data'):
-        name = f'{split}_03715' + (f'_{suffix}' if suffix else '')
-        data.to_netcdf(tmp_path / f'data/sites/test/training/{name}.nc')
+        name = f'{split.removesuffix("_data")}_03715'
+        data.to_netcdf(tmp_path / f'data/sites/test/{dataset_name}/{name}.nc')
     observations = xr.concat([data, data.assign(T=data.T + 0.5)], dim='data_source').assign_coords(data_source=['radiosonde', 'hatpro']).expand_dims(station=['03715'])
-    observations.sel(ang=90, drop=True).to_netcdf(tmp_path / 'data/sites/test/analysis/analysis_data_radiosonde.nc')
-    observations.to_netcdf(tmp_path / 'data/sites/test/analysis/analysis_data_radiosonde_bls.nc')
+    observations.sel(ang=90, drop=True).to_netcdf(tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc')
+    observations.to_netcdf(tmp_path / 'data/sites/test/analysis_radiosonde/bls.nc')
+    from openMWR.datasets import DatasetWorkflow
+    DatasetWorkflow(tmp_path, 'test').record(dataset_name)
     return recipe, data
 
 
@@ -104,7 +117,7 @@ def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path)
     cli_model = load_model('example', 'test', tmp_path)
     for key, values in python_model.state_dict().items():
         torch.testing.assert_close(values, cli_model.state_dict()[key])
-    assert cli_model.hyper_params['file_extension'] == 'variant'
+    assert cli_model.hyper_params['training_dataset'] == 'training_variant'
     assert cli_model.hyper_params['lr_low'] == 1e-7
     assert cli_model.training_metadata['effective']['hyper_params']['lr_low'] == 1e-7
     assert cli_model.training_metadata['software']['packages']['openMWR']
@@ -185,7 +198,7 @@ def test_manual_python_workflow_still_uses_the_same_training(tmp_path):
     before = load_model('example', 'test', tmp_path)
     model = type(configured.model)(**configured.model.structure)
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
-    workflow.load_training_data(['03715'], file_extension='variant')
+    workflow.load_training_data(['03715'], dataset='training_variant')
     workflow.add_standard_training_hyper_params(epochs=1, batch_size=4, repeats_for_linear_regression=1)
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
     workflow.train()
@@ -299,7 +312,7 @@ def test_fresh_and_continue_affect_only_the_selected_retrieval(tmp_path):
     command(tmp_path, 'train', '--continue')
     assert len(optuna.load_study(study_name='example', storage=storage).trials) == 2
     before = (recipe.parent / 'model.pth').read_bytes()
-    analysis = tmp_path / 'data/sites/test/analysis/analysis_data_radiosonde.nc'
+    analysis = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
     temporary = analysis.with_suffix('.disabled')
     analysis.rename(temporary)
     try:
@@ -321,7 +334,7 @@ def test_station_id_is_independent_of_file_order_and_requires_a_choice(tmp_path)
     recipe, data = project(tmp_path, search=False)
     TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train()
     expected = evaluate_retrieval(tmp_path, 'test', 'example')
-    path = tmp_path / 'data/sites/test/analysis/analysis_data_radiosonde.nc'
+    path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
     original = xr.load_dataset(path)
     other = original.assign_coords(station=['02290'])
     other = other.assign(T=other.T + 50)
@@ -393,7 +406,7 @@ def test_bad_recipes_fail_before_training(before, after, message, tmp_path):
 
 def test_missing_data_and_coordinate_mismatch_are_clear(tmp_path):
     recipe, data = project(tmp_path)
-    file = tmp_path / 'data/sites/test/training/validation_data_03715_variant.nc'
+    file = tmp_path / 'data/sites/test/training_variant/validation_03715.nc'
     file.unlink()
     with pytest.raises(FileNotFoundError, match='Missing prepared dataset'):
         TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
@@ -410,11 +423,16 @@ def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
     recipe, data = project(tmp_path)
     recipe.write_text(recipe.read_text().replace('sources = ["03715"]', 'sources = ["era5"]')
                       + '\n[bias_correction]\ndata_source = "era5"\nfactor = 0.5\n')
+    (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\n')
+    site_file = tmp_path / 'sites/test/site.toml'
+    site_file.write_text(site_file.read_text() + '\nlatitude = 48.0\nlongitude = 11.0\n')
     for split in ('training_data', 'validation_data'):
-        data.to_netcdf(tmp_path / f'data/sites/test/training/{split}_era5_variant.nc')
+        data.to_netcdf(tmp_path / f'data/sites/test/training_variant/{split.removesuffix("_data")}_era5.nc')
     zenith = data.sel(ang=90, drop=True)
     observations = xr.concat([zenith, zenith.assign(TB=zenith.TB + 3)], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
-    observations.to_netcdf(tmp_path / 'data/sites/test/analysis/analysis_data_era5.nc')
+    observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
+    from openMWR.datasets import DatasetWorkflow
+    DatasetWorkflow(tmp_path, 'test').record('training_variant')
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     np.testing.assert_allclose(workflow.hyper_params['mean_bias'], [1.5, 1.5])
     np.testing.assert_allclose(workflow.training_data.TB.isel(station=0), zenith.TB - 1.5)
@@ -433,11 +451,11 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     data['TB'] = (('time', 'ang', 'frq'), 100 + rng.normal(size=(6, 2, len(std_freqs))))
     data = data.assign_coords(frq=std_freqs)
     for split in ('training_data', 'validation_data'):
-        data.to_netcdf(tmp_path / f'data/sites/test/training/{split}_03715_variant.nc')
+        data.to_netcdf(tmp_path / f'data/sites/test/training_variant/{split.removesuffix("_data")}_03715.nc')
     background = data.sel(ang=90, drop=True)
     measured = background.assign(TB=background.TB + rng.normal(size=(6, len(std_freqs))))
     observations = xr.concat([background, measured], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
-    observations.to_netcdf(tmp_path / 'data/sites/test/analysis/analysis_data_era5.nc')
+    observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
     settings = tomllib.loads(recipe.read_text())
     settings['model']['freqs'] = std_freqs.tolist()
     settings.pop('optimization')

@@ -19,8 +19,10 @@ from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
 from openMWR.run import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data, validate_device
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, load_model
-from openMWR.paths import site_data_dir, retrieval_dir, checkpoint_file, optimization_file
+from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
 from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def _logged_run(action):
@@ -172,19 +174,19 @@ class TrainingWorkflow:
         _known(noise, allowed_noise, 'input_noise')
         recipe.require_data(('training_data', 'validation_data'))
         data = recipe.section('data')
-        workflow.load_training_data(sources=data['sources'],
+        workflow.load_training_data(sources=data.get('sources'),
                                     end_date_training=data.get('end_date_training'),
-                                    file_extension=data.get('variant', ''))
+                                    dataset=data['dataset'])
         bias = recipe.section('bias_correction')
         if bias:
             sources = bias.get('sources', workflow.hyper_params['station_ids'])
-            workflow.make_omb_analysis(sources, data_source=bias.get('data_source', 'radiosonde'))
+            workflow.make_omb_analysis(sources, data_source=bias.get('data_source', 'radiosonde'), dataset=bias.get('dataset'))
             workflow.make_bias_correction(**{key: bias[key] for key in ('specific_freqs', 'factor') if key in bias})
         if method == 'omb':
             source = noise_settings.get('data_source', 'radiosonde')
             sources = noise_settings.get('sources', workflow.hyper_params['station_ids'])
-            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources:
-                workflow.make_omb_analysis(sources, data_source=source)
+            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings.get('dataset', f'analysis_{source}'):
+                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings.get('dataset'))
             workflow.select_omb_input_noise_hyper_params(factor=noise_settings.get('factor'))
             workflow.hyper_params.update({f'input_noise_{key}': value for key, value in noise.items()})
         workflow.validate()
@@ -278,9 +280,9 @@ class TrainingWorkflow:
         """Record the actual fitting data and the separate trial-ranking rule."""
         setup = {'training_sources': self.hyper_params.get('sources', self.hyper_params.get('station_ids', [])),
                  'training_cutoff': self.hyper_params.get('end_date_training'),
-                 'prepared_variant': self.hyper_params.get('file_extension', ''),
+                 'training_dataset': self.hyper_params.get('training_dataset', 'training'),
                  'fitting': 'ordinary least squares with input-noise repeats' if self.model.is_MLR else self.hyper_params['loss_fn']}
-        self.logger.info('Training sources: %s; cutoff: %s; prepared variant: %s.', setup['training_sources'], setup['training_cutoff'] or 'none', setup['prepared_variant'] or 'standard')
+        self.logger.info('Training sources: %s; cutoff: %s; dataset: %s.', setup['training_sources'], setup['training_cutoff'] or 'none', setup['training_dataset'])
         self.logger.info('Fitting: %s.', setup['fitting'])
         if data_source is not None:
             if 'T' not in self.model.output:
@@ -294,7 +296,7 @@ class TrainingWorkflow:
             self.logger.info('Optimization score (separate from fitting loss): %s.', score)
         self._run_record['setup'] = plain_value(setup)
 
-    def validate_optimization(self, data_source=None):
+    def validate_optimization(self, data_source=None, dataset=None):
         """Check search definitions and analysis inputs without starting trials."""
         self.validate()
         settings = self.recipe.section('optimization') if self.recipe is not None else {}
@@ -303,8 +305,8 @@ class TrainingWorkflow:
         source = data_source or settings.get('data_source', 'radiosonde')
         if source not in ('radiosonde', 'era5'):
             raise ValueError("data_source must be 'radiosonde' or 'era5'.")
-        suffix = '_bls' if self.model.is_bls_model else ''
-        path = site_data_dir(self.project_dir, self.site, 'analysis') / f'analysis_data_{source}{suffix}.nc'
+        analysis_name = dataset or settings.get('dataset', f'analysis_{source}')
+        path = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         if not path.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
         data = xr.load_dataset(path)
@@ -316,7 +318,7 @@ class TrainingWorkflow:
         validate_model_data(self.model.output[variables], data.sel(data_source=source, drop=True), 'optimization reference')
         return self
 
-    def load_training_data(self, sources: List[str], end_date_training: str = None, file_extension: str = ''):
+    def load_training_data(self, sources: List[str] = None, end_date_training: str = None, dataset: str = 'training'):
         """
         Load and prepare training and validation data for the retrieval model.
 
@@ -328,8 +330,8 @@ class TrainingWorkflow:
         end_date_training : str, optional
             ISO-format date string (YYYY-MM-DD). If provided, data occurring
             after this date is excluded from both training and validation sets.
-        file_extension : str, optional
-            Optional suffix for the training and validation data files.
+        dataset : str, optional
+            Named split dataset. Omitted sources use all sources in its recipe.
 
         Notes
         -----
@@ -337,15 +339,18 @@ class TrainingWorkflow:
         - For non-BLS models, selects only 90° elevation angle if present.
         - Stores datasets in `training_data` and `validation_data`.
         """
+        if sources is None:
+            from openMWR.datasets import DatasetWorkflow
+            sources = DatasetWorkflow(self.project_dir, self.site).sources(dataset)
         self.hyper_params.update({
             'end_date_training': end_date_training,
             'sources': sources,
-            'file_extension': file_extension,
+            'training_dataset': dataset,
             'station_ids': [s for s in sources if s != 'era5']
         })
 
-        self.training_data = load_combined_dataset(self.site, self.project_dir, 'training_data', sources, file_extension=file_extension)
-        self.validation_data = load_combined_dataset(self.site, self.project_dir, 'validation_data', sources, file_extension=file_extension)
+        self.training_data = load_combined_dataset(self.site, self.project_dir, 'training', sources, dataset=dataset)
+        self.validation_data = load_combined_dataset(self.site, self.project_dir, 'validation', sources, dataset=dataset)
 
         if end_date_training is not None:
             # Filter the training data to only include data before the end date
@@ -552,7 +557,7 @@ class TrainingWorkflow:
                 add_param(var)
 
 
-    def make_omb_analysis(self, station_ids_for_analysis, data_source='radiosonde'):
+    def make_omb_analysis(self, station_ids_for_analysis, data_source='radiosonde', dataset=None):
         """
         Create and process an OMB (observation-minus-background) analysis.
 
@@ -576,6 +581,7 @@ class TrainingWorkflow:
             data_source=data_source,
             station_ids_for_analysis=station_ids_for_analysis,
             load_existing_analysis_dataset=True,
+            dataset=dataset,
         )
 
         # Only select days with day smaller than 20. The other days are used for model validation.
@@ -1104,7 +1110,7 @@ class TrainingWorkflow:
             return value
 
     @_logged_run('optimize')
-    def optimize(self, n_trials=None, data_source=None, run_mode=None):
+    def optimize(self, n_trials=None, data_source=None, run_mode=None, dataset=None):
         """
         Perform hyperparameter optimization using Optuna.
 
@@ -1129,7 +1135,7 @@ class TrainingWorkflow:
         - Best models are saved automatically.
         - Study is stored beside the retrieval in `optimization.db`.
         """
-        self.validate_optimization(data_source)
+        self.validate_optimization(data_source, dataset)
         settings = self.recipe.section('optimization') if self.recipe is not None else {}
         if n_trials is None:
             n_trials = settings.get('n_trials')
@@ -1147,8 +1153,8 @@ class TrainingWorkflow:
                 label = f'input_noise.{key.removeprefix("input_noise_")}' if key.startswith('input_noise_') else f'training.{key}'
                 self.logger.info('Search %s: %s', label, value)
 
-        file_extension = '_bls' if self.model.is_bls_model else ''
-        analysis_file = site_data_dir(self.project_dir, self.site, 'analysis') / f'analysis_data_{data_source}{file_extension}.nc'
+        analysis_name = dataset or settings.get('dataset', f'analysis_{data_source}')
+        analysis_file = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         if not analysis_file.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {analysis_file}. Prepare it before optimization.')
         storage = self._prepare_run(run_mode, optimization=True)
@@ -1157,7 +1163,7 @@ class TrainingWorkflow:
         if self.recipe is not None:
             experiment = plain_value({'model': self.model.checkpoint_structure(), 'hyper_params': hyper_params,
                                       'bias_correction': self.recipe.section('bias_correction'),
-                                      'data_source': data_source})
+                                      'data_source': data_source, 'analysis_dataset': analysis_name})
             previous = study.user_attrs.get('openMWR_experiment')
             if (previous is not None and previous != experiment) or (previous is None and study.trials):
                 raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
@@ -1179,9 +1185,7 @@ class TrainingWorkflow:
         x_training, y_training, x_val, y_val = self._create_training_tensors()
 
         #Real test data
-        file_extension = '_bls' if self.model.is_bls_model else ''
-
-        analysis_file = site_data_dir(self.project_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
+        analysis_file = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         an_data = xr.load_dataset(analysis_file)
 
         # Only select days with day smaller than 20. The other days are used for model validation.
@@ -1273,105 +1277,54 @@ class TrainingWorkflow:
         return study
 
 
-def separate_training_data(site: str, source: Union[str, List[str]], project_dir: str, test_fraction: float = 0.1, val_fraction: float = 0.1, file_extension: str = ''):
+def separate_training_data(site, source, project_dir, test_fraction=0.1, val_fraction=0.1,
+                           simulation_dataset='rt_r20', dataset='training', update_only=False, seed=None):
+    """Split simulations, optionally assigning only timestamps absent from old splits.
+
+    Validation fraction applies to the remaining samples after test selection,
+    preserving the existing split convention. Existing membership/data is never
+    reshuffled by an update. A fresh run can use a seed for reproducibility.
     """
-    Split forward-calculation data into training, validation, and test sets.
-
-    Parameters
-    ----------
-    site : str
-        Site identifier used to locate data under ``data/sites/{site}``.
-    source : str or list of str
-        Either ``'era5'`` or a radiosonde station ID; lists are processed
-        recursively per entry.
-    project_dir : str
-        Working-project root containing data/ and sites/.
-    test_fraction : float, default=0.1
-        Fraction of time indices assigned to the test set.
-    val_fraction : float, default=0.1
-        Fraction of time indices assigned to the validation set.
-    file_extension : str, default=''
-        Optional suffix for the forward-calculation file name
-        and output files.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the required forward-calculation file does not exist.
-
-    Notes
-    -----
-    - Resulting NetCDF files are saved in ``data/sites/{site}/training`` with suffixes
-      ``training_data_{source}.nc``, ``validation_data_{source}.nc``, and ``test_data_{source}.nc``.
-    - Time indices are selected randomly without replacement.
-
-    """
-
-    if isinstance(source, list):
-        for s in source:
-            separate_training_data(site, s, project_dir, test_fraction=test_fraction, val_fraction=val_fraction, file_extension=file_extension)
-
-    # Load the dataset with RT
-    if file_extension != '':
-        file_extension = '_' + file_extension
-
-    if source == 'era5':
-        file = site_data_dir(project_dir, site, "era5") / f"forward_calc_era5{file_extension}.nc"
-    else:
-        file = site_data_dir(project_dir, site, "radiosonde") / f"radiosonde_data_with_RT_{source}{file_extension}.nc"
-
-    if not os.path.exists(file):
-        raise FileNotFoundError(f"File {file} does not exist. Please create it with mwr_retrieval.run_RT.run_RT")
-    ds = xr.load_dataset(file)
-
-    # Randomly select 10% of the time indices for the test dataset
-    test_time_indices = np.random.choice(ds.time, size=int(test_fraction * len(ds.time)), replace=False)
-    test_time_indices = np.sort(test_time_indices)
-
-    # Remaining time indices after selecting test data
-    remaining_time_indices = np.setdiff1d(ds.time, test_time_indices)
-
-    # Randomly select 10% of the remaining time indices for the validation dataset
-    val_time_indices = np.random.choice(remaining_time_indices, size=int(val_fraction * len(ds.time)), replace=False)
-    val_time_indices = np.sort(val_time_indices)
-
-    # Remaining time indices are used for the training dataset
-    train_time_indices = np.setdiff1d(remaining_time_indices, val_time_indices)
-
-    logger = logging.getLogger(__name__)
-
-    logger.info(f'Total number of time indices: {len(ds.time)}')
-    logger.info(f'Number of training time indices: {len(train_time_indices)}')
-    logger.info(f'Number of test time indices: {len(test_time_indices)}')
-    logger.info(f'Number of validation time indices: {len(val_time_indices)}')
-
-    # Extract training, test, and validation datasets
-    training_data = ds.sel(time=train_time_indices)
-    test_data = ds.sel(time=test_time_indices)
-    validation_data = ds.sel(time=val_time_indices)
-
-    # Save the datasets to NetCDF files
-    dir = site_data_dir(project_dir, site, "training")
-
-    os.makedirs(dir, exist_ok=True)
-
-    file = dir / f"training_data_{source}{file_extension}.nc"
-    if os.path.exists(file):
-        os.remove(file)
-    training_data.to_netcdf(file)
-    logger.info(f'Saved training data to {file}')
-
-    file = dir / f"test_data_{source}{file_extension}.nc"
-    if os.path.exists(file):
-        os.remove(file)
-    test_data.to_netcdf(file)
-    logger.info(f'Saved test data to {file}')
-
-    file = dir / f"validation_data_{source}{file_extension}.nc"
-    if os.path.exists(file):
-        os.remove(file)
-    validation_data.to_netcdf(file)
-    logger.info(f'Saved validation data to {file}')
+    sources = [source] if isinstance(source, str) else list(source)
+    for source_id in sources:
+        input_file = dataset_file(project_dir, site, simulation_dataset, source_id)
+        ds = xr.load_dataset(input_file)
+        if not ds.indexes['time'].is_unique:
+            raise ValueError(f'Duplicate timestamps in simulation {input_file}.')
+        paths = {split: dataset_file(project_dir, site, dataset, source_id, split=split)
+                 for split in ('training', 'validation', 'test')}
+        present = [path.is_file() for path in paths.values()]
+        if update_only and any(present) and not all(present):
+            raise ValueError(f'Incomplete existing splits in {paths["training"].parent}; rebuild the split dataset.')
+        old = {key: xr.load_dataset(path) for key, path in paths.items()} if update_only and all(present) else {}
+        if old:
+            assigned = np.concatenate([part.time.values for part in old.values()])
+            if np.unique(assigned).size != assigned.size:
+                raise ValueError('Existing training/validation/test memberships overlap; rebuild the split dataset.')
+            missing = np.setdiff1d(ds.time.values, assigned)
+            if not missing.size:
+                logger.info('Split %s / %s is up to date.', dataset, source_id)
+                continue
+            ds = ds.sel(time=missing)
+        rng = np.random.default_rng(seed) if seed is not None else np.random
+        total_count = ds.time.size + sum(part.time.size for part in old.values())
+        test_count = max(0, int(test_fraction * total_count) - (old['test'].time.size if old else 0))
+        test_count = min(test_count, ds.time.size)
+        test = np.sort(rng.choice(ds.time.values, size=test_count, replace=False))
+        remaining = np.setdiff1d(ds.time.values, test)
+        total_test = test.size + (old['test'].time.size if old else 0)
+        validation_count = max(0, int(val_fraction * (total_count - total_test)) - (old['validation'].time.size if old else 0))
+        validation_count = min(validation_count, remaining.size)
+        validation = np.sort(rng.choice(remaining, size=validation_count, replace=False))
+        assignments = {'test': test, 'validation': validation,
+                       'training': np.setdiff1d(remaining, validation)}
+        for split, times in assignments.items():
+            part = ds.sel(time=times)
+            if old:
+                part = xr.concat([old[split], part], dim='time').sortby('time')
+            paths[split].parent.mkdir(parents=True, exist_ok=True)
+            part.to_netcdf(paths[split])
+            logger.info('Saved %s: %s samples.', paths[split], part.time.size)
 
 class MAEPlusBiasLoss(nn.Module):
     """

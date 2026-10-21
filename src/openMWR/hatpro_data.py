@@ -15,7 +15,7 @@ from openMWR.parallel import run_pool_date_range
 from openMWR.xr_utils import change_coord_of_ds, swap_dims_and_rename, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
 from openMWR.site import get_config_parameter
-from openMWR.paths import site_data_dir
+from openMWR.paths import dataset_dir, dataset_file
 
 logger = logging.getLogger(__name__)
 
@@ -517,6 +517,9 @@ def create_hatpro_dataset(
     import_retrieval_data: Optional[bool] = None,
     num_of_processes: int = 1,
     update_only: bool = False,
+    dataset: str = 'hatpro',
+    start_date: str = None,
+    end_date: str = None,
 ) -> None:
     """
     Build site-level Hatpro datasets from daily RPG files.
@@ -543,10 +546,10 @@ def create_hatpro_dataset(
     Notes
     -----
     - Creates both zenith-mode and BLS datasets.
-    - Writes temporary daily files to `data/sites/{site}/hatpro/` and combines
-      them into `hatpro_data(_bls).nc`, removing the daily files after a
+    - Writes temporary daily files to `data/sites/{site}/{dataset}/`
+      and combines them into `zenith.nc` and `bls.nc`, removing daily files after a
       successful merge.
-    - The date range is derived from `mwr_measurement_start_date` up to today.
+    - Optional start_date/end_date override measurement-start through today.
     - Combined-build failures are logged and re-raised to the caller.
     """
 
@@ -554,8 +557,11 @@ def create_hatpro_dataset(
         import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', project_dir)
 
     mwr_measurement_start_date = get_config_parameter(site, 'mwr_measurement_start_date', project_dir)
-    dr_full = pd.date_range(mwr_measurement_start_date, pd.Timestamp.now().normalize())
-    hatpro_out_dir = site_data_dir(project_dir, site, "hatpro")
+    start_date = pd.Timestamp(start_date or mwr_measurement_start_date)
+    end_date = pd.Timestamp(end_date or pd.Timestamp.now().normalize())
+    dr_full = pd.date_range(start_date, end_date)
+    hatpro_out_dir = dataset_dir(project_dir, site, dataset)
+    hatpro_out_dir.mkdir(parents=True, exist_ok=True)
 
     for bls in [False, True]:
 
@@ -563,7 +569,7 @@ def create_hatpro_dataset(
 
         bls_attribute = '_bls' if bls else ''
         daily_pattern = f'hatpro_data{bls_attribute}_' + '[0-9]' * 8 + '.nc'
-        combined_file = hatpro_out_dir / f'hatpro_data{bls_attribute}.nc'
+        combined_file = dataset_file(project_dir, site, dataset, bls=bls)
         tmp_file = None
 
         if update_only and os.path.exists(combined_file):
@@ -583,7 +589,7 @@ def create_hatpro_dataset(
                 with xr.open_dataset(combined_file) as ds_hatpro_old:
                     last_date = pd.Timestamp(ds_hatpro_old.time.max().values).normalize()
                 logger.info(f"Last date in dataset: {last_date}")
-                dr = pd.date_range(start=last_date, end=pd.Timestamp.now())
+                dr = pd.date_range(start=max(start_date, last_date), end=end_date)
             else:
                 dr = dr_full
 

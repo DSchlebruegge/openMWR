@@ -6,8 +6,17 @@ from pathlib import Path
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog='python -m openMWR', description='Run individual retrieval tasks in an openMWR working project.')
+    parser = argparse.ArgumentParser(prog='python -m openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
     commands = parser.add_subparsers(dest='command', required=True)
+    data = commands.add_parser('data', help='Create or update named datasets.')
+    actions = data.add_subparsers(dest='data_action', required=True)
+    build = actions.add_parser('build', help='Create missing output or update existing output from a dataset recipe.')
+    build.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
+    build.add_argument('--site', required=True)
+    build.add_argument('--dataset', nargs='+', required=True, help='Recipe name(s) under sites/<site>/datasets/.')
+    build.add_argument('--with-dependencies', action='store_true', help='Update prerequisites first; shared inputs run once.')
+    build.add_argument('--dry-run', action='store_true', help='Show processing order without writing files or contacting sources.')
+    build.add_argument('--rebuild', action='store_true', help='Regenerate only selected outputs; prerequisites receive ordinary updates.')
     for command, help_text in (
         ('train', 'Train from a named recipe, optimizing when it defines a parameter search.'),
         ('evaluate', 'Evaluate a saved retrieval and write a portable HTML report.'),
@@ -32,7 +41,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     try:
-        if args.command == 'evaluate':
+        if args.command == 'data':
+            from openMWR.datasets import DatasetWorkflow
+            DatasetWorkflow(args.project_dir, args.site).build(args.dataset,
+                with_dependencies=args.with_dependencies, rebuild=args.rebuild, dry_run=args.dry_run)
+        elif args.command == 'evaluate':
             from openMWR.evaluation import evaluate_retrieval, write_report
             options = {key: getattr(args, key) for key in ('data_source', 'days_gt_20', 'station_id')}
             if args.output is not None and args.output.exists():

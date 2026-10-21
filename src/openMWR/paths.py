@@ -32,6 +32,51 @@ def site_config_file(project_dir: PathLike, site: str) -> Path:
     return site_root(project_dir, site) / "site.toml"
 
 
+def dataset_recipe_file(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the editable recipe for a named dataset."""
+    _dataset_name(site)
+    _dataset_name(name)
+    return site_root(project_dir, site) / "datasets" / f"{name}.toml"
+
+
+def dataset_dir(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the generated-data directory owned by a dataset."""
+    _dataset_name(site)
+    _dataset_name(name)
+    return site_data_dir(project_dir, site) / name
+
+
+def dataset_file(project_dir: PathLike, site: str, name: str, source: str | None = None,
+                 *, split: str | None = None, bls: bool = False) -> Path:
+    """Resolve the one storage convention for profiles, simulations and pairs.
+
+    Profiles/simulations use a station/source file. Split datasets contain three
+    files per source; observation and analysis datasets contain zenith/BLS files.
+    """
+    if source is not None:
+        _dataset_name(source)
+        if split is not None and split not in ("training", "validation", "test"):
+            raise ValueError("split must be training, validation or test.")
+        filename = f"{split + '_' if split else ''}{source}.nc"
+    else:
+        if split is not None:
+            raise ValueError("A split file requires a source.")
+        filename = "bls.nc" if bls else "zenith.nc"
+    return dataset_dir(project_dir, site, name) / filename
+
+
+def era5_cache_file(project_dir: PathLike, latitude: float, longitude: float,
+                    hour_interval: int = 6) -> Path:
+    """Shared ERA5 cache identity includes location and temporal sampling."""
+    lat, lon = round(latitude * 4) / 4, round(longitude * 4) / 4
+    return data_root(project_dir) / "era5" / f"era5_{lat}_{lon}_{hour_interval}h.nc"
+
+
+def _dataset_name(value: str) -> None:
+    if not isinstance(value, str) or not value or value in (".", "..") or "/" in value or "\\" in value:
+        raise ValueError("Site, dataset and source names must be nonempty names without directory separators.")
+
+
 def retrieval_dir(project_dir: PathLike, site: str, name: str) -> Path:
     """Return the artifact directory for one named retrieval."""
     return site_root(project_dir, site) / "retrieval" / name

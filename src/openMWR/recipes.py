@@ -9,7 +9,7 @@ from numbers import Integral, Real
 from pathlib import Path
 import tomllib
 
-from openMWR.paths import project_root, retrieval_dir, site_config_file, site_data_dir
+from openMWR.paths import project_root, retrieval_dir, site_config_file, dataset_file
 
 _INTEGER_TRAINING = ("epochs", "batch_size", "repeats_for_linear_regression", "epoch_max_lr")
 _NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
@@ -215,19 +215,18 @@ class RetrievalRecipe:
                 raise ValueError("model.norm_functions must map variables to supported normalization functions.")
 
         data = self.section("data")
-        _known(data, ("sources", "end_date_training", "variant"), "data")
-        _strings(data.get("sources"), "data.sources")
-        if not data["sources"]:
-            raise ValueError("data.sources must not be empty.")
-        for source in data["sources"]:
-            _component(source, "data.sources")
-        if "end_date_training" in data:
-            if not isinstance(data["end_date_training"], str):
-                raise ValueError('data.end_date_training must be a quoted ISO date, e.g. "2024-10-31".')
-            date.fromisoformat(data["end_date_training"])
-        suffix = data.get("variant", "")
-        if not isinstance(suffix, str) or "/" in suffix or "\\" in suffix:
-            raise ValueError("data.variant must be a string without directory separators.")
+        _known(data, ('dataset', 'sources', 'end_date_training'), 'data')
+        _component(data.get('dataset'), 'data.dataset')
+        if 'sources' in data:
+            _strings(data['sources'], 'data.sources')
+            if not data['sources']:
+                raise ValueError('data.sources must not be empty.')
+            for source in data['sources']:
+                _component(source, 'data.sources')
+        if 'end_date_training' in data:
+            if not isinstance(data['end_date_training'], str):
+                raise ValueError('data.end_date_training must be a quoted ISO date.')
+            date.fromisoformat(data['end_date_training'])
         allowed_training = set(inspect.signature(TrainingWorkflow.add_standard_training_hyper_params).parameters) - {"self"}
         _known(self.section("training"), allowed_training, "training")
         validate_parameter_usage(model["kind"] == "mlr", self.section("training"))
@@ -244,7 +243,7 @@ class RetrievalRecipe:
         for key, value in noise.items():
             if key == "method":
                 continue
-            if method != "omb" or key not in ("data_source", "sources", "factor"):
+            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor"):
                 _parameter(value, f"input_noise_{key}", f"input_noise.{key}")
         if method == "omb":
             if noise.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
@@ -256,7 +255,7 @@ class RetrievalRecipe:
                     raise ValueError("input_noise.factor does not support a search; use a fixed OMB scaling factor.")
                 _number(noise["factor"], "input_noise.factor", 0)
         bias = self.section("bias_correction")
-        _known(bias, ("data_source", "sources", "factor", "specific_freqs"), "bias_correction")
+        _known(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs"), "bias_correction")
         if bias:
             if bias.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
                 raise ValueError("bias_correction.data_source must be 'radiosonde' or 'era5'.")
@@ -267,13 +266,13 @@ class RetrievalRecipe:
             if "specific_freqs" in bias:
                 _coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
         optimization = self.section("optimization")
-        _known(optimization, ("n_trials", "data_source"), "optimization")
+        _known(optimization, ("n_trials", "data_source", "dataset"), "optimization")
         if "n_trials" in optimization:
             _number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)
         if optimization.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
             raise ValueError("optimization.data_source must be 'radiosonde' or 'era5'.")
         evaluation = self.section("evaluation")
-        _known(evaluation, ("data_source", "days_gt_20", "station_id", "observations", "test_data"), "evaluation")
+        _known(evaluation, ("data_source", "dataset", "days_gt_20", "station_id", "observations", "test_data"), "evaluation")
         if evaluation.get("data_source", "radiosonde") not in ("radiosonde", "era5"):
             raise ValueError("evaluation.data_source must be 'radiosonde' or 'era5'.")
         for key in ("days_gt_20", "observations", "test_data"):
@@ -281,6 +280,10 @@ class RetrievalRecipe:
                 raise ValueError(f"evaluation.{key} must be true or false.")
         if "station_id" in evaluation:
             _component(evaluation["station_id"], "evaluation.station_id")
+        for section in ('input_noise', 'bias_correction', 'optimization', 'evaluation'):
+            if 'dataset' in self.section(section):
+                _component(self.section(section)['dataset'], f'{section}.dataset')
+
 
     def create_model(self):
         import numpy as np
@@ -297,14 +300,23 @@ class RetrievalRecipe:
         return Model(self.name, is_MLR=kind == "mlr", is_bls_model=mode == "bls", **settings)
 
     def require_data(self, splits):
-        data = self.section("data")
-        suffix = data.get("variant", "")
-        suffix = f"_{suffix}" if suffix else ""
+        from openMWR.datasets import DatasetWorkflow
+
+        data = self.section('data')
+        workflow = DatasetWorkflow(self.project_dir, self.site)
+        workflow._graph([data['dataset']])
+        if workflow.recipe(data['dataset']).kind != 'split':
+            raise ValueError('data.dataset must select a split dataset.')
+        workflow._check_state(data['dataset'])
+        available = workflow.sources(data['dataset'])
+        sources = data.get('sources', available)
+        if set(sources) - set(available):
+            raise ValueError(f'data.sources must be a subset of {available}.')
         for split in splits:
-            for source in data["sources"]:
-                path = site_data_dir(self.project_dir, self.site, "training") / f"{split}_{source}{suffix}.nc"
+            for source in sources:
+                path = dataset_file(self.project_dir, self.site, data['dataset'], source, split=split.removesuffix('_data'))
                 if not path.is_file():
-                    raise FileNotFoundError(f"Missing prepared dataset: {path}. Prepare this dataset before running the selected action.")
+                    raise FileNotFoundError(f'Missing prepared dataset: {path}. Prepare this dataset before running the selected action.')
 
     def training_params(self, workflow):
         """Resolve fixed values and searches where training parameters are defined."""
@@ -314,7 +326,7 @@ class RetrievalRecipe:
     def input_noise_params(self, workflow):
         """Resolve explicit noise overrides; omitted values use method defaults."""
         settings = self.section("input_noise")
-        metadata = {"method", "data_source", "sources", "factor"} if settings["method"] == "omb" else {"method"}
+        metadata = {"method", "data_source", "dataset", "sources", "factor"} if settings["method"] == "omb" else {"method"}
         noise = {key: value for key, value in settings.items() if key not in metadata}
         if "TB" in noise:
             tb = noise.pop("TB")

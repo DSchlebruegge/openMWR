@@ -123,6 +123,18 @@ class BaseModel(nn.Module):
             if key in structure and hasattr(self, key):
                 structure[key] = getattr(self, key)
         return structure
+
+    @property
+    def training_dataset(self):
+        """Named input stored by new checkpoints; decode old suffix metadata once.
+
+        Historical checkpoints remain byte-for-byte unchanged. This conversion
+        only selects the corresponding named dataset in the current layout.
+        """
+        if 'training_dataset' in self.hyper_params:
+            return self.hyper_params['training_dataset']
+        suffix = self.hyper_params.get('file_extension', '')
+        return f'training_{suffix.lower()}' if suffix else 'training'
     
     @classmethod
     def load(cls, name, site: str, project_dir: str, file_path=None):

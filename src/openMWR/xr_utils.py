@@ -1,6 +1,6 @@
 import xarray as xr
 import numpy as np
-from openMWR.paths import site_data_dir
+from openMWR.paths import dataset_file
 
 def _get_indices_to_interpolate(old_coord: np.ndarray, new_coord: np.ndarray, extrapolate_lower_end=False, extrapolate_upper_end=False):
     delta_new_coord = np.diff(new_coord) / 2
@@ -259,37 +259,21 @@ def mean_n_min(ds: xr.Dataset, n_min: int):
 
     return mean
 
-def load_combined_dataset(site, project_dir, file, sources, file_extension=''):
+def load_combined_dataset(site, project_dir, split, sources, dataset='training'):
+    """Combine source files from a named split dataset along station.
+
+    ERA5 split files do not originally have a station dimension; their source
+    label supplies one when combining with radiosonde stations.
     """
-    Loads and combines multiple NetCDF datasets for specified station IDs into a single xarray Dataset.
-
-    Parameters
-    --------------
-    site : str
-        The name of the site, used to construct the data directory path.
-    file : str
-        The base filename (without station ID and extension) of the NetCDF files to load. 
-        Options: 'training_data', 'validation_data', 'test_data', 'total_data'
-    sources : list of str
-        List of data sources. Can include radiosonde station IDs and 'era5'.
-    file_extension : str, optional
-        Optional suffix for the file names (default is '').
-    
-    Returns
-    --------------
-    ds : xarray.Dataset
-        The concatenated xarray Dataset containing data from all specified stations along a new 'station' dimension.
-    """
-    forward_calc_dir = site_data_dir(project_dir, site, "training")
-
-    if file_extension != '':
-        file_extension = '_' + file_extension
-
-    ds_list = [xr.load_dataset(forward_calc_dir / f"{file}_{s}{file_extension}.nc") for s in sources]
-
-    ds = xr.concat(ds_list, dim='station', join='outer')
-
-    return ds
+    pieces = []
+    for source in sources:
+        ds = xr.load_dataset(dataset_file(project_dir, site, dataset, source, split=split))
+        if 'station' not in ds.dims:
+            ds = ds.expand_dims(station=[source])
+        pieces.append(ds)
+    if not pieces:
+        raise ValueError('Select at least one training source.')
+    return xr.concat(pieces, dim='station', join='outer')
 
 def to_1d_tensor(ds, device):
     """Convert xarray Dataset to 1D torch tensor."""

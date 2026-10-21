@@ -101,6 +101,12 @@ def run_pool(ds_orig, num_of_processes, function, *args_for_function, **kwargs_f
     - The function is expected to return an xarray.Dataset or None; None results are filtered out.
     """
 
+    if num_of_processes == 1:
+        result = _kernal_function(ds_orig, 0, function, args_for_function, kwargs_for_function)
+        if result is None:
+            raise ValueError("No data processed successfully.")
+        return result.sortby('time')
+
     shuffled_time = np.random.permutation(ds_orig['time'].values)
     ds_shuffled = ds_orig.reindex(time=shuffled_time)
 

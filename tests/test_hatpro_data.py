@@ -32,12 +32,13 @@ def site(tmp_path):
                 mwr_measurement_start_date=str((today - pd.Timedelta(days=1)).date()),
                 rpg_retrieval_exists=False)
     out_dir = tmp_path / "data/sites/test/hatpro"
+    out_dir.mkdir(parents=True)
     return str(tmp_path), out_dir, today
 
 
 def test_modes_select_and_clean_only_their_daily_files(site, monkeypatch):
     project_dir, out_dir, today = site
-    bls_file = out_dir / "hatpro_data_bls.nc"
+    bls_file = out_dir / "bls.nc"
     daily_dataset([today], [290], bls=True).to_netcdf(bls_file)
     original_bls = bls_file.read_bytes()
     leftover = out_dir / f"hatpro_data_bls_{today - pd.Timedelta(days=2):%Y%m%d}.nc"
@@ -54,7 +55,7 @@ def test_modes_select_and_clean_only_their_daily_files(site, monkeypatch):
     monkeypatch.setattr(hatpro_data, "_create_hatpro_day_file", create_day)
     hatpro_data.create_hatpro_dataset("test", project_dir)
 
-    with xr.open_dataset(out_dir / "hatpro_data.nc") as zenith:
+    with xr.open_dataset(out_dir / "zenith.nc") as zenith:
         assert zenith.TB.dims == ("time", "frq")
         assert "ang" not in zenith.dims
         assert zenith.sizes["time"] == 2
@@ -62,7 +63,7 @@ def test_modes_select_and_clean_only_their_daily_files(site, monkeypatch):
         assert bls.TB.dims == ("time", "frq", "ang")
         assert bls.sizes["time"] == 3
     assert not leftover.exists()
-    assert set(out_dir.iterdir()) == {out_dir / "hatpro_data.nc", bls_file}
+    assert set(out_dir.iterdir()) == {out_dir / "zenith.nc", bls_file}
 
 
 def test_daily_and_update_duplicates_keep_original_first_values(site, monkeypatch):
@@ -86,12 +87,12 @@ def test_daily_and_update_duplicates_keep_original_first_values(site, monkeypatc
 
     monkeypatch.setattr(hatpro_data, "_create_hatpro_day_file", create_day)
     hatpro_data.create_hatpro_dataset("test", project_dir)
-    with xr.open_dataset(out_dir / "hatpro_data.nc") as initial:
+    with xr.open_dataset(out_dir / "zenith.nc") as initial:
         assert initial.TB.sel(time=today).item() == 12
 
     updating = True
     hatpro_data.create_hatpro_dataset("test", project_dir, update_only=True)
-    with xr.open_dataset(out_dir / "hatpro_data.nc") as updated:
+    with xr.open_dataset(out_dir / "zenith.nc") as updated:
         np.testing.assert_array_equal(updated.TB.values[:, 0], [10, 11, 12, 23, 34])
         assert updated.indexes["time"].is_unique
         assert updated.indexes["time"].is_monotonic_increasing
@@ -99,7 +100,7 @@ def test_daily_and_update_duplicates_keep_original_first_values(site, monkeypatc
 
 def test_combined_failure_propagates_and_preserves_existing_update(site, monkeypatch):
     project_dir, out_dir, today = site
-    combined = out_dir / "hatpro_data.nc"
+    combined = out_dir / "zenith.nc"
     daily_dataset([today], [210]).to_netcdf(combined)
     original = combined.read_bytes()
 

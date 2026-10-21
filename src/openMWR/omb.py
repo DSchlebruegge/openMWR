@@ -1,7 +1,7 @@
 import xarray as xr
 import numpy as np
 from typing import Optional, Sequence, Dict, Tuple, TYPE_CHECKING
-from openMWR.paths import site_data_dir
+from openMWR.paths import dataset_file
 
 if TYPE_CHECKING:
     from openMWR.models import BaseModel
@@ -19,7 +19,7 @@ class Omb_Analysis:
     ----------
     site : str
         Site name used to locate analysis data under
-        `data/sites/{site}/analysis/`.
+        `data/sites/{site}/`.
     project_dir : str
         Working-project root containing data/ and sites/.
     data_source : str, optional
@@ -45,7 +45,7 @@ class Omb_Analysis:
         data_source: str = 'radiosonde',
         station_ids_for_analysis: Optional[Sequence[str]] = None,
         load_existing_analysis_dataset: bool = False,
-        file_extension: str = ''
+        dataset: str = None
     ) -> None:
         self.site = site
         self.project_dir = project_dir
@@ -58,19 +58,14 @@ class Omb_Analysis:
         # ERA5 analysis has no radiosonde station selection.
         self.station_id_for_analysis = station_ids_for_analysis[0] if station_ids_for_analysis else None
 
-        if load_existing_analysis_dataset:
-            if file_extension != '':
-                file_extension = '_' + file_extension
-            analysis_file = site_data_dir(self.project_dir, self.site, "analysis") / f'analysis_data_{data_source}{file_extension}.nc'
-            self.an_data = xr.load_dataset(analysis_file)
-            if data_source == 'radiosonde':
-                self.an_data = self.an_data.sel(station=self.station_id_for_analysis, drop=True)
-        else:
-            if data_source == 'radiosonde':
-                self.create_analysis_dataset_from_radiosonde()
-            elif data_source == 'era5':
-                self.create_analysis_dataset_from_era5()
-        
+        self.dataset = dataset or f'analysis_{data_source}'
+        if not load_existing_analysis_dataset:
+            from openMWR.datasets import DatasetWorkflow
+            DatasetWorkflow(project_dir, site).build(self.dataset)
+        self.an_data = xr.load_dataset(dataset_file(project_dir, site, self.dataset))
+        if data_source == 'radiosonde':
+            self.an_data = self.an_data.sel(station=self.station_id_for_analysis, drop=True)
+
         self.observation = self.an_data.sel(data_source='hatpro', drop=True)
         self.background = self.an_data.sel(data_source=data_source, drop=True)
 
@@ -146,40 +141,6 @@ class Omb_Analysis:
         self.background = self.background.where(mask, drop=True)
 
         self.calc_difference()
-
-    def create_analysis_dataset_from_era5(self) -> None:
-        """
-        Create analysis datasets using ERA5 forward-calculation outputs.
-
-        Returns
-        -------
-        None
-        """
-        from openMWR.era5 import ERA5Processor
-
-        era5 = ERA5Processor(self.site, self.project_dir)
-        self.an_data, self.an_data_bls = era5.create_analysis_dataset_from_forward_calc(save=False)
-
-    def create_analysis_dataset_from_radiosonde(self) -> None:
-        """
-        Create analysis datasets using radiosonde forward-calculation outputs.
-
-        Returns
-        -------
-        None
-        """
-        from openMWR.radiosonde import create_analysis_dataset
-
-        self.an_data, self.an_data_bls = create_analysis_dataset(
-            self.site,
-            [self.station_id_for_analysis],
-            self.project_dir,
-            save=False,
-            from_forward_calc=True,
-        )
-
-        self.an_data = self.an_data.isel(station=0, drop=True)
-
 
     def remove_explained_variance(self) -> Tuple[xr.DataArray, xr.DataArray]:
         """

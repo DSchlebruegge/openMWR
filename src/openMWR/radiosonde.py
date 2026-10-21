@@ -11,7 +11,7 @@ from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, selec
 from openMWR.site import get_config_parameter
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
-from openMWR.paths import site_data_dir, radiosonde_station_dir
+from openMWR.paths import dataset_file, radiosonde_station_dir
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ def _scale_rh_profiles_for_clear_sky_cases(
     scale_factor: float = 0.5,
     random_seed: Optional[int] = None,
     lwc_reference: Optional[xr.DataArray] = None,
+    eligible_synops=None,
 ) -> xr.Dataset:
     """
     Scales RH profiles for a random subset of clear-sky cases (lwc == 0).
@@ -135,6 +136,8 @@ def _scale_rh_profiles_for_clear_sky_cases(
 
     clear_mask = lwc_max <= 0
     clear_synops = ds['synop'].where(clear_mask, drop=True).values
+    if eligible_synops is not None:
+        clear_synops = np.intersect1d(clear_synops, eligible_synops)
 
     if clear_synops.size == 0:
         logger.info("No clear-sky profiles found for RH scaling.")
@@ -148,12 +151,8 @@ def _scale_rh_profiles_for_clear_sky_cases(
     rng = np.random.default_rng(random_seed)
     selected_synops = rng.choice(clear_synops, size=n_select, replace=False)
 
-    logger.info(f"Before scaling: {ds['rh'].sel(synop=selected_synops)}")
-
     synop_mask = ds['synop'].isin(selected_synops)
     ds['rh'] = ds['rh'].where(~synop_mask, ds['rh'] * scale_factor)
-
-    logger.info(f"After scaling: {ds['rh'].sel(synop=selected_synops)}")
 
     logger.info(
         "Scaled RH by %s for %s clear-sky profiles (fraction=%s).",
@@ -174,7 +173,10 @@ def create_radiosonde_dataset_for_RT(
     cut_off_at_mwr_height: bool = False,
     scale_rh_clear_sky: bool = False,
     scale_rh_clear_sky_seed: Optional[int] = None,
-    file_extension: str = ''
+    dataset: str = 'profiles_standard',
+    last_year: Optional[int] = None,
+    scale_rh_clear_sky_fraction: float = 0.1,
+    scale_rh_clear_sky_factor: float = 0.2,
 ) -> None:
     """
     Creates a processed radiosonde dataset for the radiative transfer (RT) calculation for a given site and station.
@@ -200,7 +202,8 @@ def create_radiosonde_dataset_for_RT(
         If True, profiles will be cut off at the MWR height specified in the site configuration.
         If False, profiles will be cut off at the radiosonde station height.
     scale_rh_clear_sky: bool, optional
-        If True, scale RH by 0.5 for a random 10% of clear-sky profiles (lwc == 0).
+        Scale newly added clear-sky profiles only; defaults to a 0.1 fraction
+        multiplied by 0.2. Fraction and factor are configurable.
     scale_rh_clear_sky_seed: int, optional
         Seed for reproducible random selection of clear-sky profiles.
 
@@ -214,17 +217,13 @@ def create_radiosonde_dataset_for_RT(
         ``{project_dir}/data/radiosondes/station_{station_id}/raw_data_{year}.nc``.
             -> Can be created using :func:`openMWR.radiosonde.download_all_radiosondes`
     - The processed dataset is saved to
-        ``{project_dir}/data/sites/{site}/radiosonde/radiosonde_data_{station_id}.nc``.
+        ``{project_dir}/data/sites/{site}/{dataset}/{station_id}.nc``.
     - Profiles are filtered based on minimum and maximum height, number of measurements, and presence of NaN values.
     - Derived variables such as absolute humidity, dew point, LWP, and IWV are added.
     - Surface variables (temperature, relative humidity, pressure at ground level) are extracted.
     """
-    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
-
-    if file_extension != '':
-        target_file = radiosonde_dir / f'radiosonde_data_{station_id}_{file_extension}.nc'
-    else:
-        target_file = radiosonde_dir / f'radiosonde_data_{station_id}.nc'
+    target_file = dataset_file(project_dir, site, dataset, station_id)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
 
     if update_only and not os.path.exists(target_file):
         logger.warning(f"File {target_file} does not exist. Cannot update. Creating new dataset instead.")
@@ -247,6 +246,8 @@ def create_radiosonde_dataset_for_RT(
     
     if first_year is not None:
         raw_data_files = [f for f in raw_data_files if int(os.path.basename(f).split('_')[-1].split('.')[0]) >= first_year]
+    if last_year is not None:
+        raw_data_files = [f for f in raw_data_files if int(os.path.basename(f).split('_')[-1].split('.')[0]) <= last_year]
     
     mwr_height = get_config_parameter(site, 'mwr_height', project_dir)
 
@@ -255,18 +256,17 @@ def create_radiosonde_dataset_for_RT(
     for raw_data_file in raw_data_files:
         logger.info(f"Processing file: {raw_data_file}")
 
-        # Load the dataset
-        ds_year = xr.load_dataset(raw_data_file)
-
-        if update_only:
-            # Filter out already existing synops
-            new_synops = np.setdiff1d(ds_year['synop'].values, ds_old['synop'].values)
-            if new_synops.size == 0:
-                logger.info("No new synops found in this file. Skipping.")
-                continue
-            else:
-                ds_year = ds_year.sel(synop=new_synops)
+        # Inspect launch coordinates before loading large yearly measurement arrays.
+        with xr.open_dataset(raw_data_file) as source:
+            if update_only:
+                new_synops = np.setdiff1d(source['synop'].values, ds_old['synop'].values)
+                if new_synops.size == 0:
+                    logger.info("No new synops found in this file. Skipping.")
+                    continue
+                ds_year = source.sel(synop=new_synops).load()
                 logger.info(f"Found {ds_year.sizes['synop']} possible new synops to add.")
+            else:
+                ds_year = source.load()
 
         
         station_height = int(ds_year.attrs['station_height'])
@@ -336,6 +336,7 @@ def create_radiosonde_dataset_for_RT(
         return
 
     ds_new = xr.concat(ds_list, dim='synop').sortby('synop')
+    added_synops = ds_new.synop.values
 
     # If updating, concatenate with old data and sort
     if update_only:
@@ -369,10 +370,11 @@ def create_radiosonde_dataset_for_RT(
     if scale_rh_clear_sky:
         ds_new = _scale_rh_profiles_for_clear_sky_cases(
             ds_new,
-            fraction=0.1,
-            scale_factor=0.2,
+            fraction=scale_rh_clear_sky_fraction,
+            scale_factor=scale_rh_clear_sky_factor,
             random_seed=scale_rh_clear_sky_seed,
             lwc_reference=lwc_reference,
+            eligible_synops=added_synops,
         )
 
     # Replace too-small or negative RH values with 0.1% (otherwise causes problems with TD calculations)
@@ -399,8 +401,8 @@ def create_radiosonde_dataset_for_RT(
     logger.info(f"Radiosonde dataset saved to {target_file}")
 
 def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
-           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', file_extension_in: str = '', 
-           file_extension_out: str = '', RT_model: str = 'torchMWRT'):
+           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles_standard',
+           dataset: str = 'rt_r20', RT_model: str = 'torchMWRT'):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -428,10 +430,10 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         If True, limit processing to the first ``num_of_processes`` profiles.
     absmdl : str, optional
         Absorption model passed to the selected RT backend.
-    file_extension_in : str, optional
-        Optional suffix of the input radiosonde file.
-    file_extension_out : str, optional
-        Optional suffix of the output dataset file.
+    profiles_dataset : str, optional
+        Name of the prepared-profile input dataset.
+    dataset : str, optional
+        Name of the output simulation dataset.
     RT_model : {"torchMWRT", "pyrtlib"}, optional
         RT backend used in :func:`openMWR.run_RT.run_RT`.
 
@@ -442,21 +444,14 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
     """
     logger.info(f'calc RT for station {station_id}:')
 
-    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
-
-    if file_extension_out != '':
-        file = radiosonde_dir / f"radiosonde_data_with_RT_{station_id}_{file_extension_out}.nc"
-    else:
-        file = radiosonde_dir / f"radiosonde_data_with_RT_{station_id}.nc"
+    file = dataset_file(project_dir, site, dataset, station_id)
+    file.parent.mkdir(parents=True, exist_ok=True)
 
     if update_only and not os.path.exists(file):
         logger.warning(f"File {file} does not exist. Cannot update. Creating new dataset instead.")
         update_only = False
 
-    if file_extension_in != '':
-        RS_file = radiosonde_dir / f'radiosonde_data_{station_id}_{file_extension_in}.nc'
-    else:
-        RS_file = radiosonde_dir / f'radiosonde_data_{station_id}.nc'
+    RS_file = dataset_file(project_dir, site, profiles_dataset, station_id)
 
     ds_RS = xr.load_dataset(RS_file)
 
@@ -508,7 +503,9 @@ def create_analysis_dataset(
     project_dir: str,
     from_forward_calc: bool = True,
     save: bool = True,
-    file_extension: str = ''
+    observations_dataset: str = 'hatpro',
+    reference_dataset: str = 'rt_r20',
+    dataset: str = 'analysis_radiosonde',
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """
     Create analysis datasets pairing Hatpro measurements with radiosonde data.
@@ -526,11 +523,11 @@ def create_analysis_dataset(
         temperatures (`radiosonde_data_with_RT_*`). If False, use the prepared
         radiosonde datasets without RT.
     save : bool, optional
-        If True, write outputs to `data/sites/{site}/analysis/` and return
+        If True, write outputs to `data/sites/{site}/{dataset}/` and return
         None. If False, return the assembled datasets.
-    file_extension : str, optional
-        Additional string appended to radiosonde filenames before the `.nc`
-        extension (e.g., to indicate a specific processing version).
+    observations_dataset, reference_dataset, dataset : str, optional
+        Names of the observation input, reference input and analysis output.
+        Use a prepared-profile reference when from_forward_calc=False.
 
     Returns
     -------
@@ -555,12 +552,8 @@ def create_analysis_dataset(
     logger.info(f'Creating analysis dataset for site {site} from radiosonde and hatpro data')
 
     # Hatpro data
-    hatpro_dir = site_data_dir(project_dir, site, "hatpro")
-    analysis_dir = site_data_dir(project_dir, site, "analysis")
-    radiosonde_dir = site_data_dir(project_dir, site, "radiosonde")
-
-    ds_hatpro = xr.load_dataset(hatpro_dir / 'hatpro_data.nc').dropna(dim='time')
-    ds_hatpro_bls = xr.load_dataset(hatpro_dir / 'hatpro_data_bls.nc').dropna(dim='time')
+    ds_hatpro = xr.load_dataset(dataset_file(project_dir, site, observations_dataset)).dropna(dim='time')
+    ds_hatpro_bls = xr.load_dataset(dataset_file(project_dir, site, observations_dataset, bls=True)).dropna(dim='time')
 
     an_data_raso_list = []
     an_data_hatpro_list = []
@@ -570,16 +563,10 @@ def create_analysis_dataset(
     n_raso = 0
     n_raso_bls = 0
 
-    if file_extension != '':
-        file_extension = '_' + file_extension
-
     # Radiosonde data
     for station_id in station_ids:
 
-        if from_forward_calc:
-            file = radiosonde_dir / f'radiosonde_data_with_RT_{station_id}{file_extension}.nc'
-        else:
-            file = radiosonde_dir / f'radiosonde_data_{station_id}{file_extension}.nc'
+        file = dataset_file(project_dir, site, reference_dataset, station_id)
 
         if not os.path.exists(file):
             raise FileNotFoundError(f"Radiosonde data file {file} does not exist. Please create it first.")
@@ -646,11 +633,12 @@ def create_analysis_dataset(
 
     # Save
     if save:
-        file = analysis_dir / f'analysis_data_radiosonde{file_extension}.nc'
+        file = dataset_file(project_dir, site, dataset)
+        file.parent.mkdir(parents=True, exist_ok=True)
         an_data.to_netcdf(file)
         logging.info(f'{file} saved')
 
-        file = analysis_dir / f'analysis_data_radiosonde_bls{file_extension}.nc'
+        file = dataset_file(project_dir, site, dataset, bls=True)
         an_data_bls.to_netcdf(file)
         logging.info(f'{file} saved')
     
