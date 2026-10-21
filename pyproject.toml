@@ -30,6 +30,9 @@ dependencies = [
     "tomli-w",
 ]
 
+[project.scripts]
+openMWR = "openMWR.cli:main"
+
 [project.optional-dependencies]
 docs = [
     "sphinx>=8,<9",   # ensure compatibility with myst_nb 1.3

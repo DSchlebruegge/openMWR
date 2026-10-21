@@ -15,6 +15,12 @@ and named retrievals. Affected Python APIs take this root as `project_dir`.
 The scripts under `bin/` are Munich-specific examples: run them with your working
 project as the current directory and adapt their site/model choices as needed.
 
+Installing the package provides the `openMWR` command. With your environment
+activated, use `openMWR --help` or, for example,
+`openMWR train munich_G5 NN_example`.
+You can also use `python -m openMWR ...`; both forms call the same implementation
+and work with pip or uv installations.
+
 ### Dataset recipes and commands
 
 Each dataset has a named TOML file under `sites/<site>/datasets/`. Site settings
@@ -66,15 +72,17 @@ does not imply settings. Several simulations can share profiles; several profile
 preparations can share the same raw source.
 
 ```bash
-python -m openMWR data build --site munich_G5 --dataset rt_r17
-python -m openMWR data build --site munich_G5 --dataset rt_r17 --with-dependencies
-python -m openMWR data build --site munich_G5 --dataset rt_r17 --with-dependencies --dry-run
-python -m openMWR data build --site munich_G5 --dataset rt_r17 --rebuild
+openMWR data munich_G5 rt_r17
+openMWR data munich_G5 rt_r17 --with-dependencies
+openMWR data munich_G5 rt_r17 --with-dependencies --dry-run
+openMWR data munich_G5 rt_r17 --rebuild
 ```
 
-`build` creates missing output or updates existing output. Without
+`data` creates missing output or updates existing output. Without
 `--with-dependencies`, inputs must already exist. With it, prerequisites run once
-in dependency order. Select several targets with `--dataset NAME NAME`.
+in dependency order. Site and dataset names are required positional arguments:
+`openMWR data SITE DATASET [DATASET ...]`. List several dataset names to select
+multiple targets.
 `--dry-run` checks recipes and shows the order without writing or contacting
 sources. `--rebuild` regenerates only explicitly selected outputs; dependencies
 receive ordinary updates. Rebuilding a source refreshes its configured raw
@@ -146,11 +154,12 @@ Run these commands from your working project, using the Python environment
 where openMWR is installed. pip, editable installations, and uv all work:
 
 ```bash
-python -m openMWR train --site munich_G5 --retrieval NN_example --device cuda
-python -m openMWR evaluate --site munich_G5 --retrieval NN_example
+openMWR train munich_G5 NN_example --device cuda
+openMWR evaluate munich_G5 NN_example
 ```
 
-Each command performs only the selected action using prepared datasets. Pass
+Site and retrieval names are required positional arguments. Each command
+performs only the selected action using prepared datasets. Pass
 `--project-dir /path/to/project` to work from another directory. The default
 device is `cpu`. Each task checks its required settings and inputs before starting
 the expensive computation. `train` runs optimization when any resolved training
@@ -164,8 +173,8 @@ The first run needs no mode flag. When a recipe already has a model or study,
 choose explicitly:
 
 ```bash
-python -m openMWR train --site munich_G5 --retrieval NN_example --continue
-python -m openMWR train --site munich_G5 --retrieval NN_example --fresh
+openMWR train munich_G5 NN_example --continue
+openMWR train munich_G5 NN_example --fresh
 ```
 
 `--continue` adds trials to a matching optimization study. `--fresh` deletes only
@@ -314,11 +323,12 @@ recipe edits.
 Apply saved checkpoints directly to local daily HATPRO measurement files:
 
 ```bash
-python -m openMWR predict --site munich_G5 --retrieval NN_opt MLR_opt --date 2026-10-20
-python -m openMWR predict --site munich_G5 --start-date 2026-10-01 --end-date 2026-10-20
+openMWR predict munich_G5 NN_opt MLR_opt --date 2026-10-20
+openMWR predict munich_G5 --start-date 2026-10-01 --end-date 2026-10-20
 ```
 
-Omitting `--retrieval` uses the optional site.toml selection:
+Site is required; retrieval names are optional positional arguments. Omitting
+retrieval names uses the optional site.toml selection:
 
 ```toml
 [prediction]

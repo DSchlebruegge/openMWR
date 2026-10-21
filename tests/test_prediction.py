@@ -84,8 +84,8 @@ def project(tmp_path):
 
 
 def command(project, *args):
-    return subprocess.run([sys.executable, '-m', 'openMWR', 'predict',
-        '--project-dir', str(project), '--site', 'test', *args],
+    return subprocess.run([sys.executable, '-m', 'openMWR', 'predict', 'test',
+        *args, '--project-dir', str(project)],
         cwd=project.parent, text=True, capture_output=True)
 
 
@@ -178,6 +178,9 @@ def test_bls_only_and_multiple_bls_models(project):
     assert result.zenith is None and not result.errors
     path, = workflow.save(result)
     assert xr.load_dataset(path).model.values.tolist() == ['scan', 'scan2']
+    cli = command(project, 'scan', 'scan2', '--date', '2024-01-01')
+    assert cli.returncode == 0, cli.stderr
+    assert xr.load_dataset(path).model.values.tolist() == ['scan', 'scan2']
 
 
 def test_spectral_prediction_and_unsmoothed_python_override(project):
@@ -188,7 +191,7 @@ def test_spectral_prediction_and_unsmoothed_python_override(project):
     expected = run_model_list(workflow.models, result.observations, 'cpu')
     xr.testing.assert_allclose(result.zenith.TB, expected.TB)
     assert 'T' not in result.zenith
-    assert command(project, '--retrieval', 'spectral', '--date', '2024-01-01').returncode == 0
+    assert command(project, 'spectral', '--date', '2024-01-01').returncode == 0
 
 
 @pytest.mark.parametrize('args', [
@@ -205,7 +208,7 @@ def test_invalid_dates_fail_before_loading_or_writing(tmp_path, args):
 def test_configuration_and_checkpoint_selection_before_writing(project):
     config = project / 'sites/test/site.toml'
     config.write_text(config.read_text().replace('[prediction]', '[unused]'))
-    with pytest.raises(ValueError, match='Select --retrieval'):
+    with pytest.raises(ValueError, match='Select retrieval names'):
         PredictionWorkflow(project, 'test')
     with pytest.raises(ValueError, match='only once'):
         PredictionWorkflow(project, 'test', ['primary', 'primary'])
@@ -213,7 +216,7 @@ def test_configuration_and_checkpoint_selection_before_writing(project):
         PredictionWorkflow(project, 'test', ['missing'])
     # A broken training recipe is irrelevant for saved-model inference.
     (project / 'sites/test/retrieval/primary/retrieval.toml').write_text('invalid = [')
-    assert command(project, '--retrieval', 'primary', '--date', '2024-01-01',
+    assert command(project, 'primary', '--date', '2024-01-01',
                    '--output-dir', 'chosen').returncode == 0
     assert (project / 'chosen/2024/01/20240101_retrieval.nc').exists()
     assert not (project / 'published').exists()

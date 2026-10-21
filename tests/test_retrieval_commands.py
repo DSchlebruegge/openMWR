@@ -98,7 +98,7 @@ station_id = "03715"
 
 
 def command(tmp_path, action, *extra, check=True):
-    return subprocess.run([sys.executable, '-m', 'openMWR', action, '--project-dir', str(tmp_path), '--site', 'test', '--retrieval', 'example', *extra], cwd=tmp_path.parent, capture_output=True, text=True, check=check)
+    return subprocess.run([sys.executable, '-m', 'openMWR', action, 'test', 'example', '--project-dir', str(tmp_path), *extra], cwd=tmp_path.parent, capture_output=True, text=True, check=check)
 
 
 def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path):

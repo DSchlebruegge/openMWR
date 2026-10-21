@@ -449,7 +449,7 @@ class PredictionWorkflow:
         if isinstance(retrievals, str):
             retrievals = [retrievals]
         if not isinstance(retrievals, (list, tuple)) or not retrievals:
-            raise ValueError('Select --retrieval NAME [NAME ...] or set [prediction].retrievals in site.toml.')
+            raise ValueError('Select retrieval names or set [prediction].retrievals in site.toml.')
         if any(not isinstance(name, str) or not name or name in ('.', '..')
                or '/' in name or '\\' in name for name in retrievals):
             raise ValueError('Retrievals must be nonempty directory names without separators.')

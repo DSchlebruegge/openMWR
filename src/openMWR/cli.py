@@ -7,21 +7,19 @@ from pathlib import Path
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog='python -m openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
+    parser = argparse.ArgumentParser(prog='openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
     commands = parser.add_subparsers(dest='command', required=True)
     data = commands.add_parser('data', help='Create or update named datasets.')
-    actions = data.add_subparsers(dest='data_action', required=True)
-    build = actions.add_parser('build', help='Create missing output or update existing output from a dataset recipe.')
-    build.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
-    build.add_argument('--site', required=True)
-    build.add_argument('--dataset', nargs='+', required=True, help='Recipe name(s) under sites/<site>/datasets/.')
-    build.add_argument('--with-dependencies', action='store_true', help='Update prerequisites first; shared inputs run once.')
-    build.add_argument('--dry-run', action='store_true', help='Show processing order without writing files or contacting sources.')
-    build.add_argument('--rebuild', action='store_true', help='Regenerate only selected outputs; prerequisites receive ordinary updates.')
+    data.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
+    data.add_argument('site', metavar='SITE', help='Site name under sites/.')
+    data.add_argument('dataset', metavar='DATASET', nargs='+', help='Recipe name(s) under sites/<site>/datasets/.')
+    data.add_argument('--with-dependencies', action='store_true', help='Update prerequisites first; shared inputs run once.')
+    data.add_argument('--dry-run', action='store_true', help='Show processing order without writing files or contacting sources.')
+    data.add_argument('--rebuild', action='store_true', help='Regenerate only selected outputs; prerequisites receive ordinary updates.')
     predict = commands.add_parser('predict', help='Apply saved retrievals to local measurements and save daily NetCDF files.')
     predict.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
-    predict.add_argument('--site', required=True)
-    predict.add_argument('--retrieval', nargs='+', help='Saved retrieval name(s); defaults to [prediction].retrievals in site.toml.')
+    predict.add_argument('site', metavar='SITE', help='Site name under sites/.')
+    predict.add_argument('retrieval', metavar='RETRIEVAL', nargs='*', help='Saved retrieval name(s); defaults to [prediction].retrievals in site.toml.')
     predict.add_argument('--device', default='cpu', help='PyTorch device (default: cpu).')
     dates = predict.add_mutually_exclusive_group(required=True)
     dates.add_argument('--date', type=date.fromisoformat, help='One UTC day, YYYY-MM-DD.')
@@ -34,8 +32,8 @@ def main(argv=None):
     ):
         sub = commands.add_parser(command, help=help_text)
         sub.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
-        sub.add_argument('--site', required=True)
-        sub.add_argument('--retrieval', required=True, help='Directory name under sites/<site>/retrieval/.')
+        sub.add_argument('site', metavar='SITE', help='Site name under sites/.')
+        sub.add_argument('retrieval', metavar='RETRIEVAL', help='Directory name under sites/<site>/retrieval/.')
         sub.add_argument('--device', default='cpu', help='PyTorch device, e.g. cpu or cuda (default: cpu).')
         if command == 'train':
             sub.add_argument('--n-trials', type=int, help='Override the trial count when the recipe defines a parameter search.')
@@ -65,7 +63,7 @@ def main(argv=None):
                 with_dependencies=args.with_dependencies, rebuild=args.rebuild, dry_run=args.dry_run)
         elif args.command == 'predict':
             from openMWR.predict import PredictionWorkflow
-            workflow = PredictionWorkflow(args.project_dir, args.site, args.retrieval,
+            workflow = PredictionWorkflow(args.project_dir, args.site, args.retrieval or None,
                 args.device, output_dir=args.output_dir)
             first = args.date or args.start_date
             last = args.date or args.end_date
