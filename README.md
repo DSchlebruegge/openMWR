@@ -304,6 +304,72 @@ can be evaluated without recipes by passing `--days-gt-20` or `--all-days`.
 Inference and test-data selection use saved checkpoint settings even after
 recipe edits.
 
+### Daily prediction
+
+Apply saved checkpoints directly to local daily HATPRO measurement files:
+
+```bash
+python -m openMWR predict --site munich_G5 --retrieval NN_opt MLR_opt --date 2026-10-20
+python -m openMWR predict --site munich_G5 --start-date 2026-10-01 --end-date 2026-10-20
+```
+
+Omitting `--retrieval` uses the optional site.toml selection:
+
+```toml
+[prediction]
+retrievals = ["NN_opt", "MLR_opt", "NN_BLS_opt_var_ang_lin_3"]
+```
+
+Explicit names replace this selection. Models determine whether zenith or BLS
+input is needed; training recipes and prepared training datasets are not read.
+Dates are UTC and ranges include both endpoints. Prediction does not download
+data or build dataset dependencies. `--project-dir` defaults to the current
+directory and `--device` to cpu.
+
+The output root is `retrieval_output_dir` from site.toml, or
+`data/sites/<site>/predictions/` when omitted. `--output-dir` overrides it;
+relative paths resolve from the project root. Files are
+`YYYY/MM/YYYYMMDD_retrieval.nc` and `YYYY/MM/YYYYMMDD_retrieval_bls.nc`.
+Reprocessing replaces the selected day's files. Zenith files retain the model
+dimension; a single BLS retrieval retains the historical scalar model coordinate.
+
+Zenith input uses one-minute averages and results use the existing centered
+five-sample smoothing. BLS results stay unsmoothed. Profile outputs include the
+existing derived quantities; spectral models produce TB predictions. Missing
+measurements or input validation failures are reported per date/group. Other
+requested dates/groups still run and usable output is saved; the command exits
+with status 1 if any failed.
+Previously saved files for failed/unselected groups are left in place.
+Configuration, computation and output-write errors stop the command.
+
+The command uses the same Python API:
+
+```python
+from openMWR.predict import PredictionWorkflow, load_predictions
+
+workflow = PredictionWorkflow(".", "munich_G5", ["NN_opt", "MLR_opt"])
+result = workflow.predict("2026-10-20")  # No writes; models are loaded once.
+paths = workflow.save(result)
+if result.zenith is not None:
+    pred = result.zenith.sel(model="NN_opt")
+
+# Read outputs for plotting without loading checkpoints or rerunning inference.
+saved = load_predictions(".", "munich_G5", "2026-10-20")
+```
+
+Results expose `zenith`, `bls`, `observations`, `observations_bls` and `errors`.
+Unrequested/unavailable groups are None. Missing-input days always return a
+result; check `result.errors`, including when both groups are unavailable.
+Configuration and computation errors still raise exceptions.
+Saved files contain predictions, not RPG comparison observations. Python can
+select `smooth=False` or `import_retrieval_data=True`; the latter includes local
+RPG products in returned observations. Plot composition remains Python using
+`TimeSeriesCreator`/`SkewT`. Low-level `run_model` and `run_model_list` retain their
+names and now live in `openMWR.predict`, together with normalization helpers.
+`load_radiosonde_profile` in `openMWR.plot` selects one launch from its yearly
+source; pass it as `SkewT.plot_radiosonde(station_id, data=profile)` to reuse it
+across figures without repeated reads.
+
 ### Custom Python work
 
 Recipes and commands use the same `TrainingWorkflow` as ordinary scripts:

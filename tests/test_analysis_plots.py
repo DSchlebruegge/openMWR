@@ -5,9 +5,11 @@ from unittest.mock import patch
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
+import pandas as pd
+import pytest
 import xarray as xr
 
-from openMWR.plot import plot_err, plot_scatter_lwp
+from openMWR.plot import SkewT, load_radiosonde_profile, plot_err, plot_scatter_lwp
 
 
 def errors():
@@ -66,3 +68,39 @@ def test_missing_lwp_still_produces_a_figure():
     plot_scatter_lwp(predicted, reference, figure=figure, show=False)
     assert len(figure.axes) == 2
     assert figure.axes[0].lines[0].get_xdata().size == 0
+
+
+def test_radiosonde_selection_and_reusing_a_profile_without_file_reads(tmp_path):
+    times = pd.to_datetime(['2024-01-01T00:00', '2024-01-01T12:00', '2024-01-02T12:00'])
+    heights = np.tile([0., 500., 500., 1000., 2000.], (3, 1))
+    raw = xr.Dataset({
+        'height': (('synop', 'meastime'), heights),
+        'T': (('synop', 'meastime'), 290 - heights * .006),
+        'TD': (('synop', 'meastime'), 280 - heights * .006),
+        'p': (('synop', 'meastime'), 950 * np.exp(-heights / 8000)),
+        'wind_speed': (('synop', 'meastime'), np.full((3, 5), 5.)),
+        'wind_dir': (('synop', 'meastime'), np.full((3, 5), 90.)),
+        'starttime': ('synop', times + pd.Timedelta(minutes=5)),
+        'endtime': ('synop', times + pd.Timedelta(minutes=50)),
+    }, coords={'synop': times})
+    directory = tmp_path / 'data/radiosondes/station_03715'
+    directory.mkdir(parents=True)
+    raw.to_netcdf(directory / 'raw_data_2024.nc')
+    day = pd.Timestamp('2024-01-01T12:00')
+    profile = load_radiosonde_profile(tmp_path, '03715', day)
+    expected = raw.sel(synop=day).dropna(dim='meastime').swap_dims({'meastime': 'height'})
+    expected = expected.sel(height=~expected.height.to_series().duplicated().values)
+    xr.testing.assert_allclose(profile, expected)
+    with pytest.raises(ValueError, match='No matching radiosondes'):
+        load_radiosonde_profile(tmp_path, '03715', '2024-01-03')
+    with patch('openMWR.plot.xr.open_dataset', side_effect=AssertionError('Unexpected file read')):
+        for top in (100, 500):
+            skew = SkewT(day, tmp_path, min_pressure=top)
+            try:
+                skew.plot_radiosonde('03715', data=profile)
+                assert skew.radiosonde_plotted
+                assert skew.retrieval_time == pd.Timestamp('2024-01-01T12:05')
+                pressure = skew.ax.lines[0].get_ydata().to('hPa').magnitude
+                np.testing.assert_array_equal(pressure, profile.p.values)
+            finally:
+                plt.close(skew._fig)

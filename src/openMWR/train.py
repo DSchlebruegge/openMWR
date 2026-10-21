@@ -16,7 +16,7 @@ from typing import Union, List
 
 from openMWR.utils import progress_bar, is_called_from_notebook, progress_log
 from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
-from openMWR.run import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data, validate_device
+from openMWR.predict import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data, validate_device
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, load_model
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file

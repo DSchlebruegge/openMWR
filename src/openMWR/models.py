@@ -273,7 +273,7 @@ class Model(BaseModel):
     Builds the xarray input/output templates, normalization setup, loss weights,
     and PyTorch network used during training with
     :class:`openMWR.train.TrainingWorkflow` and later during inference via
-    :func:`openMWR.run.run_model`. Supports zenith-only and boundary-layer-scan
+    :func:`openMWR.predict.run_model`. Supports zenith-only and boundary-layer-scan
     (BLS) configurations as well as a multilinear regression fallback.
     """
     def __init__(
@@ -335,7 +335,7 @@ class Model(BaseModel):
         -----
         - Defines ``self.input`` (TB + auxiliary inputs) and ``self.output``
           (T, rh, lwc profiles plus scalar lwp/iwv) datasets used by training and
-          inference helpers in ``openMWR.run``.
+          inference helpers in ``openMWR.predict``.
         - Initializes height-dependent ``loss_weights`` for profile variables
           when using the MLP.
         - Computes ``n_input``, ``n_output``, and ``output_slices`` so tensors
@@ -447,7 +447,7 @@ class Model(BaseModel):
         ----------
         x : torch.Tensor
             Input tensor of shape ``(batch_size, n_input)`` created by
-            :func:`openMWR.run.create_tensor_from_ds`.
+            :func:`openMWR.predict.create_tensor_from_ds`.
 
         Returns
         -------

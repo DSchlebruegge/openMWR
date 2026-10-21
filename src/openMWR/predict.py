@@ -1,11 +1,17 @@
+"""Inference on xarray datasets and daily prediction from local measurements."""
+
+from dataclasses import dataclass, field
+from datetime import date as calendar_date, datetime, timezone
+from pathlib import Path
+from typing import Sequence
+
 import torch
 import xarray as xr
 import numpy as np
 import logging
-from datetime import datetime
-from typing import Sequence, Tuple
-
-from openMWR.models import BaseModel
+from openMWR.models import BaseModel, load_model
+from openMWR.paths import project_root, site_data_dir
+from openMWR.site import get_config_parameter
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +294,13 @@ def run_model(
     """
     model.to(device)
 
-    ds_sel = ds[model.input_vars].dropna(dim='time')
+    ds_sel = ds[model.input_vars]
+    if not model.is_bls_model and 'ang' in ds_sel.dims:
+        ds_sel = ds_sel.sel(ang=90, drop=True)
+    # Normalize only the channels/angles expected by this checkpoint. Extra
+    # measured channels otherwise acquire NaNs or fail xarray alignment.
+    ds_sel = ds_sel.sel({name: values for name, values in model.input.coords.items()
+                         if name in ds_sel.dims}).dropna(dim='time')
 
     if ds_sel["time"].size == 0:
         raise ValueError("No Data with all not Nan input values.")
@@ -375,74 +387,195 @@ def run_model_list(
     else:
         return ds_predicted
 
-def import_data_and_run_retrieval(
-    date: datetime,
-    site: str,
-    project_dir: str,
-    model_list: Sequence[BaseModel],
-    import_retrieval_data: bool = True,
-    bls: bool = False,
-    smooth: bool = True,
-) -> Tuple[xr.Dataset, xr.Dataset]:
+def _day(value):
+    """Normalize a calendar day or datetime to midnight UTC (timezone naive)."""
+    if isinstance(value, str):
+        value = calendar_date.fromisoformat(value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    if not isinstance(value, calendar_date):
+        raise TypeError('A prediction date must be a date, datetime or YYYY-MM-DD string.')
+    return datetime(value.year, value.month, value.day)
+
+
+def _output_directory(project_dir, site, output_dir):
+    if output_dir is None:
+        output_dir = get_config_parameter(site, 'retrieval_output_dir', project_dir)
+    if output_dir is None:
+        return site_data_dir(project_dir, site, 'predictions')
+    return project_root(project_dir) / Path(output_dir).expanduser()
+
+
+def _daily_file(directory, date, bls=False):
+    suffix = '_bls' if bls else ''
+    return directory / date.strftime('%Y/%m') / f'{date:%Y%m%d}_retrieval{suffix}.nc'
+
+
+@dataclass
+class PredictionResult:
+    """One UTC day's predictions and optional imported observation datasets.
+
+    Zenith and BLS predictions have a ``model`` dimension and retain their own
+    time/height grids. ``errors`` describes unavailable requested groups; usable
+    predictions from the other group can still be saved and plotted.
     """
-    Import MWR data, run retrieval models, and post-process outputs.
 
-    Parameters
-    ----------
-    date : datetime
-        Date to process.
-    site : str
-        Site name used for data import.
-    project_dir : str
-        Working-project root containing data/ and sites/.
-    model_list : list
-        Models to run.
-    import_retrieval_data : bool, optional
-        Whether to include RPG retrieval data when importing.
-    bls : bool, optional
-        If True, import boundary-layer-scan data and skip smoothing.
-    smooth : bool, optional
-        Whether to apply temporal smoothing to outputs (ignored if `bls` is True).
+    site: str
+    date: datetime
+    zenith: xr.Dataset | None = None
+    bls: xr.Dataset | None = None
+    observations: xr.Dataset | None = None
+    observations_bls: xr.Dataset | None = None
+    errors: dict[str, str] = field(default_factory=dict)
 
-    Returns
-    -------
-    tuple
-        ``(pred, ds_hatpro)`` where `pred` contains retrieval outputs.
+
+class PredictionWorkflow:
+    """Load saved retrievals once and apply them to local daily measurements.
+
+    ``retrievals=None`` selects ``[prediction].retrievals`` from site.toml.
+    Training recipes are never read. Prediction does not write files; call
+    ``save(result)`` explicitly. Python callers can disable zenith smoothing or
+    include RPG products in the returned observations for comparison plots.
     """
-    from openMWR.hatpro_data import import_hatpro_data, import_hatpro_data_bls, calc_derived_quantities
-    
-    device = "cpu"#"cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using {device} device")
 
-    # Import MWR measurement data
-    if not bls:
-        ds_hatpro = import_hatpro_data(date, site, project_dir, import_retrieval_data=import_retrieval_data, mean_one_min=True)
-    else:
-        ds_hatpro = import_hatpro_data_bls(date, site, project_dir, import_retrieval_data=import_retrieval_data)
+    def __init__(self, project_dir, site, retrievals=None, device='cpu', *,
+                 output_dir=None, smooth=True, import_retrieval_data=False):
+        self.project_dir = project_root(project_dir)
+        self.site = site
+        validate_device(device)
+        self.device = device
+        if retrievals is None:
+            settings = get_config_parameter(site, 'prediction', self.project_dir) or {}
+            if not isinstance(settings, dict) or set(settings) - {'retrievals'}:
+                raise ValueError('[prediction] supports only a retrievals list.')
+            retrievals = settings.get('retrievals')
+        if isinstance(retrievals, str):
+            retrievals = [retrievals]
+        if not isinstance(retrievals, (list, tuple)) or not retrievals:
+            raise ValueError('Select --retrieval NAME [NAME ...] or set [prediction].retrievals in site.toml.')
+        if any(not isinstance(name, str) or not name or name in ('.', '..')
+               or '/' in name or '\\' in name for name in retrievals):
+            raise ValueError('Retrievals must be nonempty directory names without separators.')
+        if len(set(retrievals)) != len(retrievals):
+            raise ValueError('Select each retrieval only once.')
+        self.models = tuple(load_model(name, site, self.project_dir) for name in retrievals)
+        self._zenith_models = tuple(model for model in self.models if not model.is_bls_model)
+        self._bls_models = tuple(model for model in self.models if model.is_bls_model)
+        self.output_dir = _output_directory(self.project_dir, site, output_dir)
+        self.smooth = smooth
+        self.import_retrieval_data = import_retrieval_data
+        logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), device)
 
-    # Apply model to measurement data
-    pred = run_model_list(model_list, ds_hatpro, device)
+    def predict(self, date):
+        """Return predictions without writing or downloading; retain partial groups.
 
-    units_dict = {
-        "T": "K",
-        "rh": "%",
-        "surface_T": "K",
-        "surface_rh": "%",
-        "surface_p": "hPa",
-        "lwc": "g/m^3",
-        "lwp": "g/m^2",
-        "iwv": "kg/m^2",
-    }
+        Missing/invalid input is always reported in ``result.errors``, including
+        days when neither group succeeds. Configuration and computation errors
+        still raise exceptions.
+        """
+        date = _day(date)
+        result = PredictionResult(self.site, date)
+        result.zenith, result.observations, zenith_error = self._predict_group(
+            date, self._zenith_models, bls=False)
+        result.bls, result.observations_bls, bls_error = self._predict_group(
+            date, self._bls_models, bls=True)
+        if zenith_error is not None:
+            result.errors['zenith'] = zenith_error
+        if bls_error is not None:
+            result.errors['bls'] = bls_error
+        return result
 
-    for var, unit in units_dict.items():
-        pred[var].attrs["units"] = unit
+    def _predict_group(self, date, models, *, bls):
+        from openMWR.hatpro_data import import_hatpro_data, import_hatpro_data_bls
 
-    pred = calc_derived_quantities(pred)
+        if not models:
+            return None, None, None
+        group = 'bls' if bls else 'zenith'
+        logger.info('Predict %s %s %s: %s', self.site, date.date(), group,
+                    ', '.join(model.name for model in models))
+        try:
+            if bls:
+                observations = import_hatpro_data_bls(date, self.site, self.project_dir,
+                    import_retrieval_data=self.import_retrieval_data)
+            else:
+                observations = import_hatpro_data(date, self.site, self.project_dir,
+                    import_retrieval_data=self.import_retrieval_data, mean_one_min=True)
+            for model in models:
+                validate_model_data(model.input, observations, f'{group} observations for {model.name}')
+        except (OSError, ValueError) as exc:
+            logger.warning('%s %s %s: %s', self.site, date.date(), group, exc)
+            return None, None, str(exc)
+        predicted = self._predict_observations(models, observations, bls)
+        return predicted, observations, None
 
-    pred['rain_flag'] = ds_hatpro['rain_flag'].sel(time=pred.time)
-    
-    # Smooth result
-    if smooth and not bls:
-        pred = pred.rolling(time=5, center=True, min_periods=1).mean()
+    def _predict_observations(self, models, observations, bls):
+        from openMWR.hatpro_data import calc_derived_quantities
 
-    return pred, ds_hatpro
+        predicted = run_model_list(models, observations, self.device)
+        # Surface pressure is needed for derived profile quantities even when a
+        # custom model did not use it as an input. Spectral outputs need no profiles.
+        if {'T', 'rh', 'lwc'} <= set(predicted):
+            if 'surface_p' not in predicted and 'surface_p' in observations:
+                predicted['surface_p'] = observations.surface_p.sel(time=predicted.time)
+            if 'surface_p' in predicted:
+                predicted = calc_derived_quantities(predicted)
+        if 'rain_flag' in observations:
+            predicted['rain_flag'] = observations.rain_flag.sel(time=predicted.time)
+        if self.smooth and not bls:
+            predicted = predicted.rolling(time=5, center=True, min_periods=1).mean(keep_attrs=True)
+        units = {'T': 'K', 'rh': '%', 'surface_T': 'K', 'surface_rh': '%',
+                 'surface_p': 'hPa', 'lwc': 'g/m^3', 'lwp': 'g/m^2', 'iwv': 'kg/m^2', 'TB': 'K'}
+        for name, unit in units.items():
+            if name in predicted:
+                predicted[name].attrs['units'] = unit
+        return predicted
+
+    def save(self, result):
+        """Replace selected daily NetCDF files and return their paths.
+
+        Retain the historical scalar BLS model coordinate for a single BLS
+        retrieval. In-memory predictions always keep the model dimension.
+        """
+        if result.site != self.site:
+            raise ValueError('Cannot save predictions from another site with this workflow.')
+        paths = []
+        for predicted, bls in ((result.zenith, False), (result.bls, True)):
+            if predicted is None:
+                continue
+            path = _daily_file(self.output_dir, result.date, bls)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            output = predicted.drop_vars(['doy_sin', 'doy_cos'], errors='ignore')
+            if bls and output.sizes.get('model') == 1:
+                output = output.squeeze('model')
+            output.to_netcdf(path)
+            logger.info('Saved %s', path)
+            paths.append(path)
+        return paths
+
+
+def load_predictions(project_dir, site, date, *, output_dir=None):
+    """Read daily prediction files without loading models or running inference.
+
+    Observations are not stored in these files; comparison plots can import
+    their local RPG inputs separately. Missing groups remain None.
+    """
+    date = _day(date)
+    directory = _output_directory(project_dir, site, output_dir)
+    result = PredictionResult(site, date,
+        zenith=_load_prediction_file(_daily_file(directory, date)),
+        bls=_load_prediction_file(_daily_file(directory, date, bls=True)))
+    if result.zenith is None and result.bls is None:
+        raise FileNotFoundError(f'No saved predictions for {site} on {date:%Y-%m-%d} in {directory}.')
+    return result
+
+
+def _load_prediction_file(path):
+    if not path.exists():
+        return None
+    predicted = xr.load_dataset(path)
+    if 'model' in predicted.coords and 'model' not in predicted.dims:
+        rain_flag = predicted.get('rain_flag')
+        predicted = predicted.expand_dims('model')
+        if rain_flag is not None:
+            predicted['rain_flag'] = rain_flag
+    return predicted

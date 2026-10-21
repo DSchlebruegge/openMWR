@@ -20,7 +20,7 @@ from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.hatpro_data import calc_derived_quantities
 from openMWR.models import Model, load_model
 from openMWR.plot import plot_err, plot_scatter_lwp
-from openMWR.run import run_model_list, validate_model_data, validate_device
+from openMWR.predict import run_model_list, validate_model_data, validate_device
 from openMWR.xr_utils import load_combined_dataset
 from openMWR.paths import project_root, site_root, dataset_file, checkpoint_file, retrieval_dir
 from openMWR.provenance import checkpoint_id, git_identity, software_identity, retrieval_log, utc_now

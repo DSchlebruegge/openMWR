@@ -22,6 +22,25 @@ from openMWR.paths import radiosonde_station_dir
 
 logger = logging.getLogger(__name__)
 
+
+def load_radiosonde_profile(project_dir, station_id, date):
+    """Load the nearest launch on a UTC day, selecting before loading the year.
+
+    Return the same cleaned height profile used by SkewT. The caller can reuse
+    it in several figures without reopening the yearly source file.
+    """
+    date = pd.Timestamp(date)
+    station_dir = radiosonde_station_dir(project_dir, station_id)
+    with xr.open_dataset(station_dir / f'raw_data_{date.year}.nc') as raso_data:
+        synops_on_date = raso_data.synop.where(raso_data.synop.dt.date == date.date(), drop=True)
+        if synops_on_date.size == 0:
+            raise ValueError(f'No matching radiosondes found for date: {date}')
+        selected_synop = synops_on_date.sel(synop=date, method='nearest')
+        profile = raso_data.sel(synop=selected_synop).load()
+    profile = profile.dropna(dim='meastime').swap_dims({'meastime': 'height'})
+    return profile.sel(height=~profile.height.to_series().duplicated().values)
+
+
 class SkewT(metpy_SkewT):
     """
     SkewT plotting helper based on a metpy SkewT subclass.
@@ -91,36 +110,6 @@ class SkewT(metpy_SkewT):
 
         self.radiosonde_plotted = False
 
-    def _get_radiosonde(self, station_id):
-        """Load radiosonde data for station_id and select the synop nearest to self.date.
-
-        Loads the file
-        ``{project_dir}/data/radiosondes/station_{station_id}/raw_data_{year}.nc``,
-        restricts synops to the same calendar date as self.date, selects the nearest
-        synop, drops NaNs along "meastime", swaps dims to "height", and removes
-        duplicate heights. Raises ValueError if no synops are found for the date.
-        """
-        
-
-        station_dir = radiosonde_station_dir(self.project_dir, station_id)
-        raso_data = xr.load_dataset(station_dir / f'raw_data_{self.date.year}.nc')
-
-        synops_on_date = raso_data.synop.where(raso_data.synop.dt.date == self.date.date(), drop=True)
-
-        if synops_on_date.size == 0:
-            raise ValueError(f"No matching radiosondes found for date: {self.date}")
-        
-        selected_synop = synops_on_date.sel(synop=self.date, method="nearest")
-
-        selected_raso_data = raso_data.sel(synop=selected_synop).dropna(dim="meastime") 
-
-        selected_raso_data = selected_raso_data.swap_dims({'meastime': 'height'})
-
-        # Remove duplicate heights
-        selected_raso_data = selected_raso_data.sel(height=~selected_raso_data.height.to_series().duplicated().values)
-
-        return selected_raso_data
-    
     def _extract_variables(self, raso_data):
         """Extract and convert variables from a rasosonde dataset into a units-aware dict.
 
@@ -226,7 +215,7 @@ class SkewT(metpy_SkewT):
         }
         return calculated_params
 
-    def plot_radiosonde(self, raso_station_id = '03715'):
+    def plot_radiosonde(self, raso_station_id = '03715', *, data=None):
         """
         Plot the radiosonde profile for the specified station ID on the SkewT.
 
@@ -234,9 +223,13 @@ class SkewT(metpy_SkewT):
         ----------
         raso_station_id : str, optional
             The station ID of the radiosonde to plot. Default is '03715'.
+        data : xr.Dataset, optional
+            Already selected profile from load_radiosonde_profile. When supplied,
+            plotting does not read a file.
         """
         try:
-            raso_data = self._get_radiosonde(raso_station_id)
+            raso_data = data if data is not None else load_radiosonde_profile(
+                self.project_dir, raso_station_id, self.date)
 
             self.synop_time = pd.to_datetime(raso_data.synop.values)
             self.retrieval_time = pd.to_datetime(raso_data.starttime.values)

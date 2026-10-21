@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -17,6 +18,16 @@ def main(argv=None):
     build.add_argument('--with-dependencies', action='store_true', help='Update prerequisites first; shared inputs run once.')
     build.add_argument('--dry-run', action='store_true', help='Show processing order without writing files or contacting sources.')
     build.add_argument('--rebuild', action='store_true', help='Regenerate only selected outputs; prerequisites receive ordinary updates.')
+    predict = commands.add_parser('predict', help='Apply saved retrievals to local measurements and save daily NetCDF files.')
+    predict.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
+    predict.add_argument('--site', required=True)
+    predict.add_argument('--retrieval', nargs='+', help='Saved retrieval name(s); defaults to [prediction].retrievals in site.toml.')
+    predict.add_argument('--device', default='cpu', help='PyTorch device (default: cpu).')
+    dates = predict.add_mutually_exclusive_group(required=True)
+    dates.add_argument('--date', type=date.fromisoformat, help='One UTC day, YYYY-MM-DD.')
+    dates.add_argument('--start-date', type=date.fromisoformat, help='First UTC day of an inclusive range, YYYY-MM-DD.')
+    predict.add_argument('--end-date', type=date.fromisoformat, help='Last UTC day; required with --start-date.')
+    predict.add_argument('--output-dir', type=Path, help='Output root, relative to project-dir or absolute; replaces the selected daily files.')
     for command, help_text in (
         ('train', 'Train from a named recipe, optimizing when it defines a parameter search.'),
         ('evaluate', 'Evaluate a saved retrieval and write a portable HTML report.'),
@@ -39,12 +50,34 @@ def main(argv=None):
             sub.add_argument('--station-id', help='Radiosonde station ID; required when the analysis dataset has multiple stations.')
             sub.add_argument('--output', type=Path, help='New HTML file (default: dated report in the retrieval evaluation/ directory).')
     args = parser.parse_args(argv)
+    if args.command == 'predict':
+        if args.date is not None and args.end_date is not None:
+            parser.error('--end-date requires --start-date.')
+        if args.start_date is not None and args.end_date is None:
+            parser.error('--start-date requires --end-date.')
+        if args.start_date is not None and args.end_date < args.start_date:
+            parser.error('--end-date must be on or after --start-date.')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     try:
         if args.command == 'data':
             from openMWR.datasets import DatasetWorkflow
             DatasetWorkflow(args.project_dir, args.site).build(args.dataset,
                 with_dependencies=args.with_dependencies, rebuild=args.rebuild, dry_run=args.dry_run)
+        elif args.command == 'predict':
+            from openMWR.predict import PredictionWorkflow
+            workflow = PredictionWorkflow(args.project_dir, args.site, args.retrieval,
+                args.device, output_dir=args.output_dir)
+            first = args.date or args.start_date
+            last = args.date or args.end_date
+            failed = False
+            for offset in range((last - first).days + 1):
+                day = first + timedelta(days=offset)
+                result = workflow.predict(day)
+                for path in workflow.save(result):
+                    print(path)
+                failed |= bool(result.errors)
+            if failed:
+                parser.exit(1, 'Prediction incomplete; see the reported dates/groups. Successful output was saved.\n')
         elif args.command == 'evaluate':
             from openMWR.evaluation import evaluate_retrieval, write_report
             options = {key: getattr(args, key) for key in ('data_source', 'days_gt_20', 'station_id')}
