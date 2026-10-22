@@ -17,6 +17,18 @@ def training_parameters(is_mlr):
     return {"repeats_for_linear_regression"} if is_mlr else _NN_TRAINING
 
 
+def input_noise_parameters(model):
+    """Names of the noise parameters used by the model's active inputs."""
+    names = {f'TB_{frequency}' for frequency in model.freqs}
+    names.update(var for var in model.input_vars if var != 'TB')
+    if model.is_bls_model:
+        if model.vary_input_noise_with_angle:
+            names.update(f'TB_{angle}' for angle in model.angles)
+        elif model.vary_input_noise_with_angle_linear:
+            names.add('TB_angle_factor')
+    return names
+
+
 def require_keys(table, required, section):
     missing = set(required) - table.keys()
     if missing:
@@ -116,3 +128,44 @@ def validate_parameter_usage(is_mlr, settings, *, complete=False):
         raise ValueError(f"training.{key} is not used by {model} models.")
     if complete:
         require_keys(settings, required, 'training')
+
+
+def resolve_parameter(value, key, label, workflow=None):
+    """Validate a parameter and lower a search to the existing workflow API."""
+    if workflow is not None and isinstance(value, (workflow.suggest_int, workflow.suggest_float, workflow.suggest_categorical)):
+        return value
+    if not isinstance(value, dict):
+        validate_training_settings({key: value})
+        return value
+    if "optimize" in value:
+        raise ValueError(f"{label}: specify low/high or choices explicitly instead of optimize = true.")
+    if "choices" in value:
+        check_keys(value, ("choices",), label)
+        choices = value["choices"]
+        if not isinstance(choices, list) or not choices:
+            raise ValueError(f"{label}.choices must be a nonempty list.")
+        candidates = choices
+        kind, args = "categorical", (choices,)
+    else:
+        check_keys(value, ("low", "high", "step", "log"), label)
+        if key == "loss_fn":
+            raise ValueError(f"{label} requires choices rather than numeric bounds.")
+        integer = key in INTEGER_TRAINING
+        low, high = value.get("low"), value.get("high")
+        check_number(low, f"{label}.low", integer=integer)
+        check_number(high, f"{label}.high", integer=integer)
+        if high < low:
+            raise ValueError(f"{label}.high must be at least low.")
+        log = value.get("log", False)
+        if type(log) is not bool or (log and low <= 0):
+            raise ValueError(f"{label}: log must be boolean and requires positive bounds.")
+        step = value.get("step", 1 if integer else None)
+        if step is not None:
+            check_number(step, f"{label}.step", integer=integer)
+            if step <= 0 or (log and (not integer or step != 1)):
+                raise ValueError(f"{label}: invalid step for this distribution.")
+        candidates = (low, high)
+        kind, args = ("int" if integer else "float"), (low, high, step, log)
+    for candidate in candidates:
+        validate_training_settings({key: candidate})
+    return getattr(workflow, f"suggest_{kind}")(*args) if workflow is not None else value

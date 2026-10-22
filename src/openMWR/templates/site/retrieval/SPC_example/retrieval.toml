@@ -1,0 +1,36 @@
+# Spectral consistency: predict each channel's TB from the other channels.
+# Replace SITE with your site name: openMWR train SITE SPC_example
+schema_version = 1
+
+[model]
+kind = "spectral"
+mode = "zenith"
+freqs = "dataset"
+hidden_layer_size = 64
+
+[model.norm_functions]
+TB = "z_norm"
+
+[data]
+dataset = "training"
+# Sources are inherited from the selected dataset; there is no date cutoff.
+
+[training]
+batch_size = 512
+epochs = 500
+lr_height = 0.002
+lr_low = 1e-7
+epoch_max_lr = 50
+loss_fn = "MAE"
+weight_decay = 1e-5
+
+[input_noise]
+method = "standard"
+TB = 0.5
+
+[evaluation]
+observations = true
+test_data = true
+data_source = "radiosonde"
+dataset = "analysis_radiosonde"
+days_gt_20 = true

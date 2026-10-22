@@ -38,6 +38,9 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
     assert all(settings['kind'] != 'era5' for settings in datasets.values())
     settings = tomllib.loads((directory / 'site.toml').read_text())
     assert settings == {'prediction': {'retrievals': ['NN_example']}}
+    assert {path.name for path in (directory / 'retrieval').iterdir()} == {
+        f'{family}{suffix}_example' for family in ('NN', 'MLR', 'NN_BLS', 'SPC')
+        for suffix in ('', '_opt')}
     recipe = RetrievalRecipe.load(project, 'my_site', 'NN_example')
     assert recipe.section('model')['freqs'] == 'dataset'
     assert all(not isinstance(value, dict) for value in recipe.section('training').values())
@@ -91,11 +94,12 @@ def test_python_configuration_overrides_and_both_dataset_chains(tmp_path):
         'hatpro', 'radiosondes', 'profiles', 'simulation', 'analysis_radiosonde']
     assert workflow.settings('simulation')['absorption_model'] == 'R24'
     from openMWR.train import TrainingWorkflow
-    recipe = RetrievalRecipe.load(tmp_path, 'test', 'NN_example')
-    training = TrainingWorkflow(recipe.create_model(), 'test', 'cpu', tmp_path)
-    training.add_standard_training_hyper_params(**recipe.training_params(training))
-    training.add_input_noise_params(**recipe.input_noise_params(training))
-    assert not training.requires_optimization
+    for retrieval in sorted((directory / 'retrieval').iterdir()):
+        recipe = RetrievalRecipe.load(tmp_path, 'test', retrieval.name)
+        training = TrainingWorkflow(recipe.create_model(), 'test', 'cpu', tmp_path)
+        training.add_standard_training_hyper_params(**recipe.training_params(training))
+        training.add_input_noise_params(**recipe.input_noise_params(training))
+        assert training.requires_optimization == ('_opt_' in retrieval.name)
     del settings['mwr_height']
     (directory / 'site.toml').write_text(tomli_w.dumps(settings))
     with pytest.raises(ValueError, match='set mwr_height in .*site.toml'):

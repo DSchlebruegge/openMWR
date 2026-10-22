@@ -3,52 +3,21 @@
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from importlib.resources import files
 import tomllib
 
-from openMWR.config import (INTEGER_TRAINING, TRAINING_PARAMETERS, check_keys,
+from openMWR.config import (TRAINING_PARAMETERS, check_keys,
                             check_number, check_name, check_strings, check_coordinates,
-                            validate_training_settings, validate_parameter_usage,
+                            validate_parameter_usage, resolve_parameter, input_noise_parameters,
                             require_keys, load_grid)
 from openMWR.paths import project_root, retrieval_dir, site_config_file
 
 
-def _parameter(value, key, label, workflow=None):
-    """Validate a parameter and lower a search to the existing workflow API."""
-    if not isinstance(value, dict):
-        validate_training_settings({key: value})
-        return value
-    if "optimize" in value:
-        raise ValueError(f"{label}: specify low/high or choices explicitly instead of optimize = true.")
-    if "choices" in value:
-        check_keys(value, ("choices",), label)
-        choices = value["choices"]
-        if not isinstance(choices, list) or not choices:
-            raise ValueError(f"{label}.choices must be a nonempty list.")
-        candidates = choices
-        kind, args = "categorical", (choices,)
-    else:
-        check_keys(value, ("low", "high", "step", "log"), label)
-        if key == "loss_fn":
-            raise ValueError(f"{label} requires choices rather than numeric bounds.")
-        integer = key in INTEGER_TRAINING
-        low, high = value.get("low"), value.get("high")
-        check_number(low, f"{label}.low", integer=integer)
-        check_number(high, f"{label}.high", integer=integer)
-        if high < low:
-            raise ValueError(f"{label}.high must be at least low.")
-        log = value.get("log", False)
-        if type(log) is not bool or (log and low <= 0):
-            raise ValueError(f"{label}: log must be boolean and requires positive bounds.")
-        step = value.get("step", 1 if integer else None)
-        if step is not None:
-            check_number(step, f"{label}.step", integer=integer)
-            if step <= 0 or (log and (not integer or step != 1)):
-                raise ValueError(f"{label}: invalid step for this distribution.")
-        candidates = (low, high)
-        kind, args = ("int" if integer else "float"), (low, high, step, log)
-    for candidate in candidates:
-        validate_training_settings({key: candidate})
-    return getattr(workflow, f"suggest_{kind}")(*args) if workflow is not None else value
+def load_retrieval_template(name):
+    """Read bundled recipe settings without a working project or prepared data."""
+    check_name(name, 'template')
+    path = files('openMWR').joinpath('templates', 'site', 'retrieval', name, 'retrieval.toml')
+    return tomllib.loads(path.read_text(encoding='utf-8'))
 
 
 def _check_reference(settings, section):
@@ -169,7 +138,7 @@ class RetrievalRecipe:
         check_keys(self.section("training"), TRAINING_PARAMETERS, "training")
         validate_parameter_usage(model["kind"] == "mlr", self.section("training"), complete=True)
         for key, value in self.section("training").items():
-            _parameter(value, key, f"training.{key}")
+            resolve_parameter(value, key, f"training.{key}")
         noise = self.section("input_noise")
         if not isinstance(noise, dict):
             raise ValueError("input_noise must be a TOML table.")
@@ -182,7 +151,7 @@ class RetrievalRecipe:
             if key == "method":
                 continue
             if method != "omb" or key not in ("data_source", "dataset", "sources", "factor"):
-                _parameter(value, f"input_noise_{key}", f"input_noise.{key}")
+                resolve_parameter(value, f"input_noise_{key}", f"input_noise.{key}")
         if method == "omb":
             require_keys(noise, ('data_source', 'dataset', 'factor'), 'input_noise')
             _check_reference(noise, 'input_noise')
@@ -251,7 +220,7 @@ class RetrievalRecipe:
 
     def training_params(self, workflow):
         """Resolve fixed values and searches where training parameters are defined."""
-        return {key: _parameter(value, key, f"training.{key}", workflow)
+        return {key: resolve_parameter(value, key, f"training.{key}", workflow)
                 for key, value in self.section("training").items()}
 
     def input_noise_params(self, workflow):
@@ -262,18 +231,11 @@ class RetrievalRecipe:
         if "TB" in noise:
             tb = noise.pop("TB")
             noise = {**{f"TB_{f}": tb for f in workflow.model.freqs}, **noise}
-        required = {var for var in workflow.model.input_vars if var != 'TB'}
-        allowed = required | {f'TB_{f}' for f in workflow.model.freqs}
-        if settings['method'] == 'standard':
-            required.update(f'TB_{f}' for f in workflow.model.freqs)
-        if workflow.model.is_bls_model:
-            if workflow.model.vary_input_noise_with_angle:
-                required.update(f'TB_{a}' for a in workflow.model.angles)
-                allowed.update(f'TB_{a}' for a in workflow.model.angles)
-            elif workflow.model.vary_input_noise_with_angle_linear:
-                required.add('TB_angle_factor')
-                allowed.add('TB_angle_factor')
+        allowed = input_noise_parameters(workflow.model)
+        required = allowed.copy()
+        if settings['method'] == 'omb':
+            required.difference_update(f'TB_{frequency}' for frequency in workflow.model.freqs)
         check_keys(noise, allowed, 'input_noise')
         require_keys(noise, required, 'input_noise')
-        return {key: _parameter(value, f"input_noise_{key}", f"input_noise.{key}", workflow)
+        return {key: resolve_parameter(value, f"input_noise_{key}", f"input_noise.{key}", workflow)
                 for key, value in noise.items()}

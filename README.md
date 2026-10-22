@@ -30,9 +30,10 @@ openMWR create-site my_site
 ```
 
 This writes `sites/my_site/site.toml`, six dataset recipes for a radiosonde
-training chain and HATPRO/radiosonde comparisons, and three retrieval recipes under
+training chain and HATPRO/radiosonde comparisons, and eight retrieval recipes under
 `sites/my_site/retrieval/`: `NN_example` (zenith NN), `MLR_example` (zenith MLR),
-and `NN_BLS_example` (boundary-layer-scan NN). It creates empty data
+`NN_BLS_example` (boundary-layer-scan NN), and `SPC_example` (spectral consistency),
+each with a matching `_opt_example` recipe for optimization. It creates empty data
 directories and leaves existing sites untouched by refusing to overwrite them.
 It also creates a shared `grids.toml` in the project directory if missing,
 containing the initial height, frequency and elevation-angle grids. Existing
@@ -46,7 +47,7 @@ settings explicitly and share the same training dataset; the BLS example also
 inherits its elevation angles. `NN_example` is the site's default prediction selection.
 Missing scientific choices produce an error; optional
 processing is off unless enabled. Operational options keep convenient defaults.
-The generated files include no ERA5 recipes or optimization searches.
+The optimization examples write explicit search ranges and trial budgets.
 Creation performs no downloads or calculations; RT additionally needs libRadtran.
 
 After configuration, check the chain before processing:
@@ -401,7 +402,16 @@ For example, `weight_decay = { low = 1e-8, high = 1e-4, log = true }`
 spells out a logarithmic search. `{ optimize = true }` is rejected.
 Hand-written Python workflows can still opt into recommended settings with
 `add_standard_training_hyper_params()`, `add_input_noise_params()` and
-`default_search_spaces()`.
+`default_search_spaces()`. The first two read the matching bundled fixed-value
+example; `add_input_noise_params(optimization=True)` and `default_search_spaces()`
+read its optimization example. Explicit arguments override those recommendations;
+`TB` applies to all selected frequencies, with per-frequency entries taking precedence.
+The helpers need no site configuration or prepared datasets and accept only active
+parameters. Inputs absent from the example, such as `years_since_1970` or optional
+angle-dependent noise, require explicit values or ranges. Custom model types without
+a bundled example can use `change_hyper_params()` to supply settings explicitly.
+Project recipes still require their scientific settings and do not fill omissions
+from bundled recommendations.
 Python workflows can also set just the training parameters their model uses:
 MLR requires `repeats_for_linear_regression`; NN and spectral models require the
 neural training settings shown above.
@@ -441,10 +451,12 @@ records effective settings and available software identity in the checkpoint.
 Optimization uses `optimization.log` and `optimization.db` beside the named
 retrieval's `retrieval.toml` and `model.pth`. Each retrieval owns its own SQLite
 database containing its study; copying or deleting the folder includes its history.
-Recipe-driven studies resume only with matching experiment definitions; use a
+Studies resume only with matching experiment definitions, including model settings,
+active training/noise parameters and applied bias corrections; use a
 new retrieval name or `--fresh` when changing an experiment.
 The saved best checkpoint must also remain present. Study compatibility covers the settings, not changes to dataset
-contents. Existing studies remain accessible through the manual Python API.
+contents. Studies without recorded experiment settings require a fresh run or a
+new retrieval name before optimization can continue; their histories remain readable.
 
 Evaluation writes dated portable HTML files under the retrieval's `evaluation/`
 directory. Set `evaluation.observations = false` or `evaluation.test_data = false`
@@ -550,11 +562,11 @@ Python scripts explicitly choose `workflow.train()` for one model or
 `workflow.optimize()` for a study, independently of the command's automatic
 selection. `train()` requires fixed values; replace any search definitions with
 fixed values before calling it. `workflow.requires_optimization` reports whether
-the current parameters still contain searches. Recipe workflows use
+the current parameters still contain searches. All workflows use
 `train(run_mode="fresh")`, `optimize(run_mode="fresh")`, or
-`optimize(run_mode="continue")` when results already exist. Direct manual Python
-workflows retain their existing default overwrite/resume behavior and also
-accept explicit run modes. Direct model/workflow construction and the existing preparation
+`optimize(run_mode="continue")` when results already exist. A first run needs no
+run mode. Optimization requires a search definition and applies the same study
+and saved-model checks to both setup paths. Direct model/workflow construction and the existing preparation
 functions remain available. `openMWR.evaluation.evaluate_retrieval` returns numerical results;
 `write_report` saves them separately. Shared comparison/report functionality is
 also available through `analyze_models` with explicit `SiteSettings`.

@@ -12,6 +12,7 @@ import xarray as xr
 
 from openMWR.evaluation import evaluate_retrieval, validate_evaluation, write_report
 from openMWR.models import load_model
+from openMWR.recipes import RetrievalRecipe
 from openMWR.site import create_site
 from openMWR.train import TrainingWorkflow
 
@@ -116,6 +117,18 @@ def command(tmp_path, action, *extra, check=True):
     return subprocess.run([sys.executable, '-m', 'openMWR', action, 'test', 'example', '--project-dir', str(tmp_path), *extra], cwd=tmp_path.parent, capture_output=True, text=True, check=check)
 
 
+def training_workflow(tmp_path, manual=False):
+    if not manual:
+        return TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    recipe = RetrievalRecipe.load(tmp_path, 'test', 'example')
+    workflow = TrainingWorkflow(recipe.create_model(), 'test', 'cpu', tmp_path)
+    workflow.change_hyper_params(**recipe.training_params(workflow))
+    workflow.add_input_noise_params(**recipe.input_noise_params(workflow))
+    data = recipe.section('data')
+    workflow.load_training_data(sources=data.get('sources'), dataset=data['dataset'])
+    return workflow
+
+
 def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path):
     recipe, data = project(tmp_path, search=False)
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
@@ -206,26 +219,43 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
 
 
 @pytest.mark.parametrize('kind', ['mlr', 'nn'])
-def test_optimization_continues_only_matching_experiments(kind, tmp_path):
+@pytest.mark.parametrize('manual', [False, True], ids=['recipe', 'python'])
+def test_optimization_continues_only_matching_experiments(kind, manual, tmp_path):
     recipe, data = project(tmp_path, kind)
-    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
-    study = workflow.optimize()
+    workflow = training_workflow(tmp_path, manual)
+    with pytest.raises(ValueError, match='No optimization study exists'):
+        workflow.optimize(n_trials=1, run_mode='continue')
+    study = workflow.optimize(n_trials=1)
     assert len(study.trials) == 1
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
-    # Studies from earlier recipe workflows recorded irrelevant fixed defaults.
+    before = (recipe.parent / 'model.pth').read_bytes()
+    with pytest.raises(ValueError, match='Results already exist'):
+        training_workflow(tmp_path, manual).optimize(n_trials=1)
+    assert (recipe.parent / 'model.pth').read_bytes() == before
+    # Earlier recipe workflows also stored unused defaults and recipe-only bias choices.
     previous = study.user_attrs['openMWR_experiment']
     unused = ({'epochs': 500, 'batch_size': 512, 'lr_height': 0.002, 'lr_low': 1e-7,
                'epoch_max_lr': 50, 'loss_fn': 'MAE', 'weight_decay': 1e-5}
               if kind == 'mlr' else {'repeats_for_linear_regression': 10})
     previous['hyper_params'].update(unused)
+    previous['bias_correction'] = {}
     study.set_user_attr('openMWR_experiment', previous)
     recipe.write_text(recipe.read_text().replace('n_trials = 1', 'n_trials = 2'))
-    continued = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='continue')
+    # Matching settings can resume through either setup path.
+    continued = training_workflow(tmp_path, not manual).optimize(n_trials=1, run_mode='continue')
     assert len(continued.trials) == 2
     assert not unused.keys() & continued.user_attrs['openMWR_experiment']['hyper_params'].keys()
+    changed_bias = training_workflow(tmp_path, manual)
+    changed_bias.change_hyper_params(mean_bias=[0.1, 0.1])
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        changed_bias.optimize(n_trials=1, run_mode='continue')
     recipe.write_text(recipe.read_text().replace('high = 0.002', 'high = 0.003'))
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
-        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='continue')
+        training_workflow(tmp_path, manual).optimize(n_trials=1, run_mode='continue')
+    recipe.write_text(recipe.read_text().replace('high = 0.003', 'high = 0.002'))
+    continued.set_user_attr('openMWR_experiment', None)
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        training_workflow(tmp_path, manual).optimize(n_trials=1, run_mode='continue')
     assert len(optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db').trials) == 2
 
 
@@ -239,29 +269,32 @@ def test_manual_python_workflow_still_uses_the_same_training(use_standard_helper
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     workflow.load_training_data(['03715'], dataset='training_variant')
     if use_standard_helper:
-        workflow.add_standard_training_hyper_params(epochs=1, batch_size=4, repeats_for_linear_regression=1)
+        workflow.add_standard_training_hyper_params(repeats_for_linear_regression=1)
     else:
         workflow.change_hyper_params(repeats_for_linear_regression=1)
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
-    workflow.train()
+    checkpoint = (recipe.parent / 'model.pth').read_bytes()
+    with pytest.raises(ValueError, match='Results already exist'):
+        workflow.train()
+    assert (recipe.parent / 'model.pth').read_bytes() == checkpoint
+    workflow.train(run_mode='fresh')
     for key, values in before.state_dict().items():
         torch.testing.assert_close(values, workflow.model.state_dict()[key])
     assert 'recipe' not in load_model('example', 'test', tmp_path).training_metadata
 
 
-@pytest.mark.parametrize('replacement', ['deleted', 'trained'])
-def test_resuming_requires_the_best_study_checkpoint(replacement, tmp_path):
+@pytest.mark.parametrize('replacement', ['deleted', 'replaced'])
+@pytest.mark.parametrize('manual', [False, True], ids=['recipe', 'python'])
+def test_resuming_requires_the_best_study_checkpoint(replacement, manual, tmp_path):
     recipe, data = project(tmp_path)
-    TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize()
+    training_workflow(tmp_path, manual).optimize(n_trials=1)
     if replacement == 'deleted':
         (recipe.parent / 'model.pth').unlink()
     else:
-        workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
-        workflow.add_input_noise_params(**{f'TB_{f}': 0.0 for f in workflow.model.freqs})
-        workflow.recipe = None  # A manual script can still replace a checkpoint.
-        workflow.train()
+        model = load_model('example', 'test', tmp_path)
+        model.save('test', tmp_path, model.hyper_params)
     with pytest.raises(ValueError, match='best study checkpoint is missing or has been replaced'):
-        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='continue')
+        training_workflow(tmp_path, manual).optimize(n_trials=1, run_mode='continue')
 
 
 @pytest.mark.parametrize(('kind', 'mode'), [('nn', 'bls'), ('spectral', 'zenith')])
@@ -327,7 +360,7 @@ TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     with pytest.raises(ValueError, match='needs fixed parameter values'):
         workflow.train()
-    workflow.add_input_noise_params(**{f'TB_{f}': 0.0 for f in workflow.model.freqs})
+    workflow.add_input_noise_params(TB=0.0, TB_angle_factor=3.0)
     workflow.train(run_mode='fresh')
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'train'
 
