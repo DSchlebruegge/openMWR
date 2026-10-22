@@ -1,0 +1,11 @@
+kind = "profiles"
+
+[inputs]
+source = "radiosondes"
+
+[preparation]
+heights = "levels_208_30km"
+
+# Set true to use the radiometer height as the profile base
+# instead of the radiosonde station height.
+# cut_off_at_mwr_height = false

@@ -1,0 +1,5 @@
+# Prepare local RPG measurements for comparison with radiosonde simulations.
+# Set the input path, instrument generation and measurement start in site.toml.
+kind = "hatpro"
+start_date = "site"
+end_date = "today"

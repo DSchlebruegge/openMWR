@@ -140,6 +140,8 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_gt_2
     recipe_file = retrieval_dir(root, site, retrieval) / 'retrieval.toml'
     recipe = RetrievalRecipe.load(root, site, retrieval) if recipe_file.is_file() else None
     settings = dict(recipe.section('evaluation')) if recipe is not None else {}
+    if recipe is not None and not settings:
+        raise ValueError('Configure an explicit [evaluation] section before evaluating this retrieval.')
     for key, value in (('data_source', data_source), ('days_gt_20', days_gt_20), ('station_id', station_id), ('dataset', dataset)):
         if value is not None:
             settings[key] = value

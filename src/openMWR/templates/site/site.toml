@@ -1,0 +1,24 @@
+# TODO: uncomment and fill in the settings for your site.
+# Leave any setting already supplied below commented here.
+
+# Instrument height in metres above sea level (required for profile preparation):
+# mwr_height = ...
+
+# Instrument generation, "G4" or "G5" (required for radiative transfer):
+# gen = "..."
+
+# Site coordinates in decimal degrees:
+# latitude = ...
+# longitude = ...
+
+# Local RPG input root containing year/month/day folders, e.g. Y2025/M01/D01:
+# hatpro_data_dir = "..."
+# mwr_measurement_start_date = "YYYY-MM-DD"
+
+# Optional: include the instrument's own retrieval products in HATPRO datasets.
+# rpg_retrieval_exists = false
+
+# Prediction output defaults to data/sites/<site>/predictions/.
+# retrieval_output_dir = "..."
+
+# The prediction selection below names retrievals to use after training.

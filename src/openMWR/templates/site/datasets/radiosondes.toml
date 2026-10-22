@@ -1,0 +1,10 @@
+kind = "radiosonde"
+
+# TODO: enter one or more radiosonde station IDs as quoted strings.
+# Preserve leading zeros. This list supplies station selection to the whole chain.
+stations = []
+
+# Choose historical coverage. Updates continue into each new year.
+start_year = 1990
+end_year = "current_year"
+refresh_years = 2

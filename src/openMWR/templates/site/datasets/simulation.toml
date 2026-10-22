@@ -1,0 +1,11 @@
+kind = "simulation"
+
+[inputs]
+profiles = "profiles"
+
+[radiative_transfer]
+backend = "torchMWRT"
+absorption_model = "R24"
+frequencies = "hatpro"
+angles = "hatpro_bls"
+# Radiative transfer also requires a working libRadtran installation.

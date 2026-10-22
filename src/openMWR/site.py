@@ -1,13 +1,26 @@
 import os
 import logging
+from importlib.resources import files
+from pathlib import Path
 import tomllib
 import tomli_w
 from typing import Any, Union
+from openMWR.config import check_name
 from openMWR.paths import project_root, site_root, site_data_dir, site_config_file
 
 logger = logging.getLogger(__name__)
 
-def create_site(site: str, project_dir: str, **config):
+def _example_files(directory, relative=Path()):
+    """Read bundled examples from a source checkout or an installed package."""
+    for entry in directory.iterdir():
+        path = relative / entry.name
+        if entry.is_dir():
+            yield from _example_files(entry, path)
+        else:
+            yield path, entry.read_text(encoding='utf-8')
+
+
+def create_site(site: str, project_dir: str, *, with_examples: bool = False, **config):
     """
     Create directory structure and config file for a new site.
 
@@ -17,6 +30,11 @@ def create_site(site: str, project_dir: str, **config):
         Name of the site (used to create directory).
     project_dir : str
         Working-project root containing data/ and sites/.
+
+    with_examples : bool, default=False
+        Include commented site settings, a radiosonde dataset chain, HATPRO and
+        radiosonde-analysis recipes, and a basic NN retrieval. Site details and
+        radiosonde station IDs must be filled in before processing data.
 
     **config : dict
         Configuration parameters to be saved in ``sites/{site}/site.toml``.
@@ -52,6 +70,11 @@ def create_site(site: str, project_dir: str, **config):
         Additional user-defined parameters can also be passed and will
         be included unchanged in the generated TOML configuration.
 
+    Returns
+    -------
+    pathlib.Path
+        Created site directory. An existing site is never overwritten.
+
     Notes
     -----
     The function creates the directory structure::
@@ -61,19 +84,38 @@ def create_site(site: str, project_dir: str, **config):
             datasets/
             retrieval/
         data/sites/{site}/
+        grids.toml                  shared across sites; existing file is kept
 
     Relative input/output paths in the configuration are resolved from
     ``project_dir`` when read. Absolute paths retain their meaning.
     """
 
+    check_name(site, 'site')
+    directory = site_root(project_dir, site)
+    if directory.exists():
+        raise FileExistsError(f'Site already exists: {directory}. Choose a new site name.')
+    documents = {}
+    if with_examples:
+        documents.update(_example_files(files('openMWR').joinpath('templates', 'site')))
+        config = {'prediction': {'retrievals': ['NN_example']}, **config}
     document = tomli_w.dumps({key: value for key, value in config.items() if value is not None})
-    (site_root(project_dir, site) / 'retrieval').mkdir(parents=True, exist_ok=True)
-    (site_root(project_dir, site) / 'datasets').mkdir(parents=True, exist_ok=True)
+    documents[Path('site.toml')] = documents.get(Path('site.toml'), '') + document
+
+    directory.mkdir(parents=True)
+    grids_path = project_root(project_dir) / 'grids.toml'
+    if not grids_path.exists():
+        grids_path.write_text(files('openMWR').joinpath('templates', 'grids.toml').read_text(encoding='utf-8'), encoding='utf-8')
+    (directory / 'retrieval').mkdir()
+    (directory / 'datasets').mkdir()
     site_data_dir(project_dir, site).mkdir(parents=True, exist_ok=True)
 
-    site_config_file(project_dir, site).write_text(document, encoding='utf-8')
+    for relative, text in documents.items():
+        path = directory / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
 
     logger.info(f"Created site config for {site} with: {config}")
+    return directory
 
 def get_config_parameter(site: str, parameter: Union[str, list[str]], project_dir: str) -> Any:
     """Retrieve one or multiple configuration parameters for a given site.

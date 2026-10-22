@@ -17,11 +17,11 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
-from openMWR.consts import std_angles, std_freqs, std_heights
 from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            era5_cache_file, project_root, radiosonde_station_dir,
                            radiosonde_year_file, site_config_file)
-from openMWR.config import check_name, check_coordinates, check_keys, check_number, check_strings
+from openMWR.config import (check_name, check_keys, check_number, check_strings,
+                            require_keys, load_grid)
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,21 @@ class DatasetRecipe:
         return dataset_dir(self.project_dir, self.site, self.name)
 
     def validate(self):
+        self.resolved_values()
+        return self
+
+    def resolved_values(self):
+        """Validate choices and return a numeric snapshot without editing the recipe."""
         kind = self.values.get('kind')
         if kind not in _INPUTS:
             raise ValueError(f'{self.name}: kind must be one of {", ".join(_INPUTS)}.')
         check_keys(self.values, ('kind', 'inputs', *_OPTIONS[kind]), self.name)
+        required = {'radiosonde': ('stations', 'start_year', 'end_year'),
+                    'era5': ('start_date', 'end_date', 'hour_interval'),
+                    'hatpro': ('start_date', 'end_date')}.get(kind, ())
+        require_keys(self.values, required, self.name)
+        if kind == 'era5' and self.values['end_date'] == 'today':
+            require_keys(self.values, ('delay_days',), self.name)
         check_keys(self.inputs, _INPUTS[kind], f'{self.name}.inputs')
         if set(self.inputs) != set(_INPUTS[kind]):
             raise ValueError(f'{self.name}: inputs must name {", ".join(_INPUTS[kind])}.')
@@ -98,17 +109,19 @@ class DatasetRecipe:
                 raise ValueError(f'{self.name}.stations must not be empty.')
             for station in self.values['stations']:
                 check_name(station, 'station')
-        if kind == 'radiosonde' and 'stations' not in self.values:
-            raise ValueError(f'{self.name}: radiosonde sources require stations.')
         for key in ('start_year', 'end_year', 'refresh_years', 'hour_interval', 'delay_days'):
             if key in self.values:
+                if key == 'end_year' and self.values[key] == 'current_year':
+                    continue
                 check_number(self.values[key], f'{self.name}.{key}', 0 if key == 'delay_days' else 1, integer=True)
-        if kind == 'era5' and self.values.get('hour_interval', 6) not in (1, 2, 3, 4, 6, 8, 12, 24):
+        if kind == 'era5' and self.values['hour_interval'] not in (1, 2, 3, 4, 6, 8, 12, 24):
             raise ValueError('hour_interval must divide 24.')
         for key in ('start_date', 'end_date'):
             if key in self.values:
                 if not isinstance(self.values[key], str):
                     raise ValueError(f'{key} must be a quoted ISO date.')
+                if self.values[key] == ('site' if key == 'start_date' else 'today'):
+                    continue
                 date.fromisoformat(self.values[key])
         execution = self.values.get('execution', {})
         check_keys(execution, ('processes',), f'{self.name}.execution')
@@ -118,14 +131,21 @@ class DatasetRecipe:
         check_keys(preparation, ('heights', 'cut_off_at_mwr_height', 'scale_rh_clear_sky',
                              'scale_rh_clear_sky_seed', 'scale_rh_clear_sky_fraction',
                              'scale_rh_clear_sky_factor'), f'{self.name}.preparation')
+        preparation = dict(preparation)
+        if kind == 'profiles':
+            require_keys(preparation, ('heights',), f'{self.name}.preparation')
         if 'heights' in preparation:
-            check_coordinates(preparation['heights'], 'preparation.heights')
-            if preparation['heights'][0] != 0 or preparation['heights'] != sorted(preparation['heights']):
+            heights = load_grid(self.project_dir, 'heights', preparation['heights'], label='preparation.heights')
+            if heights[0] != 0:
                 raise ValueError('preparation.heights must increase from zero (metres above the profile origin).')
+            preparation['heights'] = heights
         for key in ('cut_off_at_mwr_height', 'scale_rh_clear_sky'):
             if key in preparation and type(preparation[key]) is not bool:
                 raise ValueError(f'preparation.{key} must be true or false.')
-        if 'scale_rh_clear_sky_seed' in preparation:
+        if preparation.get('scale_rh_clear_sky'):
+            require_keys(preparation, ('scale_rh_clear_sky_fraction', 'scale_rh_clear_sky_factor',
+                                      'scale_rh_clear_sky_seed'), f'{self.name}.preparation')
+        if 'scale_rh_clear_sky_seed' in preparation and preparation['scale_rh_clear_sky_seed'] != 'random':
             check_number(preparation['scale_rh_clear_sky_seed'], 'scale_rh_clear_sky_seed', 0, integer=True)
         for key in ('scale_rh_clear_sky_fraction', 'scale_rh_clear_sky_factor'):
             if key in preparation:
@@ -134,23 +154,26 @@ class DatasetRecipe:
                     raise ValueError(f'{key} must be positive; fractions cannot exceed one.')
         rt = self.values.get('radiative_transfer', {})
         check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift'), f'{self.name}.radiative_transfer')
+        rt = dict(rt)
+        if kind == 'simulation':
+            require_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles'), f'{self.name}.radiative_transfer')
         if rt.get('backend', 'torchMWRT') not in ('torchMWRT', 'pyrtlib'):
             raise ValueError('radiative_transfer.backend must be torchMWRT or pyrtlib.')
         if 'absorption_model' in rt:
             check_name(rt['absorption_model'], 'radiative_transfer.absorption_model')
         for key in ('frequencies', 'angles'):
             if key in rt:
-                check_coordinates(rt[key], f'radiative_transfer.{key}')
-        if 'angles' in rt and (min(rt['angles']) <= 0 or max(rt['angles']) > 90):
-            raise ValueError('RT angles must be between zero (exclusive) and 90 degrees.')
+                rt[key] = load_grid(self.project_dir, key, rt[key], label=f'radiative_transfer.{key}')
         if 'frequency_shift' in rt:
             shifts = rt['frequency_shift']
-            if not isinstance(shifts, list) or len(shifts) != len(rt.get('frequencies', std_freqs)):
+            if not isinstance(shifts, list) or len(shifts) != len(rt['frequencies']):
                 raise ValueError('RT frequency_shift must contain one offset per frequency.')
             for value in shifts:
                 check_number(value, 'radiative_transfer.frequency_shift')
         split = self.values.get('split', {})
         check_keys(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
+        if kind == 'split':
+            require_keys(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
         for key in ('test_fraction', 'validation_fraction'):
             if key in split:
                 check_number(split[key], f'split.{key}', 0)
@@ -162,7 +185,12 @@ class DatasetRecipe:
         check_keys(observations, ('import_retrieval_data',), f'{self.name}.observations')
         if 'import_retrieval_data' in observations and type(observations['import_retrieval_data']) is not bool:
             raise ValueError('observations.import_retrieval_data must be true or false.')
-        return self
+        resolved = dict(self.values)
+        if 'preparation' in resolved:
+            resolved['preparation'] = preparation
+        if 'radiative_transfer' in resolved:
+            resolved['radiative_transfer'] = rt
+        return resolved
 
 
 class DatasetWorkflow:
@@ -209,13 +237,14 @@ class DatasetWorkflow:
                 raise ValueError('Circular dataset dependency: ' + ' -> '.join([*visiting, name]))
             if name in visited:
                 return
-            recipe = self.recipe(name).validate()
+            recipe = self.recipe(name)
+            values = recipe.resolved_values()
             visiting.append(name)
             for role, input_name in recipe.inputs.items():
                 visit(input_name)
                 if self.recipe(input_name).kind not in _INPUTS[recipe.kind][role]:
                     raise ValueError(f'{name}.inputs.{role}: {input_name} has incompatible kind {self.recipe(input_name).kind}.')
-            self.settings(name)  # Validate inherited station selections and source-specific options.
+            self.settings(name, _values=values)  # Validate inherited station selections and source-specific options.
             visiting.pop()
             visited.add(name)
             ordered.append(name)
@@ -246,29 +275,36 @@ class DatasetWorkflow:
         role = 'reference' if recipe.kind == 'analysis' else next(iter(recipe.inputs))
         return self.source_kind(recipe.inputs[role])
 
-    def settings(self, name):
-        """Resolve defaults; a build shares its snapshot with processing records."""
+    def settings(self, name, *, _values=None):
+        """Resolve explicit choices and optional features once per build."""
         if self._settings_cache is not None and name in self._settings_cache:
             return self._settings_cache[name]
         today = self._settings_date or date.today()
         recipe = self.recipe(name)
-        values, kind = recipe.values, recipe.kind
+        values = recipe.resolved_values() if _values is None else _values
+        kind = recipe.kind
+        required = {'profiles': ('mwr_height',), 'simulation': ('gen',),
+                    'hatpro': ('hatpro_data_dir', 'gen')}.get(kind, ())
+        for key in required:
+            if self.site_settings.get(key) in (None, ''):
+                raise ValueError(f'{name}: set {key} in {site_config_file(self.project_dir, self.site)} before building this dataset.')
         settings = {'kind': kind, 'inputs': recipe.inputs, 'sources': self.sources(name)}
         if kind == 'radiosonde':
-            settings.update(start_year=values.get('start_year', 1990), end_year=values.get('end_year', today.year),
+            settings.update(start_year=values['start_year'],
+                            end_year=today.year if values['end_year'] == 'current_year' else values['end_year'],
                             refresh_years=values.get('refresh_years', 2))
             if settings['start_year'] > settings['end_year']:
                 raise ValueError(f'{name}: start_year is after end_year.')
         elif kind in ('era5', 'hatpro'):
             delay = values.get('delay_days', 5) if kind == 'era5' else 0
-            settings.update(start_date=values.get('start_date', self.site_settings.get('mwr_measurement_start_date')),
-                            end_date=values.get('end_date', str(today - pd.Timedelta(days=delay))))
+            settings.update(start_date=self.site_settings.get('mwr_measurement_start_date') if values['start_date'] == 'site' else values['start_date'],
+                            end_date=str(today - pd.Timedelta(days=delay)) if values['end_date'] == 'today' else values['end_date'])
             if not settings['start_date']:
                 raise ValueError(f'{name}: provide start_date or the site mwr_measurement_start_date.')
             if pd.Timestamp(settings['start_date']) > pd.Timestamp(settings['end_date']):
                 raise ValueError(f'{name}: start_date is after end_date.')
             if kind == 'era5':
-                settings.update(hour_interval=values.get('hour_interval', 6),
+                settings.update(hour_interval=values['hour_interval'],
                                 latitude=round(self.site_settings['latitude'] * 4) / 4,
                                 longitude=round(self.site_settings['longitude'] * 4) / 4)
             else:
@@ -276,7 +312,7 @@ class DatasetWorkflow:
                                 hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'))
         elif kind == 'profiles':
             preparation = values.get('preparation', {})
-            settings['heights'] = preparation.get('heights', std_heights.tolist())
+            settings['heights'] = preparation['heights']
             settings['mwr_height'] = self.site_settings['mwr_height']
             if self.source_kind(name) == 'radiosonde':
                 if values.get('execution', {}).get('processes', 1) != 1:
@@ -285,21 +321,34 @@ class DatasetWorkflow:
                                 scale_rh_clear_sky_fraction=0.1, scale_rh_clear_sky_factor=0.2,
                                 scale_rh_clear_sky_seed=None)
                 settings.update({k: v for k, v in preparation.items() if k != 'heights'})
+                if settings['scale_rh_clear_sky_seed'] == 'random':
+                    settings['scale_rh_clear_sky_seed'] = None
             elif set(preparation) - {'heights'}:
                 raise ValueError(f'{name}: ERA5 profile preparation accepts heights; radiosonde preparation options do not apply.')
         elif kind == 'simulation':
             rt = values.get('radiative_transfer', {})
-            settings.update(backend=rt.get('backend', 'torchMWRT'),
-                            absorption_model=rt.get('absorption_model', 'R17' if self.source_kind(name) == 'era5' else 'R20'),
-                            frequencies=rt.get('frequencies', std_freqs.tolist()),
-                            angles=rt.get('angles', std_angles.tolist()),
+            settings.update(backend=rt['backend'],
+                            absorption_model=rt['absorption_model'],
+                            frequencies=rt['frequencies'], angles=rt['angles'],
                             frequency_shift=rt.get('frequency_shift'), gen=self.site_settings.get('gen'))
         elif kind == 'split':
-            settings.update(test_fraction=0.1, validation_fraction=0.1, seed=42)
-            settings.update(values.get('split', {}))
+            settings.update(values['split'])
         if self._settings_cache is not None:
             self._settings_cache[name] = settings
         return settings
+
+    def coordinates(self, name):
+        """Return numeric grids inherited through a prepared dataset's inputs."""
+        with self._resolved_settings():
+            graph = self._graph([name])
+            if self.recipe(name).kind not in ('profiles', 'simulation', 'split'):
+                raise ValueError(f'{name}: grids require a profiles, simulation or split dataset.')
+            grids = {}
+            for input_name in graph:
+                kind = self.recipe(input_name).kind
+                keys = ('heights',) if kind == 'profiles' else ('frequencies', 'angles') if kind == 'simulation' else ()
+                grids.update({key: self.settings(input_name)[key] for key in keys})
+            return grids
 
     def _definition(self, name):
         """Scientific lineage, excluding expanding source coverage and worker count."""
@@ -437,6 +486,11 @@ class DatasetWorkflow:
             if not names:
                 raise ValueError('Select at least one dataset.')
             graph = self._graph(names)
+            ancestors = {}
+            if rebuild:
+                for name in graph:
+                    inputs = set(self.recipe(name).inputs.values())
+                    ancestors[name] = inputs.union(*(ancestors[n] for n in inputs))
             selected = set(names)
             order = graph if with_dependencies else [n for n in graph if n in selected]
             logger.info('Dataset order: %s', ' -> '.join(order))
@@ -444,8 +498,7 @@ class DatasetWorkflow:
             for name in order:
                 self._check_state(name, rebuilding=rebuild and name in selected)
                 if rebuild and name not in selected and any(p.is_file() for p in self.files(name)):
-                    ancestors = set(self._graph([name])) - {name}
-                    if ancestors & selected:
+                    if ancestors[name] & selected:
                         raise ValueError(f'{name}: a selected input will be rebuilt. Select {name} for rebuild too, or rebuild the input separately first.')
                 for input_name in self.recipe(name).inputs.values():
                     if input_name not in order:

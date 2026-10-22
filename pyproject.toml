@@ -49,4 +49,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-openMWR = ["evaluation.html"]
+openMWR = ["evaluation.html", "templates/*.toml", "templates/site/*.toml", "templates/site/datasets/*.toml", "templates/site/retrieval/*/*.toml"]

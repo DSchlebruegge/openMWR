@@ -25,16 +25,22 @@ def project(tmp_path, kind='mlr', mode='zenith', suffix='variant', search=True):
 kind = "{kind}"
 mode = "{mode}"
 freqs = [22.24, 31.4]
+norm_functions = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_norm' if kind == 'mlr' else 'log_norm'}", lwp = "{'max_norm' if kind == 'mlr' else 'log_norm'}", iwv = "z_norm" }}
 '''
     if kind != 'spectral':
         settings += 'heights = [0.0, 1000.0]\nadditional_input_vars = []\n'
         if kind == 'nn':
-            settings += 'hidden_layers = [4]\ndropout_rate = 0.0\n'
+            bounds = '[2000, 10000]' if mode == 'bls' else '[10000]'
+            values = '[1.0, 0.5, 0.25]' if mode == 'bls' else '[1.0, 0.5]'
+            profile = f'{{ upper_bounds = {bounds}, values = {values} }}'
+            weights = ', '.join(f'{name} = {profile}' for name in ('T', 'rh', 'lwc'))
+            settings += f'hidden_layers = [4]\ndropout_rate = 0.0\nloss_weights = {{ {weights}, lwp = 1.0, iwv = 1.0 }}\n'
     else:
         settings += 'hidden_layer_size = 4\n'
     if mode == 'bls':
         settings += 'angles = [90.0, 30.0]\nvary_input_noise_with_angle_linear = true\n'
-    training = 'repeats_for_linear_regression = 1\n' if kind == 'mlr' else 'epochs = 1\nbatch_size = 4\n'
+    training = ('repeats_for_linear_regression = 1\n' if kind == 'mlr' else
+                'epochs = 1\nbatch_size = 4\nlr_height = 0.002\nlr_low = 1e-7\nepoch_max_lr = 50\nloss_fn = "MAE"\nweight_decay = 1e-5\n')
     variant = f'dataset = "training_{suffix}"\n' if suffix else 'dataset = "training"\n'
     settings += f'''
 [data]
@@ -47,18 +53,24 @@ sources = ["03715"]
 [input_noise]
 method = "standard"
 TB = 0.0
+{'TB_angle_factor = 3.0' if mode == 'bls' else ''}
 
 [optimization]
 n_trials = 1
 data_source = "radiosonde"
+dataset = "analysis_radiosonde"
 '''
     if search:
         if kind == 'mlr':
             settings = settings.replace('TB = 0.0', 'TB = { low = 0.001, high = 0.002 }')
         else:
-            settings = settings.replace('[training]\n', '[training]\nlr_height = { low = 0.001, high = 0.002 }\n')
+            settings = settings.replace('lr_height = 0.002', 'lr_height = { low = 0.001, high = 0.002 }')
     settings += '''
 [evaluation]
+observations = true
+test_data = true
+data_source = "radiosonde"
+dataset = "analysis_radiosonde"
 days_gt_20 = true
 station_id = "03715"
 '''
@@ -67,10 +79,13 @@ station_id = "03715"
     import tomli_w
     dataset_name = f'training_{suffix}' if suffix else 'training'
     for name, definition in {
-        'radiosondes': {'kind': 'radiosonde', 'stations': ['03715']},
-        'profiles_standard': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}},
-        'rt_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles_standard'}},
-        dataset_name: {'kind': 'split', 'inputs': {'simulation': 'rt_r20'}},
+        'radiosondes': {'kind': 'radiosonde', 'stations': ['03715'], 'start_year': 1990, 'end_year': 'current_year'},
+        'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0]}},
+        'simulation_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
+                          'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R20',
+                                                 'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0]}},
+        dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r20'},
+                      'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
     }.items():
         (tmp_path / f'sites/test/datasets/{name}.toml').write_text(tomli_w.dumps(definition))
     for name in (dataset_name, 'analysis_radiosonde', 'analysis_era5'):
@@ -118,20 +133,23 @@ def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path)
     for key, values in python_model.state_dict().items():
         torch.testing.assert_close(values, cli_model.state_dict()[key])
     assert cli_model.hyper_params['training_dataset'] == 'training_variant'
-    assert cli_model.hyper_params['lr_low'] == 1e-7
-    assert cli_model.training_metadata['effective']['hyper_params']['lr_low'] == 1e-7
+    assert 'lr_low' not in cli_model.hyper_params
+    assert 'lr_low' not in cli_model.training_metadata['effective']['hyper_params']
     assert cli_model.training_metadata['software']['packages']['openMWR']
     assert (recipe.parent / 'training.log').read_text().count('Finished train') == 2
     assert not (tmp_path / 'sites/test/retrieval/example/optimization.db').exists()
     invalid = command(tmp_path, 'train', '--n-trials', '2', check=False)
     assert invalid.returncode == 1
     assert 'require input-noise optimization or search ranges' in invalid.stderr
-    # Omitting parameters keeps their fixed defaults rather than starting a search.
+    # Scientific noise choices must be explicit even when they are fixed.
     recipe.write_text(recipe.read_text().replace('TB = 0.0', ''))
+    with pytest.raises(ValueError, match='Missing input_noise settings'):
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    recipe.write_text(recipe.read_text().replace('[input_noise]\n', '[input_noise]\nTB = 0.5\n'))
     omitted = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     assert not omitted.requires_optimization
     assert omitted.hyper_params['input_noise_TB_22.24'] == 0.5
-    assert omitted.hyper_params['weight_decay'] == 1e-5
+    assert 'weight_decay' not in omitted.hyper_params
     recipe.write_text(recipe.read_text().replace('kind = "mlr"', 'kind = "nn"'))
     loaded = load_model('example', 'test', tmp_path)
     assert loaded.is_MLR
@@ -141,10 +159,21 @@ def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path)
 @pytest.mark.parametrize(('kind', 'mode'), [('nn', 'zenith'), ('nn', 'bls'), ('spectral', 'zenith')])
 def test_one_epoch_models_train_and_evaluate(kind, mode, tmp_path):
     recipe, data = project(tmp_path, kind, mode, search=False)
+    if kind == 'nn':
+        import tomllib
+        import tomli_w
+
+        settings = tomllib.loads(recipe.read_text())
+        settings['model']['loss_weights'] = {'T': [1., .3], 'rh': .7, 'lwc': .2, 'lwp': 1., 'iwv': 1.}
+        recipe.write_text(tomli_w.dumps(settings))
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert 'repeats_for_linear_regression' not in workflow.hyper_params
     model = workflow.train()
     assert torch.isfinite(next(model.parameters())).all()
     assert (recipe.parent / 'training_progress.pdf').is_file()
+    if kind == 'nn':
+        restored = load_model('example', 'test', tmp_path)
+        np.testing.assert_array_equal(restored.loss_weights.T, [1., .3])
     analysis = evaluate_retrieval(tmp_path, 'test', 'example')
     assert len(analysis.evaluations) == 2
     assert analysis.evaluations[0].samples['time_coordinates'] == 3
@@ -176,22 +205,32 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
         validate_evaluation(tmp_path, 'test', 'example')
 
 
-def test_optimization_continues_only_matching_experiments(tmp_path):
-    recipe, data = project(tmp_path)
+@pytest.mark.parametrize('kind', ['mlr', 'nn'])
+def test_optimization_continues_only_matching_experiments(kind, tmp_path):
+    recipe, data = project(tmp_path, kind)
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     study = workflow.optimize()
     assert len(study.trials) == 1
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
+    # Studies from earlier recipe workflows recorded irrelevant fixed defaults.
+    previous = study.user_attrs['openMWR_experiment']
+    unused = ({'epochs': 500, 'batch_size': 512, 'lr_height': 0.002, 'lr_low': 1e-7,
+               'epoch_max_lr': 50, 'loss_fn': 'MAE', 'weight_decay': 1e-5}
+              if kind == 'mlr' else {'repeats_for_linear_regression': 10})
+    previous['hyper_params'].update(unused)
+    study.set_user_attr('openMWR_experiment', previous)
     recipe.write_text(recipe.read_text().replace('n_trials = 1', 'n_trials = 2'))
     continued = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='continue')
     assert len(continued.trials) == 2
+    assert not unused.keys() & continued.user_attrs['openMWR_experiment']['hyper_params'].keys()
     recipe.write_text(recipe.read_text().replace('high = 0.002', 'high = 0.003'))
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
         TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='continue')
     assert len(optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db').trials) == 2
 
 
-def test_manual_python_workflow_still_uses_the_same_training(tmp_path):
+@pytest.mark.parametrize('use_standard_helper', [True, False])
+def test_manual_python_workflow_still_uses_the_same_training(use_standard_helper, tmp_path):
     recipe, data = project(tmp_path, search=False)
     configured = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     configured.train()
@@ -199,7 +238,10 @@ def test_manual_python_workflow_still_uses_the_same_training(tmp_path):
     model = type(configured.model)(**configured.model.structure)
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     workflow.load_training_data(['03715'], dataset='training_variant')
-    workflow.add_standard_training_hyper_params(epochs=1, batch_size=4, repeats_for_linear_regression=1)
+    if use_standard_helper:
+        workflow.add_standard_training_hyper_params(epochs=1, batch_size=4, repeats_for_linear_regression=1)
+    else:
+        workflow.change_hyper_params(repeats_for_linear_regression=1)
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
     workflow.train()
     for key, values in before.state_dict().items():
@@ -261,11 +303,11 @@ def test_recipe_training_requires_only_selected_training_and_validation_files(tm
         TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
 
 
-@pytest.mark.parametrize('space', ['default', 'custom'])
+@pytest.mark.parametrize('space', ['recommended', 'custom'])
 def test_train_command_optimizes_noise_search(space, tmp_path):
     recipe, data = project(tmp_path, 'nn', 'bls', search=False)
-    tb = '{ optimize = true }' if space == 'default' else '{ low = 0.1, high = 0.2 }'
-    settings = recipe.read_text().replace('TB = 0.0', f'''TB = {tb}
+    tb = '{ low = 0.0, high = 1.5 }' if space == 'recommended' else '{ low = 0.1, high = 0.2 }'
+    settings = recipe.read_text().replace('TB_angle_factor = 3.0', '').replace('TB = 0.0', f'''TB = {tb}
 "TB_22.24" = 0.35
 TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
     recipe.write_text(settings)
@@ -274,7 +316,7 @@ TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
     assert 'input_noise_TB_22.24' not in study.best_params
     assert load_model('example', 'test', tmp_path).hyper_params['input_noise_TB_22.24'] == 0.35
-    low, high = (0.0, 1.5) if space == 'default' else (0.1, 0.2)
+    low, high = (0.0, 1.5) if space == 'recommended' else (0.1, 0.2)
     assert low <= study.best_params['input_noise_TB_31.4'] <= high
     search_line = next(line for line in result.stderr.splitlines() if 'Search input_noise.TB_31.4:' in line)
     assert f'low={low}' in search_line and f'high={high}' in search_line
@@ -293,12 +335,13 @@ TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
 def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
     recipe, data = project(tmp_path, 'nn')
     settings = recipe.read_text().replace('batch_size = 4', 'batch_size = { choices = [2, 4] }')
-    settings = settings.replace('[training]\n', '''[training]
-epoch_max_lr = { low = 1, high = 3, step = 1 }
-weight_decay = { optimize = true }
-''')
+    settings = settings.replace('epoch_max_lr = 50', 'epoch_max_lr = { low = 1, high = 3, step = 1 }')
+    settings = settings.replace('weight_decay = 1e-5', 'weight_decay = { low = 1e-8, high = 1e-4, log = true }')
     recipe.write_text(settings)
-    result = command(tmp_path, 'train', '--n-trials', '2', '--data-source', 'radiosonde')
+    custom = tmp_path / 'data/sites/test/custom_analysis/zenith.nc'
+    custom.parent.mkdir()
+    (tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc').rename(custom)
+    result = command(tmp_path, 'train', '--n-trials', '2', '--data-source', 'radiosonde', '--dataset', 'custom_analysis')
     assert 'Optimizing example (trial budget: 2, reference: radiosonde)' in result.stderr
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
     assert len(study.trials) == 2
@@ -326,6 +369,9 @@ def test_evaluate_command_writes_report(tmp_path):
     all_days = evaluate_retrieval(tmp_path, 'test', 'example', days_gt_20=False)
     assert all_days.evaluations[0].samples['time_coordinates'] == 6
     assert 'All-days diagnostic' in all_days.evaluations[0].note
+    missing = command(tmp_path, 'evaluate', '--dataset', 'missing', check=False)
+    assert missing.returncode == 1 and 'Missing evaluation analysis dataset' in missing.stderr
+    assert '/missing/zenith.nc' in missing.stderr
 
 
 def test_fresh_and_continue_affect_only_the_selected_retrieval(tmp_path):
@@ -389,6 +435,7 @@ def test_station_id_is_independent_of_file_order_and_requires_a_choice(tmp_path)
     ('mlr', 'training', 'weight_decay = { optimize = true }'),
     ('mlr', 'model', 'hidden_layers = [4]'),
     ('mlr', 'model', 'dropout_rate = 0.1'),
+    ('mlr', 'model', 'loss_weights = { T = 1.0, rh = 1.0, lwc = 1.0, lwp = 1.0, iwv = 1.0 }'),
     ('nn', 'training', 'repeats_for_linear_regression = 2'),
 ])
 def test_unused_model_settings_are_rejected(kind, section, setting, tmp_path):
@@ -420,9 +467,15 @@ def test_manual_search_cannot_optimize_an_unused_mlr_parameter(tmp_path):
     ('low = 0.001', 'low = 0.0, log = true', 'requires positive bounds'),
     ('low = 0.001', 'low = 0.001, step = 0.001, log = true', 'invalid step'),
     ('batch_size = 4', 'batch_size = { choices = [] }', 'nonempty list'),
-    ('batch_size = 4', 'batch_size = { optimize = true }', 'No default search space for training.batch_size'),
-    ('TB = 0.0', 'TB = { optimize = false }', 'optimize must be true'),
-    ('TB = 0.0', 'TB = { optimize = true, low = 0.0, high = 1.0 }', 'Unknown input_noise.TB'),
+    ('batch_size = 4', 'batch_size = { optimize = true }', 'specify low/high or choices explicitly'),
+    ('TB = 0.0', 'TB = { optimize = false }', 'specify low/high or choices explicitly'),
+    ('TB = 0.0', 'TB = { optimize = true, low = 0.0, high = 1.0 }', 'specify low/high or choices explicitly'),
+    ('weight_decay = 1e-5', '', 'Missing training settings: weight_decay'),
+    ('hidden_layers = [4]', '', 'Missing model settings: hidden_layers'),
+    ('loss_weights = {', '# loss_weights = {', 'Missing model settings: loss_weights'),
+    ('norm_functions = {', '# norm_functions = {', 'Missing model settings: norm_functions'),
+    ('freqs = [22.24, 31.4]', 'freqs = [22.24, 22.24]', 'must not contain duplicates'),
+    ('heights = [0.0, 1000.0]', 'heights = [1000.0, 0.0]', 'must be increasing'),
     ('dropout_rate = 0.0', 'dropout_rate = { low = 0.0, high = 0.5 }', 'model.dropout_rate does not support a search'),
     ('[optimization]', '[optimization]\n[optimization.search.weight_decay]\nlow = 1e-8\nhigh = 1e-4', 'optimization.search does not support a search'),
     ('TB = 0.0', 'TB = 0.0\n[input_noise.search.TB]\nlow = 0.1\nhigh = 0.5', 'Unknown input_noise setting'),
@@ -450,11 +503,24 @@ def test_missing_data_and_coordinate_mismatch_are_clear(tmp_path):
     assert 'Traceback' not in result.stderr
 
 
+def test_model_can_explicitly_inherit_dataset_grids_and_omit_dropout(tmp_path):
+    recipe, data = project(tmp_path, 'nn', 'bls', search=False)
+    recipe.write_text(recipe.read_text().replace('freqs = [22.24, 31.4]', 'freqs = "dataset"')
+                      .replace('heights = [0.0, 1000.0]', 'heights = "dataset"')
+                      .replace('angles = [90.0, 30.0]', 'angles = "dataset"')
+                      .replace('dropout_rate = 0.0', ''))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_array_equal(workflow.model.freqs, data.frq)
+    np.testing.assert_array_equal(workflow.model.heights, data.height)
+    np.testing.assert_array_equal(workflow.model.angles, data.ang)
+    assert workflow.model.dropout_rate == 0.0
+
+
 def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
     recipe, data = project(tmp_path)
     recipe.write_text(recipe.read_text().replace('sources = ["03715"]', 'sources = ["era5"]')
-                      + '\n[bias_correction]\ndata_source = "era5"\nfactor = 0.5\n')
-    (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\n')
+                      + '\n[bias_correction]\ndata_source = "era5"\ndataset = "analysis_era5"\nfactor = 0.5\n')
+    (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\nhour_interval = 6\n')
     site_file = tmp_path / 'sites/test/site.toml'
     site_file.write_text(site_file.read_text() + '\nlatitude = 48.0\nlongitude = 11.0\n')
     for split in ('training_data', 'validation_data'):
@@ -473,34 +539,36 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     recipe, data = project(tmp_path, search=False)
     # Use the normal 14-channel grid so the existing neighbor-based OMB method
     # has channels on both sides of its K/V-band split.
-    from openMWR.consts import std_freqs
+    from openMWR.config import load_grid
     import tomli_w
     import tomllib
 
+    frequencies = load_grid(tmp_path, 'frequencies', 'hatpro')
     rng = np.random.default_rng(17)
     data = data.drop_vars('TB').drop_dims('frq')
-    data['TB'] = (('time', 'ang', 'frq'), 100 + rng.normal(size=(6, 2, len(std_freqs))))
-    data = data.assign_coords(frq=std_freqs)
+    data['TB'] = (('time', 'ang', 'frq'), 100 + rng.normal(size=(6, 2, len(frequencies))))
+    data = data.assign_coords(frq=frequencies)
     for split in ('training_data', 'validation_data'):
         data.to_netcdf(tmp_path / f'data/sites/test/training_variant/{split.removesuffix("_data")}_03715.nc')
     background = data.sel(ang=90, drop=True)
-    measured = background.assign(TB=background.TB + rng.normal(size=(6, len(std_freqs))))
+    measured = background.assign(TB=background.TB + rng.normal(size=(6, len(frequencies))))
     observations = xr.concat([background, measured], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
     observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
     settings = tomllib.loads(recipe.read_text())
-    settings['model']['freqs'] = std_freqs.tolist()
+    settings['model']['freqs'] = 'hatpro'
     settings.pop('optimization')
-    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'factor': 1.0}
+    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0}
     recipe.write_text(tomli_w.dumps(settings))
     first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     settings['input_noise']['factor'] = 2.0
     recipe.write_text(tomli_w.dumps(settings))
     second = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
-    for frequency in std_freqs:
+    for frequency in frequencies:
         key = f'input_noise_TB_{frequency}'
         assert np.isfinite(first.hyper_params[key])
         assert second.hyper_params[key] == pytest.approx(2 * first.hyper_params[key])
     settings['input_noise'].update({'TB_22.24': 0.25, 'TB_31.4': {'low': 0.1, 'high': 0.4}})
+    settings['optimization'] = {'n_trials': 1, 'data_source': 'era5', 'dataset': 'analysis_era5'}
     recipe.write_text(tomli_w.dumps(settings))
     overridden = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     assert overridden.hyper_params['input_noise_TB_22.24'] == 0.25

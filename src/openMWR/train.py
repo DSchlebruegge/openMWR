@@ -21,7 +21,7 @@ from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, load_model
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
 from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now
-from openMWR.config import (TRAINING_PARAMETERS, check_keys, check_name,
+from openMWR.config import (TRAINING_PARAMETERS, check_name, require_keys, training_parameters,
                             validate_training_settings, validate_parameter_usage)
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,12 @@ class TrainingWorkflow:
 
         from openMWR.models import Model
         from openMWR.train import TrainingWorkflow
-        model = Model('NN_1', std_heights, std_freqs)
+        from openMWR.config import load_grid
+        profile_weights = {'upper_bounds': [10000], 'values': [1., .5]}
+        model = Model('NN_1', load_grid('.', 'heights', 'levels_208_30km'),
+                      load_grid('.', 'frequencies', 'hatpro'),
+                      loss_weights={'T': profile_weights, 'rh': profile_weights,
+                                    'lwc': profile_weights, 'lwp': 1., 'iwv': 1.})
         workflow = TrainingWorkflow(model, site='munich', device='cuda', project_dir='.')
         workflow.load_training_data(['03715'], end_date_training='2024-10-31')
 
@@ -168,13 +173,11 @@ class TrainingWorkflow:
         workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
         workflow.recipe = recipe
         validate_device(workflow.device)
-        workflow.add_standard_training_hyper_params(**recipe.training_params(workflow))
+        workflow.change_hyper_params(**recipe.training_params(workflow))
         noise_settings = recipe.section('input_noise')
         method = noise_settings['method']
         noise = recipe.input_noise_params(workflow)
         workflow.add_input_noise_params(**noise)
-        allowed_noise = {key.removeprefix('input_noise_') for key in workflow.hyper_params if key.startswith('input_noise_')}
-        check_keys(noise, allowed_noise, 'input_noise')
         data = recipe.section('data')
         DatasetWorkflow(recipe.project_dir, site).require(
             data['dataset'], sources=data.get('sources'), splits=('training', 'validation'))
@@ -184,14 +187,14 @@ class TrainingWorkflow:
         bias = recipe.section('bias_correction')
         if bias:
             sources = bias.get('sources', workflow.hyper_params['station_ids'])
-            workflow.make_omb_analysis(sources, data_source=bias.get('data_source', 'radiosonde'), dataset=bias.get('dataset'))
-            workflow.make_bias_correction(**{key: bias[key] for key in ('specific_freqs', 'factor') if key in bias})
+            workflow.make_omb_analysis(sources, data_source=bias['data_source'], dataset=bias['dataset'])
+            workflow.make_bias_correction(factor=bias['factor'], specific_freqs=bias.get('specific_freqs'))
         if method == 'omb':
-            source = noise_settings.get('data_source', 'radiosonde')
+            source = noise_settings['data_source']
             sources = noise_settings.get('sources', workflow.hyper_params['station_ids'])
-            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings.get('dataset', f'analysis_{source}'):
-                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings.get('dataset'))
-            workflow.select_omb_input_noise_hyper_params(factor=noise_settings.get('factor'))
+            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings['dataset']:
+                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings['dataset'])
+            workflow.select_omb_input_noise_hyper_params(factor=noise_settings['factor'])
             workflow.hyper_params.update({f'input_noise_{key}': value for key, value in noise.items()})
         workflow.validate()
         return workflow
@@ -205,9 +208,7 @@ class TrainingWorkflow:
     def validate(self):
         """Check current Python settings and prepared datasets before computation."""
         validate_device(self.device)
-        missing = TRAINING_PARAMETERS - self.hyper_params.keys()
-        if missing:
-            raise ValueError(f"Missing training settings: {', '.join(sorted(missing))}. Call add_standard_training_hyper_params() first.")
+        require_keys(self.hyper_params, training_parameters(self.model.is_MLR), 'training')
         searches = {key: value for key, value in self.hyper_params.items()
                     if isinstance(value, (self.suggest_int, self.suggest_float, self.suggest_categorical))}
         validate_parameter_usage(self.model.is_MLR, searches)
@@ -304,11 +305,11 @@ class TrainingWorkflow:
         self.validate()
         settings = self.recipe.section('optimization') if self.recipe is not None else {}
         if self.recipe is not None and not self.requires_optimization:
-            raise ValueError('Optimization needs a search definition in training or input_noise: use optimize = true, low/high, or choices on a parameter.')
-        source = data_source or settings.get('data_source', 'radiosonde')
+            raise ValueError('Optimization needs a search definition in training or input_noise: use low/high or choices on a parameter.')
+        source = data_source or (settings['data_source'] if self.recipe is not None else 'radiosonde')
         if source not in ('radiosonde', 'era5'):
             raise ValueError("data_source must be 'radiosonde' or 'era5'.")
-        analysis_name = dataset or settings.get('dataset', f'analysis_{source}')
+        analysis_name = dataset or (settings['dataset'] if self.recipe is not None else f'analysis_{source}')
         path = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         if not path.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
@@ -478,7 +479,7 @@ class TrainingWorkflow:
         self.hyper_params.update(study.best_params)
 
     def default_search_spaces(self):
-        """Shared default ranges for explicit recipe searches and Python workflows."""
+        """Recommended ranges for explicitly requested standard Python searches."""
         noise = {f'TB_{f}': self.suggest_float(0., 1.5) for f in self.model.freqs}
         if self.model.is_bls_model:
             noise.update({f'TB_{a}': self.suggest_float(0., 5.0) for a in self.model.angles})
@@ -1157,10 +1158,15 @@ class TrainingWorkflow:
         retrieval_dir(self.project_dir, self.site, self.model.name).mkdir(parents=True, exist_ok=True)
         study = optuna.create_study(study_name=self.model.name, storage=storage, load_if_exists=True, direction='minimize')
         if self.recipe is not None:
+            unused = TRAINING_PARAMETERS - training_parameters(self.model.is_MLR)
             experiment = plain_value({'model': self.model.checkpoint_structure(), 'hyper_params': hyper_params,
                                       'bias_correction': self.recipe.section('bias_correction'),
                                       'data_source': data_source, 'analysis_dataset': analysis_name})
+            experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
             previous = study.user_attrs.get('openMWR_experiment')
+            if previous is not None:
+                # Older recipe workflows also recorded unused fixed helper defaults.
+                previous = {**previous, 'hyper_params': {key: value for key, value in previous['hyper_params'].items() if key not in unused}}
             if (previous is not None and previous != experiment) or (previous is None and study.trials):
                 raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
             try:
@@ -1265,7 +1271,7 @@ class TrainingWorkflow:
 
 
 def separate_training_data(site, source, project_dir, test_fraction=0.1, val_fraction=0.1,
-                           simulation_dataset='rt_r20', dataset='training', update_only=False, seed=None):
+                           simulation_dataset='simulation_r20', dataset='training', update_only=False, seed=None):
     """Split simulations, optionally assigning only timestamps absent from old splits.
 
     Validation fraction applies to the remaining samples after test selection,

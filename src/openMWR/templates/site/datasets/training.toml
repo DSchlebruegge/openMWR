@@ -1,0 +1,11 @@
+kind = "split"
+
+[inputs]
+simulation = "simulation"
+
+[split]
+test_fraction = 0.1
+# Fraction of the remaining samples after the test split:
+validation_fraction = 0.1
+seed = 42
+# Updates preserve existing split membership.

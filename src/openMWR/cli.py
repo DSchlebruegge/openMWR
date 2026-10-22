@@ -4,11 +4,15 @@ import argparse
 import logging
 from datetime import date, timedelta
 from pathlib import Path
+from shlex import quote
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
     commands = parser.add_subparsers(dest='command', required=True)
+    create = commands.add_parser('create-site', help='Create site settings, radiosonde dataset recipes and an example retrieval.')
+    create.add_argument('site', metavar='SITE', help='New site name under sites/.')
+    create.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     data = commands.add_parser('data', help='Create or update named datasets.')
     data.add_argument('--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     data.add_argument('site', metavar='SITE', help='Site name under sites/.')
@@ -41,6 +45,7 @@ def main(argv=None):
             mode.add_argument('--fresh', dest='run_mode', action='store_const', const='fresh', help="Replace only this retrieval's model and optimization study.")
             mode.add_argument('--continue', dest='run_mode', action='store_const', const='continue', help='Add trials to this retrieval\'s existing optimization study.')
         sub.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization or evaluation.')
+        sub.add_argument('--dataset', help='Override the named analysis dataset for optimization or evaluation.')
         if command == 'evaluate':
             filters = sub.add_mutually_exclusive_group()
             filters.add_argument('--days-gt-20', dest='days_gt_20', action='store_true', default=None, help='Use observation days after the 20th.')
@@ -57,7 +62,22 @@ def main(argv=None):
             parser.error('--end-date must be on or after --start-date.')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     try:
-        if args.command == 'data':
+        if args.command == 'create-site':
+            from openMWR.site import create_site
+            directory = create_site(args.site, args.project_dir, with_examples=True)
+            print(f'Created site: {directory}')
+            for path in sorted(directory.rglob('*.toml')):
+                print(f'  {path.relative_to(directory)}')
+            print(f'Shared grids: {directory.parent.parent / "grids.toml"}')
+            print(f'\nEdit {directory / "site.toml"} to fill in your instrument and location settings.')
+            print(f'Edit {directory / "datasets/radiosondes.toml"} to set radiosonde station IDs.')
+            print('Radiative transfer also requires a working libRadtran installation.')
+            print('Then check the dataset chain and build the training data:')
+            print(f'  cd {quote(str(directory.parent.parent))}')
+            print(f'  openMWR data {quote(args.site)} training --with-dependencies --dry-run')
+            print(f'  openMWR data {quote(args.site)} training --with-dependencies')
+            print(f'  openMWR train {quote(args.site)} NN_example')
+        elif args.command == 'data':
             from openMWR.datasets import DatasetWorkflow
             DatasetWorkflow(args.project_dir, args.site).build(args.dataset,
                 with_dependencies=args.with_dependencies, rebuild=args.rebuild, dry_run=args.dry_run)
@@ -78,7 +98,7 @@ def main(argv=None):
                 parser.exit(1, 'Prediction incomplete; see the reported dates/groups. Successful output was saved.\n')
         elif args.command == 'evaluate':
             from openMWR.evaluation import evaluate_retrieval, write_report
-            options = {key: getattr(args, key) for key in ('data_source', 'days_gt_20', 'station_id')}
+            options = {key: getattr(args, key) for key in ('data_source', 'days_gt_20', 'station_id', 'dataset')}
             if args.output is not None and args.output.exists():
                 raise FileExistsError(f'Report already exists: {args.output}. Choose a new filename.')
             report = evaluate_retrieval(args.project_dir, args.site, args.retrieval, device=args.device, **options)
@@ -87,10 +107,10 @@ def main(argv=None):
             from openMWR.train import TrainingWorkflow
             workflow = TrainingWorkflow.from_recipe(args.project_dir, args.site, args.retrieval, args.device)
             if workflow.requires_optimization:
-                workflow.optimize(n_trials=args.n_trials, data_source=args.data_source, run_mode=args.run_mode)
+                workflow.optimize(n_trials=args.n_trials, data_source=args.data_source, dataset=args.dataset, run_mode=args.run_mode)
             else:
-                if args.n_trials is not None or args.data_source is not None:
-                    raise ValueError('--n-trials and --data-source require input-noise optimization or search ranges in the recipe.')
+                if args.n_trials is not None or args.data_source is not None or args.dataset is not None:
+                    raise ValueError('--n-trials, --data-source and --dataset require input-noise optimization or search ranges in the recipe.')
                 logging.getLogger(__name__).info('Training one model: %s.', args.retrieval)
                 workflow.train(run_mode=args.run_mode)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:

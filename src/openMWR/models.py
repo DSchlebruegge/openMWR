@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import xarray as xr
 from torch import nn
-from openMWR.consts import std_angles
+from openMWR.config import check_coordinates, check_keys, check_number, require_keys
 from openMWR.paths import checkpoint_file
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,9 @@ class BaseModel(nn.Module):
         for key in ('hidden_layers', 'angles', 'additional_input_vars', 'norm_functions'):
             if key in structure and hasattr(self, key):
                 structure[key] = getattr(self, key)
+        if 'loss_weights' in structure and hasattr(self, 'loss_weights'):
+            structure['loss_weights'] = {name: data.values.tolist()
+                                         for name, data in self.loss_weights.data_vars.items()}
         return structure
 
     @property
@@ -183,11 +186,24 @@ class BaseModel(nn.Module):
                 logger.warning(f"Model name '{name}' does not match the name stored in the checkpoint '{checkpoint['structure']['name']}'. Using the provided name.")
             
         checkpoint['structure']['name'] = name
+        normalization = xr.Dataset.from_dict(checkpoint['normalization'])
+        if checkpoint['structure'].get('is_bls_model') and checkpoint['structure'].get('angles') is None:
+            # Historical BLS checkpoints froze the grid in normalization coordinates.
+            if 'ang' not in normalization.coords:
+                raise ValueError('Saved BLS model has no angle coordinates; its original grid is required.')
+            checkpoint['structure']['angles'] = normalization.ang.values.tolist()
+        if issubclass(cls, Model) and not checkpoint['structure'].get('is_MLR') and checkpoint['structure'].get('loss_weights') is None:
+            # Older checkpoints used fixed, mode-dependent weighting without saving it.
+            bls = checkpoint['structure'].get('is_bls_model', False)
+            profile = {'upper_bounds': [2000, 10000] if bls else [10000],
+                       'values': [1., .5, .25] if bls else [1., .5]}
+            checkpoint['structure']['loss_weights'] = {
+                **{key: profile for key in ('T', 'rh', 'lwc')}, 'lwp': 1., 'iwv': 1.}
 
         model = cls(**checkpoint['structure'])
 
         model.load_state_dict(checkpoint['model_state_dict'])
-        model.nor = xr.Dataset.from_dict(checkpoint['normalization'])
+        model.nor = normalization
 
         model.hyper_params = checkpoint['hyper_params']
         model.training_metadata = checkpoint.get('training_metadata')
@@ -297,6 +313,7 @@ class Model(BaseModel):
             # always relevant
             norm_functions: Optional[Mapping[str, str]] = None,
             additional_input_vars: Optional[Sequence[str]] = None,
+            loss_weights: Mapping[str, float | Sequence[float] | Mapping[str, Sequence[float]]] | None = None,
         ):
         """
         Parameters
@@ -322,7 +339,8 @@ class Model(BaseModel):
         vary_input_noise_with_angle_linear : bool, default=False
             Apply linearly angle-dependent TB noise during training.
         angles : Sequence[float], optional
-            Elevation angles for BLS inputs; defaults to ``std_angles``.
+            Required for BLS inputs. Supply numeric angles, for example from
+            ``load_grid(project_dir, 'angles', 'hatpro_bls')``.
         norm_functions : Mapping[str, str], optional
             Override of variable -> normalization scheme; defaults are provided.
             Options are ``'z_norm'``, ``'std_norm'``, ``'log_norm'`` and ``'max_norm'``.
@@ -330,6 +348,11 @@ class Model(BaseModel):
             Extra inputs next to TBs. Defaults are for 
             Zenith: ``['TB_IR', 'surface_T', 'surface_p', 'surface_rh', 'doy_cos', 'doy_sin']``
             and for BLS: ``['surface_T', 'surface_p', 'surface_rh', 'doy_cos', 'doy_sin']``
+        loss_weights : mapping
+            Required for neural profile models. Specifies every output weight;
+            profile weights accept scalars, one value per height, or a table
+            with inclusive height ``upper_bounds`` and one more ``values`` entry.
+            MLR models omit this setting.
 
         Notes
         -----
@@ -343,8 +366,8 @@ class Model(BaseModel):
         """
         super().__init__(name)
 
-        self.heights = heights
-        self.freqs = freqs
+        self.heights = np.asarray(heights)
+        self.freqs = np.asarray(freqs)
         self.is_bls_model = is_bls_model
         self.is_MLR = is_MLR
 
@@ -353,9 +376,11 @@ class Model(BaseModel):
             self.dropout_rate = dropout_rate
 
         if is_bls_model:
+            if angles is None:
+                raise ValueError('BLS models require explicit angles; load a named project grid or provide numeric angles.')
             self.vary_input_noise_with_angle = vary_input_noise_with_angle
             self.vary_input_noise_with_angle_linear = vary_input_noise_with_angle_linear
-            self.angles = list(angles) if angles is not None else list(std_angles)
+            self.angles = list(angles)
 
         standard_normfunctions = {
             'TB': 'z_norm',
@@ -390,26 +415,15 @@ class Model(BaseModel):
 
         self.input = xr.Dataset({'TB': freq_da, **{var: 1 for var in self.additional_input_vars}})
 
-        heights_da = xr.DataArray(np.zeros(heights.shape), dims='height', coords={'height': heights})
+        heights_da = xr.DataArray(np.zeros(self.heights.shape), dims='height', coords={'height': self.heights})
         self.output = xr.Dataset({'T': heights_da, 
                                   'rh': heights_da, 
                                   'lwc': heights_da, 
                                   'lwp': 1, 
                                   'iwv': 1})
         
-        if not hasattr(self, "loss_weights") and not is_MLR:
-            h = self.heights
-            if self.is_bls_model:
-                loss_weights_height_np = np.where(h <= 2000, 1.0, np.where(h <= 10000, 0.5, 0.25))
-            else:
-                loss_weights_height_np = np.where(h <= 10000, 1.0, 0.5)
-
-            loss_weights_height = xr.DataArray(loss_weights_height_np, dims='height', coords={'height': h})
-            self.loss_weights = xr.Dataset({'T': loss_weights_height, 
-                                  'rh': loss_weights_height, 
-                                  'lwc': loss_weights_height, 
-                                  'lwp': 1, 
-                                  'iwv': 1})
+        if not is_MLR or loss_weights is not None:
+            self.set_loss_weights(loss_weights)
 
         self.input_vars = list(self.input.data_vars)
         self.output_vars = list(self.output.data_vars)
@@ -438,6 +452,50 @@ class Model(BaseModel):
             self.stack = nn.Sequential(*layer_list)
 
         #self.structure_was_initialized = True
+
+    def set_loss_weights(self, weights):
+        """Set and validate weights used by both fitting and optimization scores."""
+        if self.is_MLR:
+            raise ValueError('model.loss_weights is not used by mlr models.')
+        if weights is None:
+            raise ValueError('Neural profile models require explicit model.loss_weights for every output.')
+        if not isinstance(weights, Mapping):
+            raise ValueError('model.loss_weights must be a table with explicit weights for every output.')
+        weights = dict(weights)
+        check_keys(weights, self.output.data_vars, 'model.loss_weights')
+        require_keys(weights, self.output.data_vars, 'model.loss_weights')
+        resolved = {}
+        for name, template in self.output.data_vars.items():
+            label = f'model.loss_weights.{name}'
+            definition = weights[name]
+            banded = isinstance(definition, Mapping)
+            if banded:
+                if 'height' not in template.dims:
+                    raise ValueError(f'{label}: height bands apply only to profile outputs.')
+                definition = dict(definition)
+                check_keys(definition, ('upper_bounds', 'values'), label)
+                require_keys(definition, ('upper_bounds', 'values'), label)
+                bounds = definition['upper_bounds']
+                check_coordinates(bounds, f'{label}.upper_bounds')
+                if bounds != sorted(bounds):
+                    raise ValueError(f'{label}.upper_bounds must be increasing (metres).')
+                values = np.asarray(definition['values'])
+                if values.ndim != 1 or len(values) != len(bounds) + 1:
+                    raise ValueError(f'{label}.values must contain one more weight than upper_bounds.')
+            else:
+                values = np.asarray(definition)
+            value_label = f'{label}.values' if banded else label
+            for value in values.ravel():
+                check_number(value, value_label, 0)
+            if banded:
+                values = values[np.searchsorted(bounds, self.heights, side='left')]
+            if values.ndim and values.shape != template.shape:
+                raise ValueError(f'{label} must be a scalar or have shape {template.shape}.')
+            resolved[name] = xr.DataArray(np.broadcast_to(values, template.shape).copy(),
+                                          dims=template.dims, coords=template.coords)
+        if not any(np.any(data.values > 0) for data in resolved.values()):
+            raise ValueError('model.loss_weights must include at least one positive weight.')
+        self.loss_weights = xr.Dataset(resolved)
 
     def forward(self, x):
         """

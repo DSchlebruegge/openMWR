@@ -1,0 +1,5 @@
+kind = "analysis"
+
+[inputs]
+observations = "hatpro"
+reference = "simulation"

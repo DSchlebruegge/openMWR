@@ -21,6 +21,45 @@ activated, use `openMWR --help` or, for example,
 You can also use `python -m openMWR ...`; both forms call the same implementation
 and work with pip or uv installations.
 
+### Create a site
+
+From your working-project directory:
+
+```bash
+openMWR create-site my_site
+```
+
+This writes `sites/my_site/site.toml`, six dataset recipes for a radiosonde
+training chain and HATPRO/radiosonde comparisons, and
+`sites/my_site/retrieval/NN_example/retrieval.toml`. It creates empty data
+directories and leaves existing sites untouched by refusing to overwrite them.
+It also creates a shared `grids.toml` in the project directory if missing,
+containing the initial height, frequency and elevation-angle grids. Existing
+grid definitions are preserved when adding another site.
+`--project-dir /path/to/project` selects another project.
+
+Fill in the commented site settings and the empty `stations` list in
+`datasets/radiosondes.toml`. The source list is inherited throughout the chain.
+The example NN writes recommended model, normalization, training and noise
+settings explicitly. Missing scientific choices produce an error; optional
+processing is off unless enabled. Operational options keep convenient defaults.
+The generated files include no ERA5 recipes or optimization searches.
+Creation performs no downloads or calculations; RT additionally needs libRadtran.
+
+After configuration, check the chain before processing:
+
+```bash
+openMWR data my_site training --with-dependencies --dry-run
+openMWR data my_site training --with-dependencies
+openMWR train my_site NN_example
+```
+
+`analysis_radiosonde` prepares observations for evaluation when built with
+dependencies. Copy and edit recipes to create further experiments.
+Python callers use `create_site("my_site", project_dir=".", with_examples=True)`
+from `openMWR.site`; omitting `with_examples` creates directories, the shared
+grid file if missing, and the explicitly supplied site settings.
+
 ### Dataset recipes and commands
 
 Each dataset has a named TOML file under `sites/<site>/datasets/`. Site settings
@@ -35,33 +74,35 @@ For example, these three recipe files describe one processing chain:
 kind = "radiosonde"
 stations = ["03715"]
 start_year = 1990
+end_year = "current_year"
 refresh_years = 2
 ```
 
 ```toml
-# profiles_standard.toml
+# profiles.toml
 kind = "profiles"
 
 [inputs]
 source = "radiosondes"
 
 [preparation]
+heights = "levels_208_30km"
 cut_off_at_mwr_height = false
 # heights = [0, 100, 500, 1000, 2000, 5000, 10000, 20000, 30000]
-# scale_rh_clear_sky = true
-# scale_rh_clear_sky_seed = 42
 ```
 
 ```toml
-# rt_r17.toml
+# simulation_r17.toml
 kind = "simulation"
 
 [inputs]
-profiles = "profiles_standard"
+profiles = "profiles"
 
 [radiative_transfer]
 backend = "torchMWRT"
 absorption_model = "R17"
+frequencies = "hatpro"
+angles = "hatpro_bls"
 
 [execution]
 processes = 12
@@ -72,10 +113,10 @@ does not imply settings. Several simulations can share profiles; several profile
 preparations can share the same raw source.
 
 ```bash
-openMWR data munich_G5 rt_r17
-openMWR data munich_G5 rt_r17 --with-dependencies
-openMWR data munich_G5 rt_r17 --with-dependencies --dry-run
-openMWR data munich_G5 rt_r17 --rebuild
+openMWR data munich_G5 simulation_r17
+openMWR data munich_G5 simulation_r17 --with-dependencies
+openMWR data munich_G5 simulation_r17 --with-dependencies --dry-run
+openMWR data munich_G5 simulation_r17 --rebuild
 ```
 
 `data` creates missing output or updates existing output. Without
@@ -92,24 +133,69 @@ Supported recipe kinds and input roles are:
 
 | Kind | Inputs | Settings |
 | --- | --- | --- |
-| `radiosonde` | None | `stations`, `start_year` (1990), optional `end_year`, `refresh_years` (2) |
-| `era5` | None | Optional `start_date`/`end_date`, `hour_interval` (6), `delay_days` (5) |
-| `hatpro` | None | Optional dates; `[observations] import_retrieval_data` defaults to the site setting |
-| `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also support cutoff and RH scaling |
+| `radiosonde` | None | Required `stations`, `start_year`, `end_year`; optional `refresh_years` (2) |
+| `era5` | None | Required `start_date`, `end_date`, `hour_interval`; `delay_days` required with `end_date = "today"` |
+| `hatpro` | None | Required dates; `[observations] import_retrieval_data` inherits the site setting (off when absent) |
+| `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also support cutoff |
 | `simulation` | `profiles` | `[radiative_transfer] backend`, `absorption_model`, `frequencies`, `angles`, optional `frequency_shift` |
-| `split` | `simulation` | `[split] test_fraction` (0.1), `validation_fraction` (0.1 of the remainder), `seed` (42) |
+| `split` | `simulation` | Required `[split] test_fraction`, `validation_fraction` (fraction of the remainder), `seed` |
 | `analysis` | `observations`: HATPRO; `reference`: simulation | Optional `stations` selection |
 
-Derived recipes can select a subset of input `stations`. Grids default to the
-existing standard heights (m), frequencies (GHz) and elevation angles (degrees).
-RT defaults remain R20 for radiosondes and R17 for ERA5. RH scaling defaults to
-10% of clear profiles multiplied by 0.2; optional `scale_rh_clear_sky_fraction`
-and `scale_rh_clear_sky_factor` override those values. Each profile recipe owns
-its choices. `execution.processes` controls workers for ERA5 preparation, RT or
-HATPRO; radiosonde preparation is serial.
+Derived recipes inherit their input stations unless selecting a subset.
+Scientific settings, including the RT backend/model and grids, must be explicit.
+Grids accept numeric lists or names from the project's `grids.toml`. Its starter contains
+`levels_208_30km` for 208 heights from 0 to 30,000 m, `hatpro` for frequencies (GHz), and
+`hatpro_bls` for elevation angles (degrees). Add or edit definitions there;
+all sites share this file. For example, additional grids can be defined as:
 
-Source dates are inclusive. ERA5/HATPRO start at the site's measurement start
-unless overridden; ERA5 ends five days behind today by default. Its cache key
+```toml
+# grids.toml: entries within the respective existing tables
+[heights]
+custom = [0, 100, 500, 1000, 2000, 5000, 10000, 30000]
+
+[frequencies]
+custom = [22.24, 31.4]
+
+[angles]
+custom = [90.0, 30.0, 10.0]
+```
+
+Recipes select them with `heights = "custom"`, `frequencies = "custom"`, or
+`angles = "custom"` in the corresponding settings sections. Numeric values are
+recorded in processing state and checkpoints; changes to grids used by existing
+datasets require an explicit rebuild. Named grids require the project's file.
+Python uses the same loader and definitions:
+
+```python
+from openMWR.config import load_grid
+from openMWR.models import Model
+
+profile_weights = {"upper_bounds": [2000, 10000], "values": [1.0, 0.5, 0.25]}
+model = Model(
+    "my_retrieval",
+    heights=load_grid(".", "heights", "levels_208_30km"),
+    freqs=load_grid(".", "frequencies", "hatpro"),
+    is_bls_model=True,
+    angles=load_grid(".", "angles", "hatpro_bls"),
+    loss_weights={
+        "T": profile_weights, "rh": profile_weights, "lwc": profile_weights,
+        "lwp": 1.0, "iwv": 1.0,
+    },
+)
+```
+
+BLS models require explicit angles. The former `std_heights`, `std_freqs` and
+`std_angles` arrays are removed; numerical functions and saved models use the
+resolved coordinates.
+
+`create-site` recommends R24; existing recipes retain their explicit model choice.
+`execution.processes` controls workers for ERA5 preparation, RT or HATPRO;
+radiosonde preparation is serial.
+
+Source dates are inclusive. Set `start_date = "site"` to inherit the site's
+measurement start and `end_date = "today"` to follow current data. ERA5 subtracts
+its explicit `delay_days` from today. Radiosondes accept an integer end year or
+`end_year = "current_year"` for ongoing updates. ERA5's cache key
 includes location and sampling. Routine updates append days after the latest cached
 day, leaving historical gaps and earlier sampling unchanged. Radiosondes
 download missing historical years and refresh the recent years. Profiles and RT
@@ -135,14 +221,15 @@ Python uses exactly the same workflow:
 from openMWR.datasets import DatasetWorkflow
 
 data = DatasetWorkflow(project_dir=".", site="munich_G5")
-data.build("rt_r17")
+data.build("simulation_r17")
 data.build(["analysis_radiosonde", "analysis_era5"], with_dependencies=True)
 data.require("training", sources=["03715"], splits=("training", "validation"))
 ```
 
 `require` checks recipe lineage, rebuild requirements and the selected files
 without processing anything. Each build resolves settings and today's date once,
-so execution and its processing records use the same defaults throughout the run.
+so execution and its records use the same resolved choices throughout the run.
+`coordinates(name)` returns grids inherited through a prepared dataset's inputs.
 
 Direct functions remain available with named `dataset`, `profiles_dataset` or
 `simulation_dataset` arguments. ERA5 uses separate `create_profile_dataset` and
@@ -165,7 +252,8 @@ device is `cpu`. Each task checks its required settings and inputs before starti
 the expensive computation. `train` runs optimization when any resolved training
 or noise parameter contains a search definition; otherwise it trains one model.
 It announces the selected mode, optimization trial budget, and resolved search
-ranges. `--n-trials` and `--data-source` can override optimization settings.
+ranges. `--n-trials`, `--data-source` and `--dataset` can override optimization
+settings; evaluation also accepts `--data-source` and `--dataset`.
 An `optimization` section containing only a budget or reference data does not
 trigger optimization.
 
@@ -192,8 +280,28 @@ schema_version = 1
 [model]
 kind = "nn"                 # nn, mlr, or spectral
 mode = "zenith"             # zenith or bls (spectral uses zenith)
+freqs = "dataset"           # inherit from the named training dataset
+heights = "dataset"
 hidden_layers = [1024, 64, 1024]
 dropout_rate = 0.1
+additional_input_vars = ["surface_T"]
+
+[model.loss_weights]
+# Height bounds in metres, inclusive.
+T = { upper_bounds = [10000], values = [1.0, 0.5] }
+rh = { upper_bounds = [10000], values = [1.0, 0.5] }
+lwc = { upper_bounds = [10000], values = [1.0, 0.5] }
+lwp = 1.0
+iwv = 1.0
+
+[model.norm_functions]
+TB = "z_norm"
+surface_T = "z_norm"
+T = "z_norm"
+rh = "z_norm"
+lwc = "log_norm"
+lwp = "log_norm"
+iwv = "z_norm"
 
 [data]
 dataset = "training"        # named split dataset
@@ -205,19 +313,26 @@ epochs = 500
 batch_size = 512
 loss_fn = "MAE"
 lr_height = { low = 0.0001, high = 0.01, log = true }
-# weight_decay = { optimize = true }  # use the default search space
+lr_low = 1e-7
+epoch_max_lr = 50
+weight_decay = 1e-5
 
 [input_noise]
-method = "standard"         # standard or omb; omitted noise values stay fixed
+method = "standard"         # explicit noise values; or omb for derived TB noise
 TB = 0.5                    # all frequencies; per-channel overrides also work
+surface_T = 0.5
 # "TB_22.24" = 0.4
 
 [optimization]
 n_trials = 100
 data_source = "radiosonde"
+dataset = "analysis_radiosonde"
 
 [evaluation]
+observations = true
+test_data = true
 data_source = "radiosonde"
+dataset = "analysis_radiosonde"
 days_gt_20 = true           # explicit choice; false evaluates all days
 station_id = "03715"        # explicit radiosonde station identifier
 ```
@@ -225,20 +340,45 @@ station_id = "03715"        # explicit radiosonde station identifier
 The retrieval folder supplies the model name. `data.dataset` selects a named
 split dataset; omit `data.sources` to use all its sources. For example,
 `training_r17.toml` can use `kind = "split"` and
-`[inputs] simulation = "rt_r17"` to prepare inputs for an R17 retrieval.
-Optimization/evaluation/OMB/bias sections accept `dataset` to select a named
-analysis dataset; the default is `analysis_radiosonde` or `analysis_era5`,
-according to `data_source`.
+`[inputs] simulation = "simulation_r17"` to prepare inputs for an R17 retrieval.
+Optimization/evaluation/OMB/bias sections explicitly select their reference
+`data_source` and named analysis `dataset`.
 
 Replace the example's `lr_height` range with a number to train one model.
-Unspecified scientific settings use the existing Python defaults. Optional model
-settings include `freqs` (GHz), `heights` (m above the instrument), `angles`
-(degrees, BLS only), `additional_input_vars`, and `norm_functions` (a complete
-variable-to-normalization mapping). Spectral models use `hidden_layer_size`.
+Model recipes specify `freqs` (GHz), `heights` (m above the instrument), `angles`
+(degrees, BLS only), `additional_input_vars` (which may be empty), and
+`norm_functions` for every active input/output variable. Grids accept numeric
+lists, named presets, or `"dataset"` to inherit the training dataset's grid.
+NN models specify `hidden_layers`; spectral models specify `hidden_layer_size`.
+Dropout is off when omitted.
+NN profile models require explicit `loss_weights` in both recipes and Python.
+Each output has a scalar weight, a per-height list for profiles, or height bands
+as in the example above. `upper_bounds` are increasing heights in metres and
+inclusive: `[10000]` with values `[1.0, 0.5]` gives weight 1 through 10 km and 0.5
+above. There is one more value than upper bounds. `[2000, 10000]` with values
+`[1.0, 0.5, 0.25]` reproduces the former BLS weighting. For uniform or independent
+variable weights, use scalars:
+
+```toml
+[model.loss_weights]
+T = 1.0
+rh = 0.5
+lwc = 0.2
+lwp = 1.0
+iwv = 1.0
+```
+
+Python passes the same weight dictionary. There are no named presets or implicit
+mode-based weights for new models. Weights are finite, nonnegative
+and include every output; at least one must be positive. They apply to fitting;
+profile optimization uses the T/RH weights in its existing score. New checkpoints store their resolved
+numeric values. Historical checkpoints retain their original weighting when
+loaded, without rewriting their files. MLR and spectral models do not accept
+profile loss weights.
 BLS noise can use `vary_input_noise_with_angle` or
 `vary_input_noise_with_angle_linear`; their angle/factor settings belong in
-`input_noise`. The optional `bias_correction` table accepts `data_source`,
-`sources`, `specific_freqs`, and `factor`, reusing the existing OMB correction.
+`input_noise`. The optional `bias_correction` table requires `data_source`,
+`dataset`, and `factor`; optional `sources` and `specific_freqs` restrict it.
 Training settings use the arguments of `add_standard_training_hyper_params`.
 MLR recipes accept only `repeats_for_linear_regression` in `training`, alongside
 their input-noise settings; NN-only settings such as weight decay/learning rate
@@ -246,34 +386,34 @@ and model hidden layers/dropout are rejected. NN/spectral recipes reject the
 MLR repeat setting. Explicit Python searches are checked for model applicability
 as well; ordinary Python default hyperparameter dictionaries remain supported.
 Each training or noise parameter accepts a fixed value or a search in the same
-place. Omission uses its fixed default; a number fixes its value. Use
-`{ optimize = true }` to request the parameter's default search space, or give
-`low`/`high`, optional `step`, and optional `log = true` for a custom range.
+place. Each active parameter needs a fixed value, or explicit `low`/`high`,
+optional `step`, and optional `log = true` for a search.
 Integer training parameters use integer ranges; learning rates, weight decay,
 and noise use floating-point ranges. Discrete searches use
 `batch_size = { choices = [256, 512, 1024] }`; loss functions can also use choices.
-Searches in model structure, bias correction, or study controls are unsupported
+Searches in model structure, loss weights, bias correction, or study controls are unsupported
 and produce an error.
 
-Weight decay's default search space is `1e-8`–`1e-4`, logarithmic; its omitted
-fixed default remains `1e-5`. Noise uses the existing input-specific search
-ranges. Other training parameters require explicit ranges or choices when no
-default search space is defined; requesting a missing default produces an error.
-Python workflows use the same definitions through `workflow.default_search_spaces()`.
+For example, `weight_decay = { low = 1e-8, high = 1e-4, log = true }`
+spells out a logarithmic search. `{ optimize = true }` is rejected.
+Hand-written Python workflows can still opt into recommended settings with
+`add_standard_training_hyper_params()`, `add_input_noise_params()` and
+`default_search_spaces()`.
+Python workflows can also set just the training parameters their model uses:
+MLR requires `repeats_for_linear_regression`; NN and spectral models require the
+neural training settings shown above.
 
-Every recipe selects how unspecified noise values are obtained: `standard` uses
-standard fixed noise and `omb` estimates TB noise from observations. Optimization
-is always explicit on individual parameters. To search noise values, replace the example's
+Every recipe selects its noise method: `standard` requires explicit values or
+searches for every active input; `omb` derives TB noise from observations and
+requires explicit noise for auxiliary inputs. To search noise values, replace the example's
 `input_noise` section with:
 
 ```toml
 [input_noise]
 method = "standard"
 
-# Optional overrides use noise names without the input_noise_ prefix.
-TB = { optimize = true }     # default range, independent search for each frequency
-surface_T = 0.5              # fixed; other omitted inputs also keep fixed defaults
-# surface_p = { low = 0.2, high = 1.0 }  # optional custom search
+TB = { low = 0.0, high = 1.5 }  # independent search for each frequency
+surface_T = 0.5
 ```
 
 The `train` command automatically optimizes this recipe. Trial counts and
@@ -284,12 +424,14 @@ prepared observations using the existing OMB method:
 [input_noise]
 method = "omb"
 data_source = "era5"         # radiosonde or era5
-factor = 2.0                # optional scaling, default 1
+dataset = "analysis_era5"
+factor = 2.0
+surface_T = 0.5
 # sources = ["03715"]       # optional; defaults to the training stations
 ```
 
-Other input variables retain standard noise. Explicit noise entries override the
-OMB estimates/defaults with numbers or searches; the OMB scaling factor is fixed.
+Explicit TB noise entries can override OMB estimates with numbers or searches;
+the OMB scaling factor is fixed.
 
 Training with `--fresh` replaces the named `model.pth`, appends to `training.log`, and
 records effective settings and available software identity in the checkpoint.

@@ -173,7 +173,7 @@ def create_radiosonde_dataset_for_RT(
     cut_off_at_mwr_height: bool = False,
     scale_rh_clear_sky: bool = False,
     scale_rh_clear_sky_seed: Optional[int] = None,
-    dataset: str = 'profiles_standard',
+    dataset: str = 'profiles',
     last_year: Optional[int] = None,
     scale_rh_clear_sky_fraction: float = 0.1,
     scale_rh_clear_sky_factor: float = 0.2,
@@ -201,11 +201,6 @@ def create_radiosonde_dataset_for_RT(
     cut_off_at_mwr_height: bool, optional
         If True, profiles will be cut off at the MWR height specified in the site configuration.
         If False, profiles will be cut off at the radiosonde station height.
-    scale_rh_clear_sky: bool, optional
-        Scale newly added clear-sky profiles only; defaults to a 0.1 fraction
-        multiplied by 0.2. Fraction and factor are configurable.
-    scale_rh_clear_sky_seed: int, optional
-        Seed for reproducible random selection of clear-sky profiles.
 
     Returns
     -------
@@ -401,8 +396,8 @@ def create_radiosonde_dataset_for_RT(
     logger.info(f"Radiosonde dataset saved to {target_file}")
 
 def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
-           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles_standard',
-           dataset: str = 'rt_r20', RT_model: str = 'torchMWRT'):
+           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles',
+           dataset: str = 'simulation_r20', RT_model: str = 'torchMWRT'):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -504,7 +499,7 @@ def create_analysis_dataset(
     from_forward_calc: bool = True,
     save: bool = True,
     observations_dataset: str = 'hatpro',
-    reference_dataset: str = 'rt_r20',
+    reference_dataset: str = 'simulation_r20',
     dataset: str = 'analysis_radiosonde',
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """

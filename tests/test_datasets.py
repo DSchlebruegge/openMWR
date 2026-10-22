@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,18 @@ from openMWR.site import create_site
 
 
 def recipe(project, name, **values):
+    # Explicit fixture choices; production loaders do not fill these values.
+    base = {
+        'radiosonde': {'start_year': 1990, 'end_year': 'current_year'},
+        'era5': {'start_date': 'site', 'end_date': 'today', 'hour_interval': 6, 'delay_days': 5},
+        'hatpro': {'start_date': 'site', 'end_date': 'today'},
+        'profiles': {'preparation': {'heights': 'levels_208_30km'}},
+        'simulation': {'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
+                                              'frequencies': 'hatpro', 'angles': 'hatpro_bls'}},
+        'split': {'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
+    }.get(values['kind'], {})
+    for key, value in base.items():
+        values[key] = {**value, **values.get(key, {})} if isinstance(value, dict) else values.get(key, value)
     path = project / 'sites/test/datasets' / f'{name}.toml'
     path.write_text(tomli_w.dumps(values))
     return path
@@ -119,7 +132,7 @@ def test_cli_dry_run_and_configuration_errors_write_nothing(project):
     ({'kind': 'simulation', 'inputs': {'profiles': 'missing'}}, 'Missing dataset recipe'),
     ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'absorpton_model': 'R17'}}, 'Unknown'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'stations': ['02290']}, 'subset'),
-    ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'preparation': {'heights': [100, 0]}}, 'increase from zero'),
+    ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'preparation': {'heights': [100, 0]}}, 'must be increasing'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'execution': {'processes': 2}}, 'preparation is serial'),
 ])
 def test_invalid_graphs_fail_before_output_creation(project, values, message):
@@ -127,6 +140,96 @@ def test_invalid_graphs_fail_before_output_creation(project, values, message):
     with pytest.raises((ValueError, FileNotFoundError), match=message):
         DatasetWorkflow(project, 'test').build('bad', with_dependencies=True)
     assert list((project / 'data/sites/test').iterdir()) == []
+
+
+@pytest.mark.parametrize(('name', 'section', 'key'), [
+    ('source', None, 'end_year'),
+    ('profiles', 'preparation', 'heights'),
+    ('r17', 'radiative_transfer', 'absorption_model'),
+    ('training', 'split', 'seed'),
+])
+def test_missing_scientific_choices_fail_before_processing(project, name, section, key):
+    path = project / 'sites/test/datasets' / f'{name}.toml'
+    values = tomllib.loads(path.read_text())
+    del (values[section] if section else values)[key]
+    path.write_text(tomli_w.dumps(values))
+    with pytest.raises(ValueError, match=f'Missing .* settings: {key}'):
+        DatasetWorkflow(project, 'test').build('training', with_dependencies=True)
+    assert list((project / 'data/sites/test').iterdir()) == []
+
+
+def test_named_grids_and_optional_scaling_are_explicit(project):
+    from openMWR.config import load_grid
+
+    original = load_grid(project, 'heights', 'levels_208_30km')
+
+    recipe(project, 'profiles', kind='profiles', inputs={'source': 'source'},
+           preparation={'heights': 'levels_208_30km'})
+    workflow = DatasetWorkflow(project, 'test')
+    np.testing.assert_array_equal(workflow.coordinates('training')['heights'], original)
+    assert not workflow.settings('profiles')['scale_rh_clear_sky']
+    # Resolution preserves editable presets and observes Python edits next time.
+    preparation = workflow.recipe('profiles').values['preparation']
+    assert preparation['heights'] == 'levels_208_30km'
+    preparation['heights'] = [0., 1000.]
+    np.testing.assert_array_equal(workflow.coordinates('training')['heights'], [0., 1000.])
+    preparation['heights'] = [1000., 0.]
+    with pytest.raises(ValueError, match='must be increasing'):
+        workflow.coordinates('training')
+    preparation['heights'] = [0., 500., 1000.]
+    np.testing.assert_array_equal(workflow.coordinates('training')['heights'], [0., 500., 1000.])
+    path = project / 'sites/test/datasets/profiles.toml'
+    values = tomllib.loads(path.read_text())
+    values['preparation']['scale_rh_clear_sky'] = True
+    path.write_text(tomli_w.dumps(values))
+    with pytest.raises(ValueError, match='Missing .*scale_rh_clear_sky_factor'):
+        DatasetWorkflow(project, 'test').build('profiles', dry_run=True)
+    values['preparation'].update(scale_rh_clear_sky_factor=0.2, scale_rh_clear_sky_fraction=0.1,
+                                 scale_rh_clear_sky_seed=42)
+    path.write_text(tomli_w.dumps(values))
+    DatasetWorkflow(project, 'test').build('profiles', with_dependencies=True, dry_run=True)
+
+
+def test_project_grid_edits_are_shared_by_python_and_dataset_recipes(project, monkeypatch):
+    from openMWR.config import load_grid
+
+    path = project / 'grids.toml'
+    grids = {'heights': {'custom': [0., 500., 1000.]},
+             'frequencies': {'custom': [22.24, 31.4]},
+             'angles': {'custom': [90., 30.]}}
+    path.write_text(tomli_w.dumps(grids))
+    recipe(project, 'profiles', kind='profiles', inputs={'source': 'source'},
+           preparation={'heights': 'custom'})
+    recipe(project, 'r17', kind='simulation', inputs={'profiles': 'profiles'},
+           radiative_transfer={'frequencies': 'custom', 'angles': 'custom'})
+    workflow = DatasetWorkflow(project, 'test')
+    monkeypatch.chdir(project.parent)
+    for kind, values in workflow.coordinates('training').items():
+        assert values == load_grid(project, kind, 'custom') == grids[kind]['custom']
+    # Edits are visible on later calls using the same workflow.
+    grids['heights']['custom'] = [0., 1000.]
+    path.write_text(tomli_w.dumps(grids))
+    assert workflow.coordinates('training')['heights'] == [0., 1000.]
+    with pytest.raises(ValueError, match='Unknown .*levels_208_30km'):
+        load_grid(project, 'heights', 'levels_208_30km')
+    path.unlink()
+    assert load_grid(project, 'heights', [0., 1000.]) == [0., 1000.]
+    with pytest.raises(FileNotFoundError, match='grids.toml'):
+        load_grid(project, 'heights', 'custom')
+
+
+@pytest.mark.parametrize(('kind', 'values', 'message'), [
+    ('heights', [0., 1000., 1000.], 'duplicates'),
+    ('heights', [0., 1000., 500.], 'increasing'),
+    ('frequencies', [22.24, float('nan')], 'finite'),
+    ('angles', [90., 0.], 'between 0 and 90'),
+])
+def test_invalid_named_grids_are_rejected(project, kind, values, message):
+    from openMWR.config import load_grid
+
+    (project / 'grids.toml').write_text(tomli_w.dumps({kind: {'invalid': values}}))
+    with pytest.raises(ValueError, match=message):
+        load_grid(project, kind, 'invalid')
 
 
 def synthetic_simulation(times):

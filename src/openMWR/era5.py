@@ -42,7 +42,7 @@ class ERA5Processor:
 
     def __init__(self, site, project_dir, start_date=None, end_date=None,
                  update_only=True, hour_interval=6, profiles_dataset='profiles_era5',
-                 simulation_dataset='rt_era5'):
+                 simulation_dataset='simulation_era5'):
         self.site, self.project_dir = site, project_dir
         self.update_only, self.hour_interval = update_only, hour_interval
         self.logger = logging.getLogger(__name__)
