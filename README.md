@@ -30,8 +30,9 @@ openMWR create-site my_site
 ```
 
 This writes `sites/my_site/site.toml`, six dataset recipes for a radiosonde
-training chain and HATPRO/radiosonde comparisons, and
-`sites/my_site/retrieval/NN_example/retrieval.toml`. It creates empty data
+training chain and HATPRO/radiosonde comparisons, and three retrieval recipes under
+`sites/my_site/retrieval/`: `NN_example` (zenith NN), `MLR_example` (zenith MLR),
+and `NN_BLS_example` (boundary-layer-scan NN). It creates empty data
 directories and leaves existing sites untouched by refusing to overwrite them.
 It also creates a shared `grids.toml` in the project directory if missing,
 containing the initial height, frequency and elevation-angle grids. Existing
@@ -40,8 +41,10 @@ grid definitions are preserved when adding another site.
 
 Fill in the commented site settings and the empty `stations` list in
 `datasets/radiosondes.toml`. The source list is inherited throughout the chain.
-The example NN writes recommended model, normalization, training and noise
-settings explicitly. Missing scientific choices produce an error; optional
+The examples write recommended model, normalization, training and noise
+settings explicitly and share the same training dataset; the BLS example also
+inherits its elevation angles. `NN_example` is the site's default prediction selection.
+Missing scientific choices produce an error; optional
 processing is off unless enabled. Operational options keep convenient defaults.
 The generated files include no ERA5 recipes or optimization searches.
 Creation performs no downloads or calculations; RT additionally needs libRadtran.

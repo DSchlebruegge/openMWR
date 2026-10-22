@@ -1,0 +1,63 @@
+# Basic boundary-layer-scan NN with recommended settings written explicitly.
+# Replace SITE with your site name: openMWR train SITE NN_BLS_example
+schema_version = 1
+
+[model]
+kind = "nn"
+mode = "bls"
+freqs = "dataset"
+heights = "dataset"
+angles = "dataset"
+hidden_layers = [1024, 64, 1024]
+dropout_rate = 0.1
+additional_input_vars = ["surface_T", "surface_p", "surface_rh", "doy_cos", "doy_sin"]
+
+[model.loss_weights]
+# Height bounds in metres, inclusive.
+T = { upper_bounds = [2000, 10000], values = [1.0, 0.5, 0.25] }
+rh = { upper_bounds = [2000, 10000], values = [1.0, 0.5, 0.25] }
+lwc = { upper_bounds = [2000, 10000], values = [1.0, 0.5, 0.25] }
+lwp = 1.0
+iwv = 1.0
+
+[model.norm_functions]
+TB = "z_norm"
+surface_T = "z_norm"
+surface_p = "z_norm"
+surface_rh = "z_norm"
+doy_cos = "std_norm"
+doy_sin = "std_norm"
+T = "z_norm"
+rh = "z_norm"
+lwc = "log_norm"
+lwp = "log_norm"
+iwv = "z_norm"
+
+[data]
+dataset = "training"
+# Sources are inherited from the selected dataset; there is no date cutoff.
+
+[training]
+batch_size = 512
+epochs = 500
+lr_height = 0.002
+lr_low = 1e-7
+epoch_max_lr = 50
+loss_fn = "MAE"
+weight_decay = 1e-5
+
+[input_noise]
+method = "standard"
+TB = 0.5
+surface_T = 0.5
+surface_p = 0.5
+surface_rh = 0.5
+doy_cos = 0.2
+doy_sin = 0.2
+
+[evaluation]
+observations = true
+test_data = true
+data_source = "radiosonde"
+dataset = "analysis_radiosonde"
+days_gt_20 = true

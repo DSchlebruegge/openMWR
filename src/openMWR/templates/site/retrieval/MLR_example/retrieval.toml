@@ -1,0 +1,48 @@
+# Basic zenith multilinear regression with recommended settings written explicitly.
+# Replace SITE with your site name: openMWR train SITE MLR_example
+schema_version = 1
+
+[model]
+kind = "mlr"
+mode = "zenith"
+freqs = "dataset"
+heights = "dataset"
+additional_input_vars = ["TB_IR", "surface_T", "surface_p", "surface_rh", "doy_cos", "doy_sin"]
+
+[model.norm_functions]
+TB = "z_norm"
+TB_IR = "z_norm"
+surface_T = "z_norm"
+surface_p = "z_norm"
+surface_rh = "z_norm"
+doy_cos = "std_norm"
+doy_sin = "std_norm"
+T = "z_norm"
+rh = "z_norm"
+lwc = "max_norm"
+lwp = "max_norm"
+iwv = "z_norm"
+
+[data]
+dataset = "training"
+# Sources are inherited from the selected dataset; there is no date cutoff.
+
+[training]
+repeats_for_linear_regression = 10
+
+[input_noise]
+method = "standard"
+TB = 0.5
+TB_IR = 0.5
+surface_T = 0.5
+surface_p = 0.5
+surface_rh = 0.5
+doy_cos = 0.2
+doy_sin = 0.2
+
+[evaluation]
+observations = true
+test_data = true
+data_source = "radiosonde"
+dataset = "analysis_radiosonde"
+days_gt_20 = true
