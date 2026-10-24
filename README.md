@@ -21,6 +21,29 @@ activated, use `openMWR --help` or, for example,
 You can also use `python -m openMWR ...`; both forms call the same implementation
 and work with pip or uv installations.
 
+Common options also have short aliases, shown by `openMWR COMMAND -h`:
+
+| Option | Alias |
+| --- | --- |
+| `--project-dir` | `-p` |
+| `--device` | `-D` |
+| `--with-dependencies` | `-w` |
+| `--dry-run` | `-n` |
+| `--rebuild` | `-r` |
+| `--n-trials` | `-t` |
+| `--fresh` | `-f` |
+| `--continue` | `-c` |
+| `--output` / `--output-dir` | `-o` |
+| `--date` | `-d` |
+| `--start-date` / `--end-date` | `-s` / `-e` |
+
+For example:
+
+```bash
+openMWR data munich_G5 analysis_era5 -w -n
+openMWR train munich_G5 NN_opt -c -t 100
+```
+
 ### Create a site
 
 From your working-project directory:

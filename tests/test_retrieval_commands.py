@@ -123,7 +123,7 @@ station_id = "03715"
 
 
 def command(tmp_path, action, *extra, check=True):
-    return subprocess.run([sys.executable, '-m', 'openMWR', action, 'test', 'example', '--project-dir', str(tmp_path), *extra], cwd=tmp_path.parent, capture_output=True, text=True, check=check)
+    return subprocess.run([sys.executable, '-m', 'openMWR', action, 'test', 'example', '-p', str(tmp_path), *extra], cwd=tmp_path.parent, capture_output=True, text=True, check=check)
 
 
 def training_workflow(tmp_path, manual=False):
@@ -149,7 +149,7 @@ def test_python_and_module_training_agree_and_checkpoint_owns_settings(tmp_path)
     continued = command(tmp_path, 'train', '--continue', check=False)
     assert continued.returncode == 1
     assert 'Continuing is available only for optimization' in continued.stderr
-    result = command(tmp_path, 'train', '--fresh')
+    result = command(tmp_path, 'train', '-f')
     assert 'Training one model: example' in result.stderr
     cli_model = load_model('example', 'test', tmp_path)
     for key, values in python_model.state_dict().items():
@@ -383,7 +383,7 @@ def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
     custom = tmp_path / 'data/sites/test/custom_analysis/zenith.nc'
     custom.parent.mkdir()
     (tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc').rename(custom)
-    result = command(tmp_path, 'train', '--n-trials', '2', '--data-source', 'radiosonde', '--dataset', 'custom_analysis')
+    result = command(tmp_path, 'train', '-t', '2', '-D', 'cpu', '--data-source', 'radiosonde', '--dataset', 'custom_analysis')
     assert 'Optimizing example (trial budget: 2, reference: radiosonde)' in result.stderr
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
     assert len(study.trials) == 2
@@ -405,7 +405,7 @@ def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
 def test_evaluate_command_writes_report(tmp_path):
     project(tmp_path, search=False)
     TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train()
-    result = command(tmp_path, 'evaluate')
+    result = command(tmp_path, 'evaluate', '-D', 'cpu', '-o', str(tmp_path / 'report.html'))
     assert Path(result.stdout.strip()).is_file()
     assert 'Observation days 21-31' in Path(result.stdout.strip()).read_text()
     all_days = evaluate_retrieval(tmp_path, 'test', 'example', days_of_month={'first': 1, 'last': 31})
@@ -428,7 +428,7 @@ def test_fresh_and_continue_affect_only_the_selected_retrieval(tmp_path):
     other_database = other_path.with_name('optimization.db').read_bytes()
     other_path.write_bytes(b'keep the other retrieval')
     assert command(tmp_path, 'train', check=False).returncode == 1
-    command(tmp_path, 'train', '--continue')
+    command(tmp_path, 'train', '-c')
     assert len(optuna.load_study(study_name='example', storage=storage).trials) == 2
     before = (recipe.parent / 'model.pth').read_bytes()
     analysis = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'

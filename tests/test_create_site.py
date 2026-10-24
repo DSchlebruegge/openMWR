@@ -14,7 +14,7 @@ from openMWR.site import create_site
 
 def command(project, site):
     return subprocess.run([sys.executable, '-m', 'openMWR', 'create-site', site,
-        '--project-dir', str(project)], cwd=project.parent, capture_output=True, text=True)
+        '-p', str(project)], cwd=project.parent, capture_output=True, text=True)
 
 
 def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_path):

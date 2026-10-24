@@ -122,7 +122,7 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(project
 def test_cli_dry_run_and_configuration_errors_write_nothing(project):
     before = sorted(str(p) for p in project.rglob('*'))
     result = subprocess.run([sys.executable, '-m', 'openMWR', 'data', 'test', 'training', 'r20',
-        '--project-dir', str(project), '--with-dependencies', '--dry-run'],
+        '-p', str(project), '-w', '-n'],
         capture_output=True, text=True, cwd=project.parent)
     assert result.returncode == 0, result.stderr
     assert 'source -> profiles -> r17 -> training -> r20' in result.stderr
@@ -289,7 +289,8 @@ def test_cli_split_creation_update_and_target_only_rebuild(project):
     assert np.unique(combined).size == len(combined) == 60
     # Rebuilding this selected split leaves its upstream simulation untouched.
     source_bytes = dataset_file(project, 'test', 'r17', '03715').read_bytes()
-    workflow.build('training', rebuild=True)
+    from openMWR.cli import main
+    main(['data', 'test', 'training', '-p', str(project), '-r'])
     assert dataset_file(project, 'test', 'r17', '03715').read_bytes() == source_bytes
     assert source_bytes != original
 

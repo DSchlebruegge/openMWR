@@ -85,7 +85,7 @@ def project(tmp_path):
 
 def command(project, *args):
     return subprocess.run([sys.executable, '-m', 'openMWR', 'predict', 'test',
-        *args, '--project-dir', str(project)],
+        *args, '-p', str(project)],
         cwd=project.parent, text=True, capture_output=True)
 
 
@@ -107,7 +107,7 @@ def test_python_command_and_previous_profile_pipeline_agree(project):
     paths = workflow.save(result)
     assert [path.name for path in paths] == ['20240101_retrieval.nc', '20240101_retrieval_bls.nc']
     assert 'model' not in xr.load_dataset(paths[1]).dims  # Existing published BLS shape.
-    cli = command(project, '--date', '2024-01-01')
+    cli = command(project, '-d', '2024-01-01', '-D', 'cpu')
     assert cli.returncode == 0, cli.stderr
     loaded = load_predictions(project, 'test', '2024-01-01')
     for name in ('zenith', 'bls'):
@@ -119,7 +119,7 @@ def test_python_command_and_previous_profile_pipeline_agree(project):
 
 def test_range_continues_after_missing_day_and_reports_partial_bls(project):
     raw_day(project, datetime(2024, 1, 3), bls=False)
-    cli = command(project, '--start-date', '2024-01-01', '--end-date', '2024-01-03')
+    cli = command(project, '-s', '2024-01-01', '-e', '2024-01-03')
     assert cli.returncode == 1
     assert '2024-01-02' in cli.stderr and 'bls' in cli.stderr
     assert 'Prediction incomplete' in cli.stderr
@@ -217,7 +217,7 @@ def test_configuration_and_checkpoint_selection_before_writing(project):
     # A broken training recipe is irrelevant for saved-model inference.
     (project / 'sites/test/retrieval/primary/retrieval.toml').write_text('invalid = [')
     assert command(project, 'primary', '--date', '2024-01-01',
-                   '--output-dir', 'chosen').returncode == 0
+                   '-o', 'chosen').returncode == 0
     assert (project / 'chosen/2024/01/20240101_retrieval.nc').exists()
     assert not (project / 'published').exists()
 
