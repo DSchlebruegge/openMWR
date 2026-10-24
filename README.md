@@ -90,9 +90,26 @@ kind = "profiles"
 source = "radiosondes"
 
 [preparation]
+incomplete_profiles = "monthly_mean"  # or "filter" to reject incomplete profiles
 heights = "levels_208_30km"
 cut_off_at_mwr_height = false
 # heights = [0, 100, 500, 1000, 2000, 5000, 10000, 20000, 30000]
+
+[preparation.cloud]
+rh_threshold = 0.96  # fraction (96% RH)
+min_temperature = 253.15  # liquid cloud temperature threshold [K]
+# LWC = f_ad * LWC_adiabatic; h is height above cloud base [m], H is cloud depth [m].
+# power_law: f_ad = a * (1 - (h / H)^b)
+# karstens: f_ad = max(0, 1.239 - 0.145 * log(h + 1)); log is the natural logarithm.
+adiabatic_fraction = "power_law"
+# "none" keeps fully adiabatic LWC (f_ad = 1).
+# a and b apply only to power_law; remove both for karstens or none.
+a = 0.7
+b = 2.3
+
+[preparation.quality]
+min_top_height = 15000  # metres above sea level, before rebasing/interpolation
+min_levels = 500        # distinct valid source levels, before interpolation
 ```
 
 ```toml
@@ -107,6 +124,10 @@ backend = "torchMWRT"
 absorption_model = "R17"
 frequencies = "hatpro"
 angles = "hatpro_bls"
+
+[radiative_transfer.infrared]
+droplet_number_density = 200000000.0  # m^-3, equivalent to 200 cm^-3
+min_effective_radius = 2.5           # micrometres
 
 [execution]
 processes = 12
@@ -140,10 +161,10 @@ Supported recipe kinds and input roles are:
 | `radiosonde` | None | Required `stations`, `start_year`, `end_year`; optional `refresh_years` (2) |
 | `era5` | None | Required `start_date`, `end_date`, `hour_interval`; `delay_days` required with `end_date = "today"` |
 | `hatpro` | None | Required dates; `[observations] import_retrieval_data` inherits the site setting (off when absent) |
-| `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also support cutoff |
-| `simulation` | `profiles` | `[radiative_transfer] backend`, `absorption_model`, `frequencies`, `angles`, optional `frequency_shift` |
+| `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also require `incomplete_profiles`, `cloud` and `quality`, with optional cutoff |
+| `simulation` | `profiles` | `[radiative_transfer] backend`, `absorption_model`, `frequencies`, `angles`, required `infrared` microphysics, optional `frequency_shift` |
 | `split` | `simulation` | Required `[split] test_fraction`, `validation_fraction` (fraction of the remainder), `seed` |
-| `analysis` | `observations`: HATPRO; `reference`: simulation | Optional `stations` selection |
+| `analysis` | `observations`: HATPRO; `reference`: simulation | Required `[analysis] max_time_difference_minutes`, `exclude_rain`, `height_range`; optional `stations` |
 
 Derived recipes inherit their input stations unless selecting a subset.
 Scientific settings, including the RT backend/model and grids, must be explicit.
@@ -192,6 +213,13 @@ BLS models require explicit angles. The former `std_heights`, `std_freqs` and
 `std_angles` arrays are removed; numerical functions and saved models use the
 resolved coordinates.
 
+Radiosonde profiles explicitly select the cloud model and source quality limits
+shown above. Choose `adiabatic_fraction = "power_law"` with explicit `a`/`b`, or
+`"karstens"` or `"none"` without those coefficients. `"none"` keeps the unreduced
+adiabatic liquid water content. The temperature threshold and formulas/units
+are stated in recipe comments. ERA5 preparation uses its source cloud water and accepts
+only `heights`; these radiosonde settings do not apply.
+
 `create-site` recommends R24; existing recipes retain their explicit model choice.
 `execution.processes` controls workers for ERA5 preparation, RT or HATPRO;
 radiosonde preparation is serial.
@@ -212,6 +240,29 @@ inputs change. Unchanged inputs skip derived processing.
 Narrowing date coverage requires rebuilding the affected derived datasets.
 Extending historical HATPRO coverage also requires a rebuild; regular HATPRO
 updates refresh from the last available day.
+
+Radiosonde `incomplete_profiles = "monthly_mean"` fills missing upper levels
+using monthly means. `"filter"` rejects profiles that do not cover the required
+grid. Both modes reject any profiles still missing T, p, RH or LWC; RT checks
+these fields before calculation. Monthly completion needs other profiles in
+the same month that provide the missing levels.
+
+Analysis recipes explicitly select matching, rain filtering and their profile range:
+
+```toml
+[analysis]
+max_time_difference_minutes = 10
+exclude_rain = true
+height_range = [0, 10000]  # metres above the instrument
+```
+
+These settings apply to both radiosonde and ERA5 analysis, for zenith and scan
+data. An evaluation range must be covered by the prepared analysis dataset.
+IR droplet concentration and minimum effective radius belong in the simulation's
+`[radiative_transfer.infrared]` table; they affect infrared simulation only.
+The minimum radius must be at least 2.5 and below 60 micrometres. Calculated
+radii of 60 micrometres or more are rejected before RT starts, matching
+libRadtran's Hu-Stamnes cloud optics.
 
 Effective settings and input identities are recorded in `state.json`, and each
 dataset has `build.log`. Changing scientific settings or rebuilding an input
@@ -313,6 +364,7 @@ sources = ["03715"]          # station IDs and/or "era5"
 end_date_training = "2024-10-31"
 
 [training]
+seed = 42                  # integer, or "random" for an unseeded run
 epochs = 500
 batch_size = 512
 loss_fn = "MAE"
@@ -328,16 +380,21 @@ surface_T = 0.5
 # "TB_22.24" = 0.4
 
 [optimization]
+seed = 42                  # Optuna sampling seed, independent of training
+days_of_month = { first = 1, last = 20 }
+score_weights = { T = 1.0, rh = 0.1 }
 n_trials = 100
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
 
 [evaluation]
+observation_height_range = [0, 10000]  # profile bounds in metres
+test_height_range = "model"           # full model grid, or explicit bounds
 observations = true
 test_data = true
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
-days_gt_20 = true           # explicit choice; false evaluates all days
+days_of_month = { first = 21, last = 31 }  # inclusive; 1 to 31 selects all days
 station_id = "03715"        # explicit radiosonde station identifier
 ```
 
@@ -375,25 +432,25 @@ iwv = 1.0
 Python passes the same weight dictionary. There are no named presets or implicit
 mode-based weights for new models. Weights are finite, nonnegative
 and include every output; at least one must be positive. They apply to fitting;
-profile optimization uses the T/RH weights in its existing score. New checkpoints store their resolved
+optimization applies the same height weights before its separate variable weights. New checkpoints store their resolved
 numeric values. Historical checkpoints retain their original weighting when
 loaded, without rewriting their files. MLR and spectral models do not accept
 profile loss weights.
 BLS noise can use `vary_input_noise_with_angle` or
 `vary_input_noise_with_angle_linear`; their angle/factor settings belong in
 `input_noise`. The optional `bias_correction` table requires `data_source`,
-`dataset`, and `factor`; optional `sources` and `specific_freqs` restrict it.
+`dataset`, `factor`, and `days_of_month`; optional `sources` and `specific_freqs` restrict it.
 Training settings use the arguments of `add_standard_training_hyper_params`.
-MLR recipes accept only `repeats_for_linear_regression` in `training`, alongside
+MLR recipes require `seed` and `repeats_for_linear_regression` in `training`, alongside
 their input-noise settings; NN-only settings such as weight decay/learning rate
 and model hidden layers/dropout are rejected. NN/spectral recipes reject the
 MLR repeat setting. Explicit Python searches are checked for model applicability
 as well; ordinary Python default hyperparameter dictionaries remain supported.
-Each training or noise parameter accepts a fixed value or a search in the same
-place. Each active parameter needs a fixed value, or explicit `low`/`high`,
+Training and noise parameters accept fixed values or searches in the same
+place; seeds are fixed choices. Each active parameter needs a fixed value, or explicit `low`/`high`,
 optional `step`, and optional `log = true` for a search.
 Integer training parameters use integer ranges; learning rates, weight decay,
-and noise use floating-point ranges. Discrete searches use
+bias coefficients, and noise use floating-point ranges. Discrete searches use
 `batch_size = { choices = [256, 512, 1024] }`; loss functions can also use choices.
 Searches in model structure, loss weights, bias correction, or study controls are unsupported
 and produce an error.
@@ -413,8 +470,19 @@ a bundled example can use `change_hyper_params()` to supply settings explicitly.
 Project recipes still require their scientific settings and do not fill omissions
 from bundled recommendations.
 Python workflows can also set just the training parameters their model uses:
-MLR requires `repeats_for_linear_regression`; NN and spectral models require the
+MLR requires `seed` and `repeats_for_linear_regression`; NN and spectral models require the
 neural training settings shown above.
+For `MAEPlusBiasLoss` or `MSEPlusBiasLoss`, also specify `training.bias_weight`
+(a number or search). Other loss functions omit it.
+
+A fixed training seed controls recipe model initialization, shuffling and added
+noise. `"random"` leaves the random generators unseeded. For fully manual Python
+model construction, call `openMWR.config.apply_seed(seed)` before constructing the
+model as well as setting `training.seed`. Optuna sampling and trial
+initialization/noise each use their own seed plus the stored trial number
+(modulo 2**32). With fixed seeds and the same trial history, continued sequential
+studies match uninterrupted runs. Exact numerical reproducibility also depends
+on the backend.
 
 Every recipe selects its noise method: `standard` requires explicit values or
 searches for every active input; `omb` derives TB noise from observations and
@@ -438,6 +506,7 @@ prepared observations using the existing OMB method:
 method = "omb"
 data_source = "era5"         # radiosonde or era5
 dataset = "analysis_era5"
+days_of_month = { first = 1, last = 20 }
 factor = 2.0
 surface_T = 0.5
 # sources = ["03715"]       # optional; defaults to the training stations
@@ -460,18 +529,26 @@ new retrieval name before optimization can continue; their histories remain read
 
 Evaluation writes dated portable HTML files under the retrieval's `evaluation/`
 directory. Set `evaluation.observations = false` or `evaluation.test_data = false`
-to select its inputs. Optimization retains the existing observation filter
-(days ≤ 20); evaluation requires its own explicit filter. Logs show training
-sources, the training cutoff and named dataset, the fitting loss, and the
-separate optimization reference/score. Profile trials use the existing heightwise
-temperature RMSE plus RH RMSE/10 (model height weights where present); spectral
-trials use mean channel TB RMSE. These setup details are saved with new checkpoints.
-Reports label all-days observations as diagnostic, including the standard
-optimization/OMB day range. Days after the 20th are outside that selection;
-this describes the day split, without claiming broader data independence.
+to select its inputs. Optimization, OMB noise, bias correction and evaluation
+all use the same inclusive `days_of_month = { first = 1, last = 20 }` format.
+Set first/last to 1/31 for all days. Evaluation can override it with
+`--days-of-month FIRST LAST`. Profile evaluations require explicit
+`observation_height_range` and `test_height_range` for their enabled inputs.
+Each accepts `[minimum, maximum]` in metres or `"model"` for the whole model grid.
+CLI overrides are `--observation-height-range MIN MAX` and
+`--test-height-range MIN MAX`; either also accepts `model`. Checkpoints without
+recipes need their day selection and both enabled profile ranges supplied
+explicitly. Spectral evaluations have no profile height range.
+
+Optimization requires explicit `score_weights`, separate from fitting loss
+weights: the score sums each selected variable's weight times its mean RMSE
+(model height weights apply where present). Omitted or zero-weight variables do
+not contribute. Starter profile recipes use `{ T = 1.0, rh = 0.1 }`; spectral
+recipes use `{ TB = 1.0 }`. Logs and saved checkpoints record the reference, day
+selection and score. Reports describe actual selected days and their overlap
+with the checkpoint's recorded optimization days.
 Select radiosonde observations by `station_id` or `--station-id`. A single station
-can be inferred; multiple stations require an explicit ID. Existing checkpoints
-can be evaluated without recipes by passing `--days-gt-20` or `--all-days`.
+can be inferred; multiple stations require an explicit ID.
 Inference and test-data selection use saved checkpoint settings even after
 recipe edits.
 

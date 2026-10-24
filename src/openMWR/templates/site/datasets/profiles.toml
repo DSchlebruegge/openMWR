@@ -4,8 +4,32 @@ kind = "profiles"
 source = "radiosondes"
 
 [preparation]
+# Complete missing upper levels with monthly means, or use "filter" to reject incomplete profiles.
+incomplete_profiles = "monthly_mean"
 heights = "levels_208_30km"
 
 # Set true to use the radiometer height as the profile base
 # instead of the radiosonde station height.
 # cut_off_at_mwr_height = false
+
+[preparation.cloud]
+# RH threshold is a fraction (0.96 means 96%).
+rh_threshold = 0.96
+# Empirical liquid-cloud temperature cutoff [K] (-20 °C).
+# Literature precedent: Löhnert & Crewell (2003), Sect. 2.1:
+# https://doi.org/10.1029/2002RS002654
+min_temperature = 253.15
+# LWC = f_ad * LWC_adiabatic; h is height above cloud base [m], H is cloud depth [m].
+# power_law: f_ad = a * (1 - (h / H)^b)
+# karstens: f_ad = max(0, 1.239 - 0.145 * log(h + 1)); log is the natural logarithm.
+adiabatic_fraction = "power_law"
+# "none" keeps fully adiabatic LWC (f_ad = 1).
+# a and b apply only to power_law; remove both for karstens or none.
+a = 0.7
+b = 2.3
+
+[preparation.quality]
+# Minimum top altitude in metres above sea level, before rebasing/interpolation.
+min_top_height = 15000
+# Minimum distinct valid source levels, before interpolation.
+min_levels = 500

@@ -49,6 +49,7 @@ sources = ["03715"]
 {variant}
 
 [training]
+seed = 42
 {training}
 
 [input_noise]
@@ -57,10 +58,15 @@ TB = 0.0
 {'TB_angle_factor = 3.0' if mode == 'bls' else ''}
 
 [optimization]
+seed = 42
+days_of_month = {{ first = 1, last = 20 }}
+score_weights = {{ T = 1.0, rh = 0.1 }}
 n_trials = 1
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
 '''
+    if kind == 'spectral':
+        settings = settings.replace('score_weights = { T = 1.0, rh = 0.1 }', 'score_weights = { TB = 1.0 }')
     if search:
         if kind == 'mlr':
             settings = settings.replace('TB = 0.0', 'TB = { low = 0.001, high = 0.002 }')
@@ -68,11 +74,13 @@ dataset = "analysis_radiosonde"
             settings = settings.replace('lr_height = 0.002', 'lr_height = { low = 0.001, high = 0.002 }')
     settings += '''
 [evaluation]
+observation_height_range = [0, 10000]
+test_height_range = "model"
 observations = true
 test_data = true
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
-days_gt_20 = true
+days_of_month = { first = 21, last = 31 }
 station_id = "03715"
 '''
     recipe = directory / 'retrieval.toml'
@@ -81,10 +89,11 @@ station_id = "03715"
     dataset_name = f'training_{suffix}' if suffix else 'training'
     for name, definition in {
         'radiosondes': {'kind': 'radiosonde', 'stations': ['03715'], 'start_year': 1990, 'end_year': 'current_year'},
-        'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0]}},
+        'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0], 'incomplete_profiles': 'monthly_mean', 'cloud': {'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3}, 'quality': {'min_top_height': 15000, 'min_levels': 500}}},
         'simulation_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
                           'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R20',
-                                                 'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0]}},
+                                                 'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0],
+                                                 'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
         dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r20'},
                       'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
     }.items():
@@ -212,9 +221,9 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
     torch.save(checkpoint, path)
     recipe.unlink()
     assert load_model('example', 'test', tmp_path).training_metadata is None
-    analysis = evaluate_retrieval(tmp_path, 'test', 'example', days_gt_20=True)
+    analysis = evaluate_retrieval(tmp_path, 'test', 'example', days_of_month={'first': 21, 'last': 31}, observation_height_range=[0, 10000], test_height_range='model')
     assert len(analysis.evaluations) == 2
-    with pytest.raises(ValueError, match='days_gt_20 explicitly'):
+    with pytest.raises(ValueError, match='days_of_month explicitly'):
         validate_evaluation(tmp_path, 'test', 'example')
 
 
@@ -271,7 +280,7 @@ def test_manual_python_workflow_still_uses_the_same_training(use_standard_helper
     if use_standard_helper:
         workflow.add_standard_training_hyper_params(repeats_for_linear_regression=1)
     else:
-        workflow.change_hyper_params(repeats_for_linear_regression=1)
+        workflow.change_hyper_params(repeats_for_linear_regression=1, seed=42)
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
     checkpoint = (recipe.parent / 'model.pth').read_bytes()
     with pytest.raises(ValueError, match='Results already exist'):
@@ -388,7 +397,7 @@ def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
     search_line = next(line for line in result.stderr.splitlines() if 'Search training.weight_decay:' in line)
     assert 'low=1e-08' in search_line and 'high=0.0001' in search_line and 'log=True' in search_line
     assert 'Training sources:' in result.stderr and 'Fitting: MAE' in result.stderr
-    assert 'days of month: 1-20' in result.stderr
+    assert "days of month: {'first': 1, 'last': 20}" in result.stderr
     assert 'Optimization score (separate from fitting loss)' in result.stderr
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
 
@@ -398,10 +407,10 @@ def test_evaluate_command_writes_report(tmp_path):
     TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train()
     result = command(tmp_path, 'evaluate')
     assert Path(result.stdout.strip()).is_file()
-    assert 'outside the standard optimization' in Path(result.stdout.strip()).read_text()
-    all_days = evaluate_retrieval(tmp_path, 'test', 'example', days_gt_20=False)
+    assert 'Observation days 21-31' in Path(result.stdout.strip()).read_text()
+    all_days = evaluate_retrieval(tmp_path, 'test', 'example', days_of_month={'first': 1, 'last': 31})
     assert all_days.evaluations[0].samples['time_coordinates'] == 6
-    assert 'All-days diagnostic' in all_days.evaluations[0].note
+    assert 'Observation days 1-31' in all_days.evaluations[0].note
     missing = command(tmp_path, 'evaluate', '--dataset', 'missing', check=False)
     assert missing.returncode == 1 and 'Missing evaluation analysis dataset' in missing.stderr
     assert '/missing/zenith.nc' in missing.stderr
@@ -504,6 +513,11 @@ def test_manual_search_cannot_optimize_an_unused_mlr_parameter(tmp_path):
     ('TB = 0.0', 'TB = { optimize = false }', 'specify low/high or choices explicitly'),
     ('TB = 0.0', 'TB = { optimize = true, low = 0.0, high = 1.0 }', 'specify low/high or choices explicitly'),
     ('weight_decay = 1e-5', '', 'Missing training settings: weight_decay'),
+    ('[training]\nseed = 42', '[training]', 'Missing training settings: seed'),
+    ('[optimization]\nseed = 42', '[optimization]', 'Missing optimization settings: seed'),
+    ('seed = 42', 'seed = -1', 'at least 0'),
+    ('first = 1, last = 20', 'first = 21, last = 20', 'first <= last <= 31'),
+    ('score_weights = { T = 1.0, rh = 0.1 }', 'score_weights = { T = 0.0 }', 'at least one positive weight'),
     ('hidden_layers = [4]', '', 'Missing model settings: hidden_layers'),
     ('loss_weights = {', '# loss_weights = {', 'Missing model settings: loss_weights'),
     ('norm_functions = {', '# norm_functions = {', 'Missing model settings: norm_functions'),
@@ -552,8 +566,10 @@ def test_model_can_explicitly_inherit_dataset_grids_and_omit_dropout(tmp_path):
 def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
     recipe, data = project(tmp_path)
     recipe.write_text(recipe.read_text().replace('sources = ["03715"]', 'sources = ["era5"]')
-                      + '\n[bias_correction]\ndata_source = "era5"\ndataset = "analysis_era5"\nfactor = 0.5\n')
+                      + '\n[bias_correction]\ndays_of_month = { first = 1, last = 20 }\ndata_source = "era5"\ndataset = "analysis_era5"\nfactor = 0.5\n')
     (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\nhour_interval = 6\n')
+    profiles_file = tmp_path / 'sites/test/datasets/profiles.toml'
+    profiles_file.write_text('kind = "profiles"\n[inputs]\nsource = "radiosondes"\n[preparation]\nheights = [0.0, 1000.0]\n')
     site_file = tmp_path / 'sites/test/site.toml'
     site_file.write_text(site_file.read_text() + '\nlatitude = 48.0\nlongitude = 11.0\n')
     for split in ('training_data', 'validation_data'):
@@ -590,7 +606,7 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     settings = tomllib.loads(recipe.read_text())
     settings['model']['freqs'] = 'hatpro'
     settings.pop('optimization')
-    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0}
+    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0, 'days_of_month': {'first': 1, 'last': 20}}
     recipe.write_text(tomli_w.dumps(settings))
     first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     settings['input_noise']['factor'] = 2.0
@@ -601,7 +617,7 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
         assert np.isfinite(first.hyper_params[key])
         assert second.hyper_params[key] == pytest.approx(2 * first.hyper_params[key])
     settings['input_noise'].update({'TB_22.24': 0.25, 'TB_31.4': {'low': 0.1, 'high': 0.4}})
-    settings['optimization'] = {'n_trials': 1, 'data_source': 'era5', 'dataset': 'analysis_era5'}
+    settings['optimization'] = {'n_trials': 1, 'data_source': 'era5', 'dataset': 'analysis_era5', 'seed': 42, 'days_of_month': {'first': 1, 'last': 20}, 'score_weights': {'T': 1.0, 'rh': 0.1}}
     recipe.write_text(tomli_w.dumps(settings))
     overridden = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     assert overridden.hyper_params['input_noise_TB_22.24'] == 0.25
@@ -609,3 +625,86 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     assert overridden.hyper_params['input_noise_TB_23.04'] == second.hyper_params['input_noise_TB_23.04']
     assert overridden.requires_optimization
     assert not (recipe.parent / 'model.pth').exists()
+
+
+def test_training_seed_controls_initialization_and_training_noise(tmp_path, monkeypatch):
+    recipe, _ = project(tmp_path, kind='nn', search=False)
+    recipe.write_text(recipe.read_text().replace('TB = 0.0', 'TB = 0.15'))
+    monkeypatch.setattr(TrainingWorkflow, '_plot_training_progress', lambda *args, **kwargs: None)
+    first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train()
+    weights = {key: value.clone() for key, value in first.state_dict().items()}
+    repeated = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train(run_mode='fresh')
+    for key, value in weights.items():
+        torch.testing.assert_close(value, repeated.state_dict()[key], rtol=0, atol=0)
+    recipe.write_text(recipe.read_text().replace('seed = 42', 'seed = 43'))
+    changed = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train(run_mode='fresh')
+    assert any(not torch.equal(value, changed.state_dict()[key]) for key, value in weights.items())
+
+
+def test_optimization_seeds_day_selection_and_variable_weights(tmp_path):
+    from openMWR.predict import run_model_list
+
+    recipe, _ = project(tmp_path)
+    recipe.write_text(recipe.read_text().replace('first = 1, last = 20', 'first = 21, last = 22')
+                      .replace('score_weights = { T = 1.0, rh = 0.1 }', 'score_weights = { T = 2.5, rh = 0.0 }'))
+    first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=2)
+    history = [(trial.params, trial.value) for trial in first.trials]
+    model = load_model('example', 'test', tmp_path)
+    paired = xr.load_dataset(tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc')
+    paired = paired.sel(time=slice('2024-01-21', '2024-01-22'))
+    predicted = run_model_list([model], paired.sel(data_source='hatpro', drop=True), 'cpu')
+    residual = predicted.T - paired.sel(data_source='radiosonde', drop=True).T
+    expected = 2.5 * np.sqrt((residual ** 2).mean(('time', 'station'))).mean().item()
+    assert first.best_value == pytest.approx(expected)
+    repeated = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=2, run_mode='fresh')
+    assert [trial.params for trial in repeated.trials] == [params for params, _ in history]
+    np.testing.assert_allclose([trial.value for trial in repeated.trials], [value for _, value in history], rtol=0, atol=0)
+    # Each scientific choice is part of study compatibility, even for manual overrides.
+    for override in ({'seed': 43}, {'days_of_month': {'first': 1, 'last': 20}}, {'score_weights': {'rh': 1.0}}):
+        with pytest.raises(ValueError, match='different or unrecorded experiment'):
+            TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='continue', **override)
+    selected = command(tmp_path, 'evaluate', '--days-of-month', '21', '22')
+    assert 'Observation days 21-22' in Path(selected.stdout.strip()).read_text()
+
+
+def test_seeded_optimization_continuation_matches_uninterrupted_trials(tmp_path):
+    project(tmp_path)
+    # Cross TPE's ten-trial startup phase as well as its initial random sampling.
+    uninterrupted = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=12)
+    history = [(trial.params, trial.value) for trial in uninterrupted.trials]
+    TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='fresh')
+    continued = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=11, run_mode='continue')
+    assert [trial.params for trial in continued.trials] == [params for params, _ in history]
+    assert continued.trials[0].params != continued.trials[1].params
+    np.testing.assert_allclose([trial.value for trial in continued.trials],
+                               [value for _, value in history], rtol=0, atol=0)
+
+
+def test_bias_loss_requires_and_uses_explicit_coefficient(tmp_path, monkeypatch):
+    from openMWR.train import MAEPlusBiasLoss, MSEPlusBiasLoss
+
+    prediction, truth = torch.tensor([[2.0], [4.0]]), torch.zeros((2, 1))
+    assert MAEPlusBiasLoss(0.2)(prediction, truth).item() == pytest.approx(3.6)
+    assert MSEPlusBiasLoss(0.2)(prediction, truth).item() == pytest.approx(10.6)
+    recipe, _ = project(tmp_path, kind='nn', search=False)
+    recipe.write_text(recipe.read_text().replace('loss_fn = "MAE"', 'loss_fn = "MAEPlusBiasLoss"'))
+    with pytest.raises(ValueError, match='Missing training settings: bias_weight'):
+        RetrievalRecipe.load(tmp_path, 'test', 'example')
+    recipe.write_text(recipe.read_text().replace('[training]', '[training]\nbias_weight = { low = 0.1, high = 0.3 }'))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert workflow.requires_optimization
+    monkeypatch.setattr(TrainingWorkflow, '_plot_training_progress', lambda *args, **kwargs: None)
+    study = workflow.optimize(n_trials=1)
+    assert 0.1 <= study.best_params['bias_weight'] <= 0.3
+
+
+def test_evaluation_height_ranges_select_observation_and_test_profiles(tmp_path):
+    project(tmp_path, search=False)
+    TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').train()
+    result = evaluate_retrieval(tmp_path, 'test', 'example', observation_height_range=[0, 500], test_height_range=[500, 1000])
+    np.testing.assert_array_equal(result.evaluations[0].metrics['error_profiles'].height, [0.])
+    np.testing.assert_array_equal(result.evaluations[1].metrics['error_profiles'].height, [1000.])
+    assert result.metadata['filters']['observation_height_range'] == [0, 500]
+    assert result.metadata['filters']['test_height_range'] == [500, 1000]
+    report = command(tmp_path, 'evaluate', '--observation-height-range', '0', '500', '--test-height-range', 'model')
+    assert Path(report.stdout.strip()).is_file()

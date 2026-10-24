@@ -400,6 +400,20 @@ def add_variables_at_closest_time(ds1: xr.Dataset, ds2: xr.Dataset, max_diff: in
     return ds1
 
 
+def match_analysis_data(observations, reference, *, max_time_difference_minutes, exclude_rain, height_range):
+    """Pair observations/reference using the explicit analysis sample choices."""
+    from openMWR.config import check_analysis, select_height_range
+
+    check_analysis({'max_time_difference_minutes': max_time_difference_minutes,
+                    'exclude_rain': exclude_rain, 'height_range': height_range})
+    reference = select_height_range(reference, height_range)
+    observations, reference = select_closest_times(observations, reference, diff_min=max_time_difference_minutes)
+    if exclude_rain:
+        dry = observations.rain_flag == 0.0
+        observations, reference = observations.where(dry, drop=True), reference.where(dry, drop=True)
+    return observations, reference
+
+
 def select_closest_times(
     ds_search: xr.Dataset,
     ds_goal: xr.Dataset,

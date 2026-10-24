@@ -72,6 +72,8 @@ class CloudModelConfig:
         Default is False.
     rh_thres : float, optional
         Relative humidity threshold (0–1) for cloud detection. Default is 0.95.
+    min_temperature : float, optional
+        Lower temperature bound for liquid cloud detection in kelvin (253.15).
 
     """
 
@@ -84,6 +86,7 @@ class CloudModelConfig:
     b: float = 2.3
     karstens: bool = False
     rh_thres: float = 0.95
+    min_temperature: float = 253.15
 
 class CloudColumn:
     """
@@ -187,7 +190,7 @@ class CloudColumn:
         ValueError
             If a cloud extends to the end of the profile.
         """
-        t_thres = 253.15  # Liquid threshold temperature [K]
+        t_thres = self.config.min_temperature
         rh_thres = self.config.rh_thres
 
         cloud = (self.rh > rh_thres) & (self.T > t_thres)

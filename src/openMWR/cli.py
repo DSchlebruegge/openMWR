@@ -47,12 +47,21 @@ def main(argv=None):
         sub.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization or evaluation.')
         sub.add_argument('--dataset', help='Override the named analysis dataset for optimization or evaluation.')
         if command == 'evaluate':
-            filters = sub.add_mutually_exclusive_group()
-            filters.add_argument('--days-gt-20', dest='days_gt_20', action='store_true', default=None, help='Use observation days after the 20th.')
-            filters.add_argument('--all-days', dest='days_gt_20', action='store_false', help='Use observations from all days.')
+            sub.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'), help='Inclusive observation day-of-month range (1 31 selects all days).')
+            for kind in ('observation', 'test'):
+                sub.add_argument(f'--{kind}-height-range', nargs='+', metavar='HEIGHT', help='Profile height bounds in metres (MIN MAX), or model for the complete model grid.')
             sub.add_argument('--station-id', help='Radiosonde station ID; required when the analysis dataset has multiple stations.')
             sub.add_argument('--output', type=Path, help='New HTML file (default: dated report in the retrieval evaluation/ directory).')
     args = parser.parse_args(argv)
+    if args.command == 'evaluate':
+        for key in ('observation_height_range', 'test_height_range'):
+            value = getattr(args, key)
+            if value is not None:
+                try:
+                    value = 'model' if value == ['model'] else [float(bound) for bound in value]
+                except ValueError:
+                    parser.error(f'--{key.replace("_", "-")} requires MIN MAX or model.')
+                setattr(args, key, value)
     if args.command == 'predict':
         if args.date is not None and args.end_date is not None:
             parser.error('--end-date requires --start-date.')
@@ -98,7 +107,9 @@ def main(argv=None):
                 parser.exit(1, 'Prediction incomplete; see the reported dates/groups. Successful output was saved.\n')
         elif args.command == 'evaluate':
             from openMWR.evaluation import evaluate_retrieval, write_report
-            options = {key: getattr(args, key) for key in ('data_source', 'days_gt_20', 'station_id', 'dataset')}
+            options = {key: getattr(args, key) for key in ('data_source', 'station_id', 'dataset', 'observation_height_range', 'test_height_range')}
+            if args.days_of_month is not None:
+                options['days_of_month'] = dict(zip(('first', 'last'), args.days_of_month))
             if args.output is not None and args.output.exists():
                 raise FileExistsError(f'Report already exists: {args.output}. Choose a new filename.')
             report = evaluate_retrieval(args.project_dir, args.site, args.retrieval, device=args.device, **options)

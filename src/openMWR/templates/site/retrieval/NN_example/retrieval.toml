@@ -38,6 +38,8 @@ dataset = "training"
 # Sources are inherited from the selected dataset; there is no date cutoff.
 
 [training]
+# Use an integer for repeatable training, or "random".
+seed = 42
 batch_size = 512
 epochs = 500
 lr_height = 0.002
@@ -57,8 +59,11 @@ doy_cos = 0.2
 doy_sin = 0.2
 
 [evaluation]
+# Height bounds in metres; "model" selects the full model grid.
+observation_height_range = [0, 10000]
+test_height_range = "model"
 observations = true
 test_data = true
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
-days_gt_20 = true
+days_of_month = { first = 21, last = 31 }

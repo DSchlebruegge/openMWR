@@ -36,13 +36,17 @@ def radiosonde_data_generation():
     cut_off_at_mwr_height = False
     from openMWR.radiosonde import create_radiosonde_dataset_for_RT
     for station_id in station_ids: 
-        create_radiosonde_dataset_for_RT(site, station_id, PROJECT_DIR, std_heights, cut_off_at_mwr_height=cut_off_at_mwr_height)
+        create_radiosonde_dataset_for_RT(site, station_id, PROJECT_DIR, std_heights, cut_off_at_mwr_height=cut_off_at_mwr_height,
+            incomplete_profiles='monthly_mean',
+            cloud={'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3},
+            quality={'min_top_height': 15000, 'min_levels': 500})
 
     # ___ Step 3: Radiative Transfer Calculation ___
     ### Calculate TBs with RT models for each station.
     from openMWR.radiosonde import create_radiosonde_dataset_with_RT
     for station_id in station_ids: 
-        create_radiosonde_dataset_with_RT(station_id, site, PROJECT_DIR, std_freqs, std_angles, num_of_processes = 12)
+        create_radiosonde_dataset_with_RT(station_id, site, PROJECT_DIR, std_freqs, std_angles, num_of_processes = 12,
+            infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
 
     # ___ Step 4: Separate Training Data into Training, Test, Validation ___
     from openMWR.train import separate_training_data
@@ -62,7 +66,8 @@ def analysis_data_generation():
     ### Create an analysis dataset with Radiosonde data and hatpro data
     from openMWR.radiosonde import create_analysis_dataset
     station_ids_for_analysis = ['03715']
-    create_analysis_dataset(site, station_ids_for_analysis, PROJECT_DIR)
+    create_analysis_dataset(site, station_ids_for_analysis, PROJECT_DIR,
+        max_time_difference_minutes=10, exclude_rain=True, height_range=[0, 10000])
 
 def era5_data_generation():
 
@@ -73,8 +78,9 @@ def era5_data_generation():
     era5 = ERA5Processor(site, PROJECT_DIR, update_only=False, hour_interval=2, start_date='2025-01-01', end_date='2025-02-01')
     era5.create_original_dataset()
     era5.create_profile_dataset(std_heights)
-    era5.create_forward_calc_dataset(std_freqs, std_angles, num_of_processes=12)
-    era5.create_analysis_dataset_from_forward_calc() # Expects call of create_hatpro_dataset(site) before, to get the hatpro data for the analysis dataset.
+    era5.create_forward_calc_dataset(std_freqs, std_angles, num_of_processes=12,
+        infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    era5.create_analysis_dataset_from_forward_calc(max_time_difference_minutes=10, exclude_rain=True, height_range=[0, 10000]) # Expects call of create_hatpro_dataset(site) before, to get the hatpro data for the analysis dataset.
 
 def train():
     from openMWR.models import Model

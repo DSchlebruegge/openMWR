@@ -27,9 +27,16 @@ def recipe(project, name, **values):
         'hatpro': {'start_date': 'site', 'end_date': 'today'},
         'profiles': {'preparation': {'heights': 'levels_208_30km'}},
         'simulation': {'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
-                                              'frequencies': 'hatpro', 'angles': 'hatpro_bls'}},
+                                              'frequencies': 'hatpro', 'angles': 'hatpro_bls',
+                                              'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
+        'analysis': {'analysis': {'max_time_difference_minutes': 10, 'exclude_rain': True, 'height_range': [0, 10000]}},
         'split': {'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
     }.get(values['kind'], {})
+    if values['kind'] == 'profiles':
+        source = project / 'sites/test/datasets' / (values.get('inputs', {}).get('source', '') + '.toml')
+        if source.is_file() and tomllib.loads(source.read_text())['kind'] == 'radiosonde':
+            base['preparation'].update(incomplete_profiles='monthly_mean', cloud={'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3},
+                                       quality={'min_top_height': 15000, 'min_levels': 500})
     for key, value in base.items():
         values[key] = {**value, **values.get(key, {})} if isinstance(value, dict) else values.get(key, value)
     path = project / 'sites/test/datasets' / f'{name}.toml'
@@ -145,7 +152,11 @@ def test_invalid_graphs_fail_before_output_creation(project, values, message):
 @pytest.mark.parametrize(('name', 'section', 'key'), [
     ('source', None, 'end_year'),
     ('profiles', 'preparation', 'heights'),
+    ('profiles', 'preparation', 'cloud'),
+    ('profiles', 'preparation', 'quality'),
+    ('profiles', 'preparation', 'incomplete_profiles'),
     ('r17', 'radiative_transfer', 'absorption_model'),
+    ('r17', 'radiative_transfer', 'infrared'),
     ('training', 'split', 'seed'),
 ])
 def test_missing_scientific_choices_fail_before_processing(project, name, section, key):
@@ -520,3 +531,187 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(project,
     measured.assign(TB=measured.TB + 2).to_netcdf(dataset_file(project, 'test', 'observations'))
     workflow.build('comparison')
     np.testing.assert_allclose(xr.load_dataset(output).TB.sel(data_source='hatpro'), 102.)
+
+    measured = measured.assign_coords(time=measured_times + np.array([0, 6, 12], dtype='timedelta64[m]'))
+    measured['rain_flag'] = ('time', [0., 1., 0.])
+    for bls in (False, True):
+        (measured.expand_dims(ang=[90.0]) if bls else measured).to_netcdf(
+            dataset_file(project, 'test', 'observations', bls=bls))
+    workflow.recipe('comparison').values['analysis'].update(
+        max_time_difference_minutes=10, exclude_rain=False, height_range=[0, 1000])
+    workflow.build('comparison', rebuild=True)
+    pairs = xr.load_dataset(output)
+    np.testing.assert_array_equal(pairs.time, measured_times[:2])
+    assert pairs.height.max() == 1000
+    workflow.recipe('comparison').values['analysis'].update(
+        max_time_difference_minutes=15, exclude_rain=True, height_range=[0, 2000])
+    workflow.build('comparison', rebuild=True)
+    pairs = xr.load_dataset(output)
+    np.testing.assert_array_equal(pairs.time, measured_times[[0, 2]])
+    assert pairs.height.max() == 2000
+
+
+def test_cloud_threshold_and_adiabatic_parameters_change_liquid_water():
+    from openMWR.cloud import CloudColumn, CloudModelConfig
+    from openMWR.radiosonde import add_cloud_to_ds
+
+    heights = np.arange(0., 2100., 100.)
+    profile = xr.Dataset({'T': ('height', 285 - 0.006 * heights),
+                          'p': ('height', 1000 * np.exp(-heights / 7500)),
+                          'rh': ('height', np.where((heights >= 500) & (heights <= 1500), 97., 50.))},
+                         coords={'height': heights})
+    standard = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=253.15, adiabatic_fraction="power_law", a=0.7, b=2.3).lwc
+    assert standard.max() > 0
+    clear = add_cloud_to_ds(profile.copy(), rh_threshold=0.98, min_temperature=253.15, adiabatic_fraction="power_law", a=0.7, b=2.3).lwc
+    assert clear.max() == 0
+    halved = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=253.15, adiabatic_fraction="power_law", a=0.35, b=2.3).lwc
+    np.testing.assert_allclose(halved, standard / 2)
+    different_shape = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=253.15, adiabatic_fraction="power_law", a=0.7, b=1.0).lwc
+    assert not np.allclose(different_shape, standard)
+    karstens = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=253.15, adiabatic_fraction='karstens').lwc
+    adiabatic = CloudColumn(heights, profile.p.values * 100, profile.T.values,
+                           profile.rh.values / 100, CloudModelConfig(rh_thres=0.96, use_f_ad=False)).calculate_lwc()
+    h = np.maximum(heights - 500., 0.)
+    np.testing.assert_allclose(karstens, adiabatic * np.maximum(0., 1.239 - 0.145 * np.log(h + 1)))
+    assert not np.allclose(karstens, standard)
+    fully_adiabatic = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=253.15,
+                                    adiabatic_fraction='none').lwc
+    np.testing.assert_allclose(fully_adiabatic, adiabatic)
+    warmer_threshold = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=283.,
+                                      adiabatic_fraction='none').lwc
+    assert warmer_threshold.max() == 0
+
+
+@pytest.mark.parametrize('method', ['power_law', 'karstens'])
+@pytest.mark.parametrize('completion', ['monthly_mean', 'filter'])
+def test_profile_quality_limits_select_source_profiles_before_interpolation(project, method, completion):
+    path = project / 'sites/test/datasets/profiles.toml'
+    values = tomllib.loads(path.read_text())
+    values['preparation']['cloud']['adiabatic_fraction'] = method
+    values['preparation']['incomplete_profiles'] = completion
+    if method == 'karstens':
+        for key in ('a', 'b'):
+            del values['preparation']['cloud'][key]
+    path.write_text(tomli_w.dumps(values))
+    times = pd.date_range('2020-01-01', periods=3, freq='12h').values
+    raw = raw_profiles(times)
+    # One shallow ascent, one ascent with too few valid levels, one valid ascent.
+    raw['height'][0] = np.linspace(484, 12000, raw.sizes['meastime'])
+    raw['T'][1, 450:] = np.nan
+    path = radiosonde_year_file(project, '03715', 2020)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw.to_netcdf(path)
+    workflow = DatasetWorkflow(project, 'test')
+    workflow.build('profiles')
+    selected = xr.load_dataset(dataset_file(project, 'test', 'profiles', '03715'))
+    np.testing.assert_array_equal(selected.synop, times[2:])
+    values = workflow.recipe('profiles').values
+    values['preparation']['quality'] = {'min_top_height': 10000, 'min_levels': 400}
+    (project / 'sites/test/datasets/profiles.toml').write_text(tomli_w.dumps(values))
+    with pytest.raises(ValueError, match='scientific settings'):
+        DatasetWorkflow(project, 'test').build('profiles')
+    DatasetWorkflow(project, 'test').build('profiles', rebuild=True)
+    selected = xr.load_dataset(dataset_file(project, 'test', 'profiles', '03715'))
+    np.testing.assert_array_equal(selected.synop, times if completion == 'monthly_mean' else times[2:])
+    assert np.isfinite(selected[['T', 'p', 'rh', 'lwc']].to_array()).all()
+
+
+@pytest.mark.parametrize(('cloud', 'message'), [
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'a': 0.7, 'b': 2.3}, 'Missing .*adiabatic_fraction'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'unknown'}, "must be 'power_law', 'karstens' or 'none'"),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7}, 'Missing .*b'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'karstens', 'a': 0.7}, 'remove them for karstens'),
+])
+def test_cloud_method_choices_fail_before_processing(project, cloud, message):
+    path = project / 'sites/test/datasets/profiles.toml'
+    values = tomllib.loads(path.read_text())
+    values['preparation']['cloud'] = cloud
+    path.write_text(tomli_w.dumps(values))
+    with pytest.raises(ValueError, match=message):
+        DatasetWorkflow(project, 'test').build('profiles')
+    assert list((project / 'data/sites/test').iterdir()) == []
+
+
+@pytest.mark.parametrize('interface', ['recipe', 'python'])
+@pytest.mark.parametrize(('section', 'key', 'value'), [
+    ('cloud', 'rh_threshold', 2.0),
+    ('quality', 'min_top_height', -1),
+    ('quality', 'min_levels', 0),
+])
+def test_invalid_profile_settings_fail_before_io(project, interface, section, key, value):
+    from openMWR.radiosonde import create_radiosonde_dataset_for_RT
+
+    path = project / 'sites/test/datasets/profiles.toml'
+    values = tomllib.loads(path.read_text())
+    preparation = values['preparation']
+    preparation[section][key] = value
+    with pytest.raises(ValueError, match=rf'preparation\.{section}\.{key}'):
+        if interface == 'recipe':
+            path.write_text(tomli_w.dumps(values))
+            DatasetRecipe.load(project, 'test', 'profiles')
+        else:
+            create_radiosonde_dataset_for_RT('test', '03715', project, np.array(preparation['heights']),
+                cloud=preparation['cloud'], quality=preparation['quality'],
+                incomplete_profiles=preparation['incomplete_profiles'])
+    assert list((project / 'data/sites/test').iterdir()) == []
+
+
+def test_monthly_completion_rejects_profiles_without_upper_level_reference(project):
+    times = pd.date_range('2020-01-01', periods=2, freq='12h').values
+    raw = raw_profiles(times).isel(meastime=slice(0, 520))
+    path = radiosonde_year_file(project, '03715', 2020)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw.to_netcdf(path)
+    # Both ascents pass the source-quality checks but neither reaches the top grid level.
+    with pytest.raises(ValueError, match='No complete profiles remain for RT'):
+        DatasetWorkflow(project, 'test').build('profiles')
+    assert not dataset_file(project, 'test', 'profiles', '03715').is_file()
+
+
+@pytest.mark.parametrize('radius', [2.49, 60.0])
+def test_unsupported_infrared_radius_fails_before_processing(project, radius):
+    path = project / 'sites/test/datasets/r17.toml'
+    values = tomllib.loads(path.read_text())
+    values['radiative_transfer']['infrared']['min_effective_radius'] = radius
+    path.write_text(tomli_w.dumps(values))
+    with pytest.raises(ValueError, match='min_effective_radius must be at least 2.5 and below 60.*libRadtran'):
+        DatasetWorkflow(project, 'test').build('r17', with_dependencies=True)
+    assert list((project / 'data/sites/test').iterdir()) == []
+
+
+@pytest.mark.parametrize('radius', [2.5, 59.99])
+def test_supported_infrared_radius_allows_build_planning(project, radius):
+    path = project / 'sites/test/datasets/r17.toml'
+    values = tomllib.loads(path.read_text())
+    values['radiative_transfer']['infrared']['min_effective_radius'] = radius
+    path.write_text(tomli_w.dumps(values))
+    assert DatasetWorkflow(project, 'test').build('r17', with_dependencies=True, dry_run=True) == ['source', 'profiles', 'r17']
+
+
+@pytest.mark.parametrize('backend', ['torchMWRT', 'pyrtlib'])
+def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(project, monkeypatch, backend):
+    import openMWR.run_RT as rt
+
+    monkeypatch.setattr(rt, 'calculate_IR_band_TB', lambda *args: float(np.mean(args[-1])))
+    profiles = xr.Dataset({
+        'T': (('time', 'height'), [[285., 282., 279.], [285., 282., 279.]]),
+        'p': (('time', 'height'), [[1000., 950., 900.], [1000., 950., 900.]]),
+        'rh': (('time', 'height'), [[80., 80., 80.], [80., 80., 80.]]),
+        'lwc': (('time', 'height'), [[0., 0.5, 0.], [0., 0.5, 0.]]),
+    }, coords={'time': pd.date_range('2020-01-01', periods=2), 'height': [0., 500., 1000.]})
+    options = dict(site='test', project_dir=project, freqs=np.array([22.24]),
+                   angles=np.array([90.]), num_of_processes=1, absmdl='R20', RT_model=backend)
+    first = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    second = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 1600e6, 'min_effective_radius': 3.0})
+    cloudy_radius = (0.5 / (200e6 * 4 / 3 * np.pi * 1e6)) ** (1 / 3) * 1e6
+    np.testing.assert_allclose(first.TB_IR, (2 * 2.5 + cloudy_radius) / 3)
+    np.testing.assert_allclose(second.TB_IR, (2 * 3.0 + cloudy_radius / 2) / 3)
+    xr.testing.assert_equal(first.TB, second.TB)
+    invalid = profiles.copy(deep=True)
+    invalid['T'][0, -1] = np.nan
+    with pytest.raises(ValueError, match='RT requires complete profiles'):
+        rt.run_RT(invalid, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    invalid = profiles.copy(deep=True)
+    invalid['lwc'][0, 1] = 1.0  # At 1 cm^-3, this gives about 62 micrometres.
+    with pytest.raises(ValueError, match='Calculated droplet effective radii must be below 60.*libRadtran'):
+        rt.run_RT(invalid, **options, infrared={'droplet_number_density': 1e6, 'min_effective_radius': 2.5})

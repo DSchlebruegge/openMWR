@@ -9,3 +9,9 @@ absorption_model = "R24"
 frequencies = "hatpro"
 angles = "hatpro_bls"
 # Radiative transfer also requires a working libRadtran installation.
+
+[radiative_transfer.infrared]
+# Droplet concentration in m^-3 (200 cm^-3); minimum effective radius in micrometres.
+droplet_number_density = 200000000.0
+# libRadtran's Hu-Stamnes cloud optics require at least 2.5 micrometres.
+min_effective_radius = 2.5

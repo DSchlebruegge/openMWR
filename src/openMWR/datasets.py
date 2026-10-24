@@ -21,7 +21,8 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            era5_cache_file, project_root, radiosonde_station_dir,
                            radiosonde_year_file, site_config_file)
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
-                            require_keys, load_grid)
+                            require_keys, load_grid, check_cloud, check_profile_quality,
+                            check_analysis, check_infrared)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ _OPTIONS = {
     'profiles': ('stations', 'preparation', 'execution'),
     'simulation': ('stations', 'radiative_transfer', 'execution'),
     'split': ('stations', 'split'),
-    'analysis': ('stations',),
+    'analysis': ('stations', 'analysis'),
 }
 
 
@@ -130,10 +131,16 @@ class DatasetRecipe:
         preparation = self.values.get('preparation', {})
         check_keys(preparation, ('heights', 'cut_off_at_mwr_height', 'scale_rh_clear_sky',
                              'scale_rh_clear_sky_seed', 'scale_rh_clear_sky_fraction',
-                             'scale_rh_clear_sky_factor'), f'{self.name}.preparation')
+                             'scale_rh_clear_sky_factor', 'cloud', 'quality', 'incomplete_profiles'), f'{self.name}.preparation')
         preparation = dict(preparation)
         if kind == 'profiles':
             require_keys(preparation, ('heights',), f'{self.name}.preparation')
+        if 'cloud' in preparation:
+            check_cloud(preparation['cloud'])
+        if 'incomplete_profiles' in preparation and preparation['incomplete_profiles'] not in ('monthly_mean', 'filter'):
+            raise ValueError('preparation.incomplete_profiles must be monthly_mean or filter; RT requires complete profiles.')
+        if 'quality' in preparation:
+            check_profile_quality(preparation['quality'])
         if 'heights' in preparation:
             heights = load_grid(self.project_dir, 'heights', preparation['heights'], label='preparation.heights')
             if heights[0] != 0:
@@ -153,10 +160,13 @@ class DatasetRecipe:
                 if preparation[key] <= 0 or (key.endswith('fraction') and preparation[key] > 1):
                     raise ValueError(f'{key} must be positive; fractions cannot exceed one.')
         rt = self.values.get('radiative_transfer', {})
-        check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift'), f'{self.name}.radiative_transfer')
+        check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift', 'infrared'), f'{self.name}.radiative_transfer')
         rt = dict(rt)
         if kind == 'simulation':
-            require_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles'), f'{self.name}.radiative_transfer')
+            require_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'infrared'), f'{self.name}.radiative_transfer')
+            check_infrared(rt['infrared'])
+        if kind == 'analysis':
+            check_analysis(self.values.get('analysis', {}))
         if rt.get('backend', 'torchMWRT') not in ('torchMWRT', 'pyrtlib'):
             raise ValueError('radiative_transfer.backend must be torchMWRT or pyrtlib.')
         if 'absorption_model' in rt:
@@ -315,6 +325,7 @@ class DatasetWorkflow:
             settings['heights'] = preparation['heights']
             settings['mwr_height'] = self.site_settings['mwr_height']
             if self.source_kind(name) == 'radiosonde':
+                require_keys(preparation, ('cloud', 'quality', 'incomplete_profiles'), f'{name}.preparation')
                 if values.get('execution', {}).get('processes', 1) != 1:
                     raise ValueError(f'{name}: radiosonde preparation is serial; execution.processes applies to ERA5 profiles.')
                 settings.update(cut_off_at_mwr_height=False, scale_rh_clear_sky=False,
@@ -330,9 +341,11 @@ class DatasetWorkflow:
             settings.update(backend=rt['backend'],
                             absorption_model=rt['absorption_model'],
                             frequencies=rt['frequencies'], angles=rt['angles'],
-                            frequency_shift=rt.get('frequency_shift'), gen=self.site_settings.get('gen'))
+                            frequency_shift=rt.get('frequency_shift'), infrared=rt['infrared'], gen=self.site_settings.get('gen'))
         elif kind == 'split':
             settings.update(values['split'])
+        elif kind == 'analysis':
+            settings.update(values['analysis'])
         if self._settings_cache is not None:
             self._settings_cache[name] = settings
         return settings
@@ -568,7 +581,8 @@ class DatasetWorkflow:
             if source.kind == 'radiosonde':
                 from openMWR.radiosonde import create_radiosonde_dataset_for_RT
                 preparation = {key: settings[key] for key in ('cut_off_at_mwr_height', 'scale_rh_clear_sky',
-                               'scale_rh_clear_sky_seed', 'scale_rh_clear_sky_fraction', 'scale_rh_clear_sky_factor')}
+                               'scale_rh_clear_sky_seed', 'scale_rh_clear_sky_fraction', 'scale_rh_clear_sky_factor',
+                               'cloud', 'quality', 'incomplete_profiles')}
                 for station in self.sources(name):
                     create_radiosonde_dataset_for_RT(self.site, station, self.project_dir, np.asarray(settings['heights']),
                         dataset=name, update_only=True, first_year=source_settings['start_year'],
@@ -583,6 +597,7 @@ class DatasetWorkflow:
             options = dict(freqs=np.asarray(settings['frequencies']), angles=np.asarray(settings['angles']),
                            absmdl=settings['absorption_model'], RT_model=settings['backend'],
                            freq_shift=None if settings['frequency_shift'] is None else np.asarray(settings['frequency_shift']),
+                           infrared=settings['infrared'],
                            num_of_processes=processes)
             if self.source_kind(name) == 'radiosonde':
                 from openMWR.radiosonde import create_radiosonde_dataset_with_RT
@@ -604,8 +619,10 @@ class DatasetWorkflow:
             if self.source_kind(name) == 'radiosonde':
                 from openMWR.radiosonde import create_analysis_dataset
                 create_analysis_dataset(self.site, self.sources(name), self.project_dir,
-                    observations_dataset=observations, reference_dataset=reference, dataset=name)
+                    observations_dataset=observations, reference_dataset=reference, dataset=name,
+                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range')})
             else:
                 from openMWR.era5 import ERA5Processor
                 processor = ERA5Processor(self.site, self.project_dir, simulation_dataset=reference)
-                processor.create_analysis_dataset_from_forward_calc(observations_dataset=observations, dataset=name)
+                processor.create_analysis_dataset_from_forward_calc(observations_dataset=observations, dataset=name,
+                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range')})

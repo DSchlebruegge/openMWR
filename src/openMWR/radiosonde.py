@@ -6,8 +6,9 @@ import glob
 from typing import Optional, Sequence
 
 from openMWR.cloud import CloudColumn, CloudModelConfig
+from openMWR.config import check_cloud, check_profile_quality
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity
-from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, select_closest_times
+from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, match_analysis_data
 from openMWR.site import get_config_parameter
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
@@ -15,7 +16,7 @@ from openMWR.paths import dataset_file, radiosonde_station_dir
 
 logger = logging.getLogger(__name__)
 
-def add_cloud_to_ds(ds_date):
+def add_cloud_to_ds(ds_date, *, rh_threshold, min_temperature, adiabatic_fraction, a=None, b=None):
     """
     Add adiabatic liquid water content profile to a radiosonde slice.
 
@@ -24,18 +25,32 @@ def add_cloud_to_ds(ds_date):
     ds_date : xarray.Dataset
         Single-profile dataset containing ``height`` (m), ``T`` (K), ``rh`` (%),
         and ``p`` (hPa).
+    rh_threshold : float
+        Cloud detection threshold as an RH fraction (0..1).
+    min_temperature : float
+        Lower temperature bound for liquid cloud detection in kelvin.
+    adiabatic_fraction : {'power_law', 'karstens', 'none'}
+        Reduction applied to adiabatic liquid water content.
+    a, b : float
+        Required only for power_law: a * (1 - (h / cloud_depth) ** b).
+        Karstens uses max(0, 1.239 - 0.145 * log(h + 1)), with h in metres
+        above cloud base and the natural logarithm.
 
     Returns
     -------
     xarray.Dataset
         Dataset with additional ``lwc`` variable (g/m^3) on the ``height`` grid.
     """
+    coefficients = {key: value for key, value in (('a', a), ('b', b)) if value is not None}
+    check_cloud({'rh_threshold': rh_threshold, 'min_temperature': min_temperature,
+                 'adiabatic_fraction': adiabatic_fraction, **coefficients})
     z_m = ds_date.height.values
     T_K = ds_date.T.values
     rh_1 = ds_date.rh.values / 100
     p_Pa = ds_date.p.values * 100
 
-    config = CloudModelConfig(rh_thres=0.96)
+    config = CloudModelConfig(rh_thres=rh_threshold, min_temperature=min_temperature,
+                              use_f_ad=adiabatic_fraction != 'none', karstens=adiabatic_fraction == 'karstens', **coefficients)
     cloud_column = CloudColumn(z_m, p_Pa, T_K, rh_1, config)
     lwc_gpm3 = cloud_column.calculate_lwc()
     
@@ -177,11 +192,15 @@ def create_radiosonde_dataset_for_RT(
     last_year: Optional[int] = None,
     scale_rh_clear_sky_fraction: float = 0.1,
     scale_rh_clear_sky_factor: float = 0.2,
+    *,
+    cloud: dict,
+    quality: dict,
+    incomplete_profiles: str,
 ) -> None:
     """
     Creates a processed radiosonde dataset for the radiative transfer (RT) calculation for a given site and station.
     This function loads raw radiosonde data files for the specified station, processes and filters the profiles,
-    interpolates them to fixed heights, fills missing values with monthly means, adds derived variables, and saves
+    interpolates them to fixed heights, completes or filters incomplete profiles, adds derived variables, and saves
     the resulting dataset to a NetCDF file.
 
     Parameters
@@ -194,6 +213,15 @@ def create_radiosonde_dataset_for_RT(
         Working-project root containing data/ and sites/.
     heights: np.array
         Array of heights (in meters) to which the profiles will be interpolated.
+    cloud: dict
+        Explicit rh_threshold (fraction), adiabatic_fraction method, and a/b
+        for the power_law method only.
+    quality: dict
+        min_top_height (metres ASL) and min_levels (distinct valid levels),
+        evaluated on the source profile before rebasing and interpolation.
+    incomplete_profiles: {'monthly_mean', 'filter'}
+        Complete missing upper levels with monthly means or reject incomplete
+        profiles. Profiles still incomplete after completion are also rejected.
     update_only: bool, optional
         If True, only new profiles not already in the existing dataset will be added.
     first_year: int, optional
@@ -217,6 +245,10 @@ def create_radiosonde_dataset_for_RT(
     - Derived variables such as absolute humidity, dew point, LWP, and IWV are added.
     - Surface variables (temperature, relative humidity, pressure at ground level) are extracted.
     """
+    if incomplete_profiles not in ('monthly_mean', 'filter'):
+        raise ValueError('incomplete_profiles must be monthly_mean or filter.')
+    check_cloud(cloud)
+    check_profile_quality(quality)
     target_file = dataset_file(project_dir, site, dataset, station_id)
     target_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -287,7 +319,7 @@ def create_radiosonde_dataset_for_RT(
 
             if min_height < station_height or min_height > station_height + 15:
                 continue
-            if max_height < 15000:
+            if max_height < quality['min_top_height']:
                 continue
 
             # Filter out unrealistic height values, when meastime is less than 100 seconds
@@ -304,12 +336,12 @@ def create_radiosonde_dataset_for_RT(
             _, index = np.unique(ds_date.height.values, return_index=True)
             ds_date = ds_date.isel(height=index)
 
-            if ds_date.sizes['height'] < 500:
+            if ds_date.sizes['height'] < quality['min_levels']:
                 continue
 
             # Add adiabatic lwc
             try:
-                ds_date = add_cloud_to_ds(ds_date)
+                ds_date = add_cloud_to_ds(ds_date, **cloud)
             except Exception as e:
                 logger.error(f"Fehler bei Cloud: {ds_date.synop.values} {e}")
                 logger.debug(e, exc_info=True)
@@ -350,17 +382,21 @@ def create_radiosonde_dataset_for_RT(
         else:
             logger.warning("Requested RH scaling for clear-sky cases, but 'lwc' is missing.")
         
-    # Fill nan values with mean of month (only the above the last measured height)
-    vars_to_fill = [var for var in ds_new.data_vars if 'height' in ds_new[var].coords]
-    ds_new[vars_to_fill] = ds_new[vars_to_fill].groupby('synop.month').apply(lambda x: x.fillna(x.mean(dim='synop')))
-
-    logger.info("Filled NaN values with monthly mean")
-
-    #Warning if not all values are filled
-    for var in vars_to_fill:
-        n_nan = ds_new[var].isnull().sum().item()
-        if n_nan > 0:
-            logger.warning(f"Variable {var} still has {n_nan} NaN values after filling with monthly mean.")
+    if incomplete_profiles == 'monthly_mean':
+        vars_to_fill = [var for var in ds_new.data_vars if 'height' in ds_new[var].coords]
+        ds_new[vars_to_fill] = ds_new[vars_to_fill].groupby('synop.month').map(lambda x: x.fillna(x.mean(dim='synop')))
+        logger.info('Completed missing upper levels with monthly means.')
+    complete = np.isfinite(ds_new['T']).all('height')
+    for var in ('p', 'rh', 'lwc'):
+        complete &= np.isfinite(ds_new[var]).all('height')
+    rejected = ds_new.sizes['synop'] - int(complete.sum())
+    if rejected:
+        logger.warning('Rejected %s incomplete profiles; RT requires finite T, p, rh and lwc at every height.', rejected)
+        ds_new = ds_new.sel(synop=complete)
+        if lwc_reference is not None:
+            lwc_reference = lwc_reference.sel(synop=ds_new.synop)
+    if not ds_new.sizes['synop']:
+        raise ValueError('No complete profiles remain for RT. Review the height grid, source coverage or incomplete_profiles setting.')
 
     if scale_rh_clear_sky:
         ds_new = _scale_rh_profiles_for_clear_sky_cases(
@@ -397,7 +433,7 @@ def create_radiosonde_dataset_for_RT(
 
 def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
            freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles',
-           dataset: str = 'simulation_r20', RT_model: str = 'torchMWRT'):
+           dataset: str = 'simulation_r20', RT_model: str = 'torchMWRT', *, infrared):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -474,6 +510,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         freq_shift=freq_shift,
         absmdl=absmdl,
         RT_model=RT_model,
+        infrared=infrared,
     )
 
     ds_new = ds_new.expand_dims(station=[station_id])
@@ -501,6 +538,7 @@ def create_analysis_dataset(
     observations_dataset: str = 'hatpro',
     reference_dataset: str = 'simulation_r20',
     dataset: str = 'analysis_radiosonde',
+    *, max_time_difference_minutes, exclude_rain, height_range,
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """
     Create analysis datasets pairing Hatpro measurements with radiosonde data.
@@ -537,8 +575,9 @@ def create_analysis_dataset(
     Notes
     -----
     - Requires Hatpro datasets from `create_hatpro_dataset`.
-    - Matches times by nearest neighbor within 10 minutes and filters out
-      rainy scenes using `rain_flag`.
+    - Matches nearest times within max_time_difference_minutes and optionally
+      excludes rainy scenes using rain_flag. height_range selects profile bounds
+      in metres above the instrument before HATPRO interpolation.
     - Hatpro heights are interpolated to the radiosonde height grid for
       consistent comparisons.
     - Adds a `data_source` dimension with entries `radiosonde` and `hatpro`.
@@ -568,9 +607,6 @@ def create_analysis_dataset(
         
         raso_data = xr.load_dataset(file)
 
-        # Keep heights below 10 km
-        raso_data = raso_data.sel(height=slice(0, 10001))
-
         if from_forward_calc:
             raso_data = raso_data.sel(station=station_id, drop=True)
             raso_data = raso_data.rename(time = 'synop')
@@ -581,18 +617,11 @@ def create_analysis_dataset(
         raso_data = raso_data.rename({'starttime': 'time'})   
 
         # Select matching times
-        ds_hatpro_sel, raso_data_sel = select_closest_times(ds_hatpro, raso_data)
-        ds_hatpro_bls_sel, raso_data_bls_sel = select_closest_times(ds_hatpro_bls, raso_data)
+        ds_hatpro_sel, raso_data_sel = match_analysis_data(ds_hatpro, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
+        ds_hatpro_bls_sel, raso_data_bls_sel = match_analysis_data(ds_hatpro_bls, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
 
         if from_forward_calc:
             raso_data_sel = raso_data_sel.sel(ang=90.0, drop=True)
-
-        # Keep only non-rainy data
-        raso_data_sel = raso_data_sel.where(ds_hatpro_sel['rain_flag'] == 0.0, drop=True)
-        ds_hatpro_sel = ds_hatpro_sel.where(ds_hatpro_sel['rain_flag'] == 0.0, drop=True)
-
-        raso_data_bls_sel = raso_data_bls_sel.where(ds_hatpro_bls_sel['rain_flag'] == 0.0, drop=True)
-        ds_hatpro_bls_sel = ds_hatpro_bls_sel.where(ds_hatpro_bls_sel['rain_flag'] == 0.0, drop=True)
 
         an_data_raso_list.append(raso_data_sel.expand_dims({'station': [raso_data.attrs['station_id']]}))
         an_data_hatpro_list.append(ds_hatpro_sel.expand_dims({'station': [raso_data.attrs['station_id']]}))

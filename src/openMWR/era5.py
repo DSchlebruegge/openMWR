@@ -7,7 +7,7 @@ import tempfile
 
 from openMWR.site import get_config_parameter
 from openMWR.run_RT import run_RT
-from openMWR.xr_utils import change_coord_of_ds, add_time_data, select_closest_times
+from openMWR.xr_utils import change_coord_of_ds, add_time_data, match_analysis_data
 from openMWR.parallel import run_pool
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.radiosonde import add_derived_data
@@ -179,7 +179,7 @@ class ERA5Processor:
         return new
 
     def create_forward_calc_dataset(self, freqs, angles, num_of_processes=10,
-                                    freq_shift=None, absmdl='R17', RT_model='torchMWRT'):
+                                    freq_shift=None, absmdl='R17', RT_model='torchMWRT', *, infrared):
         """Run RT only for prepared profiles missing from this simulation."""
         if not self.profile_file.is_file():
             raise FileNotFoundError(f'ERA5 prepared profiles missing: {self.profile_file}')
@@ -193,14 +193,15 @@ class ERA5Processor:
             raise ValueError('No prepared ERA5 profiles available for RT.')
         new = run_RT(profiles, self.site, self.project_dir, freqs, angles,
                      num_of_processes=num_of_processes, freq_shift=freq_shift,
-                     absmdl=absmdl, RT_model=RT_model)
+                     absmdl=absmdl, RT_model=RT_model, infrared=infrared)
         if old is not None:
             new = xr.concat([old, new], dim='time').sortby('time')
         self.forward_calc_file.parent.mkdir(parents=True, exist_ok=True)
         new.to_netcdf(self.forward_calc_file)
         return new
 
-    def create_analysis_dataset_from_forward_calc(self, save=True, observations_dataset='hatpro', dataset='analysis_era5'):
+    def create_analysis_dataset_from_forward_calc(self, save=True, observations_dataset='hatpro', dataset='analysis_era5',
+                                                  *, max_time_difference_minutes, exclude_rain, height_range):
         """
         Create an analysis dataset by matching HATPRO measurements with
         forward-calculated ERA5 brightness temperatures and profiles.
@@ -220,7 +221,8 @@ class ERA5Processor:
         Notes
         -----
         - Matches ERA5 times with HATPRO measurements using nearest timestamps.
-        - Removes rainy cases based on ``rain_flag`` in HATPRO data.
+        - Applies the explicit max_time_difference_minutes, exclude_rain and
+          height_range choices shared with radiosonde analysis.
         - Merges ERA5 and HATPRO profiles into a joint dataset with dimension
           ``data_source = ['era5', 'hatpro']``.
         """
@@ -236,22 +238,12 @@ class ERA5Processor:
             raise FileNotFoundError("ERA5 forward calculation dataset missing. Run create_forward_calc_dataset first.")
         ds_era5 = xr.load_dataset(self.forward_calc_file).dropna(dim='time')
 
-        # Select only heights up to 10km
-        ds_era5 = ds_era5.sel(height=slice(0, 10001))
-
         # Select closest times
-        ds_hatpro_sel, ds_era5_sel = select_closest_times(ds_hatpro, ds_era5)
-        ds_hatpro_bls_sel, ds_era5_bls_sel = select_closest_times(ds_hatpro_bls, ds_era5)
+        ds_hatpro_sel, ds_era5_sel = match_analysis_data(ds_hatpro, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
+        ds_hatpro_bls_sel, ds_era5_bls_sel = match_analysis_data(ds_hatpro_bls, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
 
         # Select only 90 degree angle
         ds_era5_sel = ds_era5_sel.sel(ang=90.0, drop=True)
-
-        # Select only dates where rain_flag is 0
-        ds_era5_sel = ds_era5_sel.where(ds_hatpro_sel['rain_flag'] == 0.0, drop=True)
-        ds_hatpro_sel = ds_hatpro_sel.where(ds_hatpro_sel['rain_flag'] == 0.0, drop=True)
-
-        ds_era5_bls_sel = ds_era5_bls_sel.where(ds_hatpro_bls_sel['rain_flag'] == 0.0, drop=True)
-        ds_hatpro_bls_sel = ds_hatpro_bls_sel.where(ds_hatpro_bls_sel['rain_flag'] == 0.0, drop=True)
 
         # Change height coordinate
         if 'height' in ds_hatpro_sel.dims:

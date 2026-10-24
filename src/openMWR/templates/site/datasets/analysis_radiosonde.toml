@@ -3,3 +3,9 @@ kind = "analysis"
 [inputs]
 observations = "hatpro"
 reference = "simulation"
+
+[analysis]
+max_time_difference_minutes = 10
+exclude_rain = true
+# Profile heights in metres above the instrument.
+height_range = [0, 10000]
