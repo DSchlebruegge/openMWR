@@ -59,6 +59,8 @@ doy_cos = { low = 0.05, high = 0.5 }
 doy_sin = { low = 0.05, high = 0.5 }
 
 [optimization]
+# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
+# Both date bounds include the entire day.
 seed = 42
 days_of_month = { first = 1, last = 20 }
 score_weights = { T = 1.0, rh = 0.1 }
@@ -67,6 +69,8 @@ data_source = "radiosonde"
 dataset = "analysis_radiosonde"
 
 [evaluation]
+# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
+# Both date bounds include the entire day.
 # Height bounds in metres; "model" selects the full model grid.
 observation_height_range = [0, 10000]
 test_height_range = "model"

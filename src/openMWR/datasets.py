@@ -24,7 +24,7 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            radiosonde_year_file, site_config_file)
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
                             require_keys, load_grid, check_cloud, check_profile_quality,
-                            check_analysis, check_infrared)
+                            check_analysis, check_infrared, check_time_selection, check_split_days, TIME_SELECTION_KEYS)
 
 logger = logging.getLogger(__name__)
 
@@ -203,16 +203,11 @@ class DatasetRecipe:
             for value in shifts:
                 check_number(value, 'radiative_transfer.frequency_shift')
         split = self.values.get('split', {})
-        check_keys(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
+        check_keys(split, ('test_days_of_month', 'validation_days_of_month', *TIME_SELECTION_KEYS), f'{self.name}.split')
+        check_time_selection(split, f'{self.name}.split')
         if kind == 'split':
-            require_keys(split, ('test_fraction', 'validation_fraction', 'seed'), f'{self.name}.split')
-        for key in ('test_fraction', 'validation_fraction'):
-            if key in split:
-                check_number(split[key], f'split.{key}', 0)
-                if split[key] >= 1:
-                    raise ValueError(f'split.{key} must be smaller than one.')
-        if 'seed' in split:
-            check_number(split['seed'], 'split.seed', 0, integer=True)
+            require_keys(split, ('test_days_of_month', 'validation_days_of_month'), f'{self.name}.split')
+            check_split_days(split['test_days_of_month'], split['validation_days_of_month'])
         observations = self.values.get('observations', {})
         check_keys(observations, ('import_retrieval_data',), f'{self.name}.observations')
         if 'import_retrieval_data' in observations and type(observations['import_retrieval_data']) is not bool:
@@ -703,8 +698,9 @@ class DatasetWorkflow:
         elif kind == 'split':
             from openMWR.train import separate_training_data
             separate_training_data(self.site, self.sources(name), self.project_dir,
-                simulation_dataset=recipe.inputs['simulation'], dataset=name, update_only=True,
-                test_fraction=settings['test_fraction'], val_fraction=settings['validation_fraction'], seed=settings['seed'])
+                simulation_dataset=recipe.inputs['simulation'], dataset=name,
+                test_days_of_month=settings['test_days_of_month'], validation_days_of_month=settings['validation_days_of_month'],
+                **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         elif kind == 'analysis':
             # Matching uses both inputs, so regenerate when either input changes.
             observations, reference = recipe.inputs['observations'], recipe.inputs['reference']

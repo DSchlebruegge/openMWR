@@ -1,7 +1,6 @@
 """Validated, editable recipes for named retrievals in a working project."""
 
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from importlib.resources import files
 import tomllib
@@ -9,7 +8,7 @@ import tomllib
 from openMWR.config import (TRAINING_PARAMETERS, check_keys,
                             check_number, check_name, check_strings, check_coordinates,
                             validate_parameter_usage, resolve_parameter, input_noise_parameters,
-                            require_keys, load_grid, apply_seed, check_seed, check_days,
+                            require_keys, load_grid, apply_seed, check_seed, check_time_selection, TIME_SELECTION_KEYS,
                             check_score_weights, check_height_range)
 from openMWR.paths import project_root, retrieval_dir, site_config_file
 
@@ -124,7 +123,7 @@ class RetrievalRecipe:
             raise ValueError("model.norm_functions must map variables to supported normalization functions.")
 
         data = self.section("data")
-        check_keys(data, ('dataset', 'sources', 'end_date_training'), 'data')
+        check_keys(data, ('dataset', 'sources'), 'data')
         check_name(data.get('dataset'), 'data.dataset')
         if 'sources' in data:
             check_strings(data['sources'], 'data.sources')
@@ -132,10 +131,6 @@ class RetrievalRecipe:
                 raise ValueError('data.sources must not be empty.')
             for source in data['sources']:
                 check_name(source, 'data.sources')
-        if 'end_date_training' in data:
-            if not isinstance(data['end_date_training'], str):
-                raise ValueError('data.end_date_training must be a quoted ISO date.')
-            date.fromisoformat(data['end_date_training'])
         check_keys(self.section("training"), TRAINING_PARAMETERS, "training")
         validate_parameter_usage(model["kind"] == "mlr", self.section("training"), complete=True)
         for key, value in self.section("training").items():
@@ -151,11 +146,11 @@ class RetrievalRecipe:
         for key, value in noise.items():
             if key == "method":
                 continue
-            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor", "days_of_month"):
+            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor", *TIME_SELECTION_KEYS):
                 resolve_parameter(value, f"input_noise_{key}", f"input_noise.{key}")
         if method == "omb":
-            require_keys(noise, ('data_source', 'dataset', 'factor', 'days_of_month'), 'input_noise')
-            check_days(noise['days_of_month'], 'input_noise.days_of_month')
+            require_keys(noise, ('data_source', 'dataset', 'factor'), 'input_noise')
+            check_time_selection(noise, 'input_noise')
             _check_reference(noise, 'input_noise')
             if "sources" in noise:
                 check_strings(noise["sources"], "input_noise.sources")
@@ -163,10 +158,10 @@ class RetrievalRecipe:
                 raise ValueError("input_noise.factor does not support a search; use a fixed OMB scaling factor.")
             check_number(noise["factor"], "input_noise.factor", 0)
         bias = self.section("bias_correction")
-        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs", "days_of_month"), "bias_correction")
+        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs", *TIME_SELECTION_KEYS), "bias_correction")
         if 'bias_correction' in self.values:
-            require_keys(bias, ('data_source', 'dataset', 'factor', 'days_of_month'), 'bias_correction')
-            check_days(bias['days_of_month'], 'bias_correction.days_of_month')
+            require_keys(bias, ('data_source', 'dataset', 'factor'), 'bias_correction')
+            check_time_selection(bias, 'bias_correction')
             _check_reference(bias, 'bias_correction')
             check_number(bias["factor"], "bias_correction.factor")
             if "sources" in bias:
@@ -174,24 +169,23 @@ class RetrievalRecipe:
             if "specific_freqs" in bias:
                 check_coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
         optimization = self.section("optimization")
-        check_keys(optimization, ("n_trials", "data_source", "dataset", "seed", "score_weights", "days_of_month"), "optimization")
+        check_keys(optimization, ("n_trials", "data_source", "dataset", "seed", "score_weights", *TIME_SELECTION_KEYS), "optimization")
         if any(isinstance(value, dict) for key, value in (*self.section('training').items(), *noise.items()) if key != 'days_of_month'):
-            require_keys(optimization, ('n_trials', 'data_source', 'dataset', 'seed', 'score_weights', 'days_of_month'), 'optimization')
+            require_keys(optimization, ('n_trials', 'data_source', 'dataset', 'seed', 'score_weights'), 'optimization')
         if "n_trials" in optimization:
             check_number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)
         _check_reference(optimization, 'optimization')
         if 'seed' in optimization:
             check_seed(optimization['seed'], 'optimization.seed')
-        if 'days_of_month' in optimization:
-            check_days(optimization['days_of_month'], 'optimization.days_of_month')
+        check_time_selection(optimization, 'optimization')
         if 'score_weights' in optimization:
             check_score_weights(optimization['score_weights'], ('TB',) if model['kind'] == 'spectral' else ('T', 'rh', 'lwc', 'lwp', 'iwv'))
         evaluation = self.section("evaluation")
-        check_keys(evaluation, ("data_source", "dataset", "days_of_month", "station_id", "observations", "test_data", "observation_height_range", "test_height_range"), "evaluation")
+        check_keys(evaluation, ("data_source", "dataset", *TIME_SELECTION_KEYS, "station_id", "observations", "test_data", "observation_height_range", "test_height_range"), "evaluation")
         if 'evaluation' in self.values:
             require_keys(evaluation, ('observations', 'test_data'), 'evaluation')
             if evaluation['observations']:
-                require_keys(evaluation, ('data_source', 'dataset', 'days_of_month'), 'evaluation')
+                require_keys(evaluation, ('data_source', 'dataset'), 'evaluation')
                 if model['kind'] != 'spectral':
                     require_keys(evaluation, ('observation_height_range',), 'evaluation')
             if evaluation['test_data'] and model['kind'] != 'spectral':
@@ -200,8 +194,7 @@ class RetrievalRecipe:
             if key in evaluation:
                 check_height_range(evaluation[key], f'evaluation.{key}', allow_model=True)
         _check_reference(evaluation, 'evaluation')
-        if 'days_of_month' in evaluation:
-            check_days(evaluation['days_of_month'], 'evaluation.days_of_month')
+        check_time_selection(evaluation, 'evaluation')
         for key in ("observations", "test_data"):
             if key in evaluation and type(evaluation[key]) is not bool:
                 raise ValueError(f"evaluation.{key} must be true or false.")
@@ -245,7 +238,7 @@ class RetrievalRecipe:
     def input_noise_params(self, workflow):
         """Resolve complete fixed/search noise settings; OMB supplies TB noise."""
         settings = self.section("input_noise")
-        metadata = {"method", "data_source", "dataset", "sources", "factor", "days_of_month"} if settings["method"] == "omb" else {"method"}
+        metadata = {"method", "data_source", "dataset", "sources", "factor", *TIME_SELECTION_KEYS} if settings["method"] == "omb" else {"method"}
         noise = {key: value for key, value in settings.items() if key not in metadata}
         if "TB" in noise:
             tb = noise.pop("TB")

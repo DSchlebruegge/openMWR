@@ -43,6 +43,8 @@ doy_cos = 0.2
 doy_sin = 0.2
 
 [evaluation]
+# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
+# Both date bounds include the entire day.
 # Height bounds in metres; "model" selects the full model grid.
 observation_height_range = [0, 10000]
 test_height_range = "model"

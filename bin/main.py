@@ -51,7 +51,9 @@ def radiosonde_data_generation():
     # ___ Step 4: Separate Training Data into Training, Test, Validation ___
     from openMWR.train import separate_training_data
     for station_id in station_ids: 
-        separate_training_data(site, station_id, PROJECT_DIR)
+        separate_training_data(site, station_id, PROJECT_DIR,
+            test_days_of_month={'first': 1, 'last': 3},
+            validation_days_of_month={'first': 15, 'last': 17})
 
 def analysis_data_generation():
 
@@ -88,13 +90,12 @@ def train():
 
     site = 'munich_G5'
     sources = ['03715'] # ['era5']
-    end_date_training = '2024-10-31' #Use data until the end of October for training, so that the data from November can be used for evaluation.
     device = "cuda" 
 
     model = Model('NN', std_heights, std_freqs, is_bls_model=False, is_MLR=False)
 
     workflow = TrainingWorkflow(model, site, device, PROJECT_DIR)
-    workflow.load_training_data(sources, end_date_training)
+    workflow.load_training_data(sources, dataset='training')
     workflow.add_standard_training_hyper_params()
     workflow.train()
 
@@ -105,13 +106,12 @@ def train_SPC_model():
 
     site = 'munich_G5'
     sources = ['03715']
-    end_date_training = '2024-10-31'
     device = "cuda" 
 
     spc = SpectralConsistencyModel('SPC', std_freqs)
 
     workflow = TrainingWorkflow(spc, site, device, PROJECT_DIR)
-    workflow.load_training_data(sources, end_date_training)
+    workflow.load_training_data(sources, dataset='training')
 
     nn_model = 'NN'
     workflow.get_hyper_params_from_existing_model(nn_model)

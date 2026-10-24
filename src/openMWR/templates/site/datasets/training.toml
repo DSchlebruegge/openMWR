@@ -4,8 +4,9 @@ kind = "split"
 simulation = "simulation"
 
 [split]
-test_fraction = 0.1
-# Fraction of the remaining samples after the test split:
-validation_fraction = 0.1
-seed = 42
-# Updates preserve existing split membership.
+# Optional date bounds select the pool before training/validation/test assignment.
+# Choose a period before observations used for optimization/evaluation.
+# start_date = "1990-01-01"
+# end_date = "2024-10-31"  # includes the entire day
+test_days_of_month = { first = 1, last = 3 }
+validation_days_of_month = { first = 15, last = 17 }

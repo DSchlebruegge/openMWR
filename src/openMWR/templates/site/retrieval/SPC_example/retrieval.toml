@@ -31,6 +31,8 @@ method = "standard"
 TB = 0.5
 
 [evaluation]
+# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
+# Both date bounds include the entire day.
 observations = true
 test_data = true
 data_source = "radiosonde"

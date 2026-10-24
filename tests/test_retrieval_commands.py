@@ -95,7 +95,7 @@ station_id = "03715"
                                                  'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0],
                                                  'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
         dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r20'},
-                      'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
+                      'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},
     }.items():
         (tmp_path / f'sites/test/datasets/{name}.toml').write_text(tomli_w.dumps(definition))
     for name in (dataset_name, 'analysis_radiosonde', 'analysis_era5'):
@@ -223,7 +223,7 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
     assert load_model('example', 'test', tmp_path).training_metadata is None
     analysis = evaluate_retrieval(tmp_path, 'test', 'example', days_of_month={'first': 21, 'last': 31}, observation_height_range=[0, 10000], test_height_range='model')
     assert len(analysis.evaluations) == 2
-    with pytest.raises(ValueError, match='days_of_month explicitly'):
+    with pytest.raises(ValueError, match='observation_height_range explicitly'):
         validate_evaluation(tmp_path, 'test', 'example')
 
 
@@ -383,10 +383,13 @@ def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
     custom = tmp_path / 'data/sites/test/custom_analysis/zenith.nc'
     custom.parent.mkdir()
     (tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc').rename(custom)
-    result = command(tmp_path, 'train', '-t', '2', '-D', 'cpu', '--data-source', 'radiosonde', '--dataset', 'custom_analysis')
+    result = command(tmp_path, 'train', '-t', '2', '-D', 'cpu', '--data-source', 'radiosonde', '--dataset', 'custom_analysis',
+                     '-s', '2024-01-11', '-e', '2024-01-12')
     assert 'Optimizing example (trial budget: 2, reference: radiosonde)' in result.stderr
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
     assert len(study.trials) == 2
+    assert study.user_attrs['openMWR_experiment']['optimization']['start_date'] == '2024-01-11'
+    assert study.user_attrs['openMWR_experiment']['optimization']['end_date'] == '2024-01-12'
     assert 'lr_height' in study.best_params
     assert study.best_params['batch_size'] in [2, 4]
     assert type(study.best_params['epoch_max_lr']) is int
@@ -397,7 +400,8 @@ def test_train_command_optimizes_training_search_and_honors_overrides(tmp_path):
     search_line = next(line for line in result.stderr.splitlines() if 'Search training.weight_decay:' in line)
     assert 'low=1e-08' in search_line and 'high=0.0001' in search_line and 'log=True' in search_line
     assert 'Training sources:' in result.stderr and 'Fitting: MAE' in result.stderr
-    assert "days of month: {'first': 1, 'last': 20}" in result.stderr
+    assert "'days_of_month': {'first': 1, 'last': 20}" in result.stderr
+    assert "'end_date': '2024-01-12'" in result.stderr
     assert 'Optimization score (separate from fitting loss)' in result.stderr
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
 
@@ -606,9 +610,12 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     settings = tomllib.loads(recipe.read_text())
     settings['model']['freqs'] = 'hatpro'
     settings.pop('optimization')
-    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0, 'days_of_month': {'first': 1, 'last': 20}}
+    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0,
+                               'start_date': '2024-01-11', 'end_date': '2024-01-21',
+                               'days_of_month': {'first': 1, 'last': 20}}
     recipe.write_text(tomli_w.dumps(settings))
     first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_array_equal(first.omb.diff.time.values, data.time.values[1:3])
     settings['input_noise']['factor'] = 2.0
     recipe.write_text(tomli_w.dumps(settings))
     second = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
@@ -625,6 +632,56 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     assert overridden.hyper_params['input_noise_TB_23.04'] == second.hyper_params['input_noise_TB_23.04']
     assert overridden.requires_optimization
     assert not (recipe.parent / 'model.pth').exists()
+
+
+def test_observation_periods_are_shared_by_bias_optimization_and_evaluation(tmp_path):
+    import tomllib
+    import tomli_w
+    from openMWR.predict import run_model_list
+
+    recipe, data = project(tmp_path)
+    path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
+    paired = xr.load_dataset(path)
+    times = paired.time.values.copy()
+    times[2] = np.datetime64('2024-01-12T23:59:59.999999999')
+    times[4] = np.datetime64('2024-01-22T23:59:59.999999999')
+    paired = paired.assign_coords(time=times)
+    paired['TB'].loc[{'data_source': 'hatpro'}] += xr.DataArray(np.arange(6), dims='time', coords={'time': times})
+    future = paired.assign(T=paired.T + 50).assign_coords(time=times + np.timedelta64(366, 'D'))
+    # Unrelated years are present in the same reusable analysis dataset.
+    xr.concat([paired, future], dim='time').to_netcdf(path)
+    selection = {'start_date': '2024-01-11', 'end_date': '2024-01-22',
+                 'days_of_month': {'first': 12, 'last': 22}}
+    settings = tomllib.loads(recipe.read_text())
+    settings['bias_correction'] = dict(data_source='radiosonde', dataset='analysis_radiosonde', factor=0.5, **selection)
+    settings['optimization'].update(selection, score_weights={'T': 1.0, 'rh': 0.0})
+    settings['evaluation'].update(selection)
+    recipe.write_text(tomli_w.dumps(settings))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_array_equal(workflow.omb.diff.time.values, times[[2, 3, 4]])
+    np.testing.assert_allclose(workflow.hyper_params['mean_bias'], [1.5, 1.5])
+    study = workflow.optimize(n_trials=1)
+    model = load_model('example', 'test', tmp_path)
+    selected = paired.isel(time=[2, 3, 4])
+    predicted = run_model_list([model], selected.sel(data_source='hatpro', drop=True), 'cpu')
+    residual = predicted.T - selected.sel(data_source='radiosonde', drop=True).T
+    expected = np.sqrt((residual ** 2).mean(('time', 'station'))).mean().item()
+    assert study.best_value == pytest.approx(expected)
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='continue', end_date='2024-01-21')
+    analysis = evaluate_retrieval(tmp_path, 'test', 'example')
+    assert analysis.evaluations[0].samples['time_coordinates'] == 3
+    assert analysis.evaluations[1].samples['time_coordinates'] == data.time.size
+    assert analysis.metadata['filters']['observation_end_date'] == '2024-01-22'
+    selected_cli = command(tmp_path, 'evaluate', '-s', '2024-01-22', '-e', '2024-01-22', '--days-of-month', '1', '31')
+    assert '2024-01-22 through 2024-01-22 (inclusive)' in Path(selected_cli.stdout.strip()).read_text()
+    # A year/date selection can be used without any monthly filter.
+    settings['optimization'].pop('days_of_month')
+    settings['evaluation'].pop('days_of_month')
+    recipe.write_text(tomli_w.dumps(settings))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    workflow.validate_optimization()
+    assert evaluate_retrieval(tmp_path, 'test', 'example').evaluations[0].samples['time_coordinates'] == 4
 
 
 def test_training_seed_controls_initialization_and_training_noise(tmp_path, monkeypatch):

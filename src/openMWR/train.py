@@ -24,7 +24,8 @@ from openMWR.provenance import plain_value, retrieval_log, software_identity, ut
 from openMWR.config import (TRAINING_PARAMETERS, check_keys, check_name, require_keys,
                             training_parameters, input_noise_parameters, resolve_parameter,
                             validate_training_settings, validate_parameter_usage,
-                            check_seed, apply_seed, check_days, select_days, check_score_weights)
+                            check_seed, apply_seed, check_time_selection, check_split_days, select_time,
+                            TIME_SELECTION_KEYS, check_score_weights)
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class TrainingWorkflow:
                       loss_weights={'T': profile_weights, 'rh': profile_weights,
                                     'lwc': profile_weights, 'lwp': 1., 'iwv': 1.})
         workflow = TrainingWorkflow(model, site='munich', device='cuda', project_dir='.')
-        workflow.load_training_data(['03715'], end_date_training='2024-10-31')
+        workflow.load_training_data(['03715'], dataset='training')
 
     Training a model with default hyperparameters and input noise:
 
@@ -169,7 +170,6 @@ class TrainingWorkflow:
         processing before calling train() or optimize().
         """
         from openMWR.recipes import RetrievalRecipe
-        from openMWR.datasets import DatasetWorkflow
 
         recipe = RetrievalRecipe.load(project_dir, site, retrieval)
         workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
@@ -181,21 +181,19 @@ class TrainingWorkflow:
         noise = recipe.input_noise_params(workflow)
         workflow.add_input_noise_params(**noise)
         data = recipe.section('data')
-        DatasetWorkflow(recipe.project_dir, site).require(
-            data['dataset'], sources=data.get('sources'), splits=('training', 'validation'))
-        workflow.load_training_data(sources=data.get('sources'),
-                                    end_date_training=data.get('end_date_training'),
-                                    dataset=data['dataset'])
+        workflow.load_training_data(sources=data.get('sources'), dataset=data['dataset'])
         bias = recipe.section('bias_correction')
         if bias:
             sources = bias.get('sources', workflow.hyper_params['station_ids'])
-            workflow.make_omb_analysis(sources, data_source=bias['data_source'], dataset=bias['dataset'], days_of_month=bias['days_of_month'])
+            workflow.make_omb_analysis(sources, data_source=bias['data_source'], dataset=bias['dataset'],
+                **{key: bias[key] for key in TIME_SELECTION_KEYS if key in bias})
             workflow.make_bias_correction(factor=bias['factor'], specific_freqs=bias.get('specific_freqs'))
         if method == 'omb':
             source = noise_settings['data_source']
             sources = noise_settings.get('sources', workflow.hyper_params['station_ids'])
-            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings['dataset'] or workflow.omb.days_of_month != noise_settings['days_of_month']:
-                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings['dataset'], days_of_month=noise_settings['days_of_month'])
+            selection = {key: noise_settings[key] for key in TIME_SELECTION_KEYS if key in noise_settings}
+            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings['dataset'] or workflow.omb.selection != selection:
+                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings['dataset'], **selection)
             workflow.select_omb_input_noise_hyper_params(factor=noise_settings['factor'])
             workflow.hyper_params.update({f'input_noise_{key}': value for key, value in noise.items()})
         workflow.validate()
@@ -276,17 +274,17 @@ class TrainingWorkflow:
     def _log_training_setup(self, optimization=None):
         """Record the actual fitting data and the separate trial-ranking rule."""
         setup = {'training_sources': self.hyper_params.get('sources', self.hyper_params.get('station_ids', [])),
-                 'training_cutoff': self.hyper_params.get('end_date_training'),
+                 'training_selection': self.hyper_params.get('training_selection', {}),
                  'training_dataset': self.hyper_params.get('training_dataset', 'training'),
                  'fitting': 'ordinary least squares with input-noise repeats' if self.model.is_MLR else self.hyper_params['loss_fn']}
-        self.logger.info('Training sources: %s; cutoff: %s; dataset: %s.', setup['training_sources'], setup['training_cutoff'] or 'none', setup['training_dataset'])
+        self.logger.info('Training sources: %s; selection: %s; dataset: %s.', setup['training_sources'], setup['training_selection'], setup['training_dataset'])
         self.logger.info('Fitting: %s.', setup['fitting'])
         if optimization is not None:
             score = f"sum of variable weights {optimization['score_weights']} times mean RMSE"
             if hasattr(self.model, 'loss_weights'):
                 score += ', with model height weights on the full height grid'
             setup['optimization'] = {**optimization, 'score': score}
-            self.logger.info('Optimization reference: %s; days of month: %s; all stations in the analysis dataset.', optimization['data_source'], optimization['days_of_month'])
+            self.logger.info('Optimization reference: %s; time selection: %s; all stations in the analysis dataset.', optimization['data_source'], {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization})
             self.logger.info('Optimization score (separate from fitting loss): %s.', score)
         self._run_record['setup'] = plain_value(setup)
 
@@ -295,17 +293,19 @@ class TrainingWorkflow:
         self._optimization_inputs(data_source=data_source, dataset=dataset, **options)
         return self
 
-    def _optimization_inputs(self, *, n_trials=None, data_source=None, dataset=None, seed=None, days_of_month=None, score_weights=None):
+    def _optimization_inputs(self, *, n_trials=None, data_source=None, dataset=None, seed=None,
+                             start_date=None, end_date=None, days_of_month=None, score_weights=None):
         """Load, select and validate the reference data used to rank trials."""
         self.validate()
         options = {'n_trials': n_trials, 'data_source': data_source, 'dataset': dataset,
-                   'seed': seed, 'days_of_month': days_of_month, 'score_weights': score_weights}
+                   'seed': seed, 'start_date': start_date, 'end_date': end_date,
+                   'days_of_month': days_of_month, 'score_weights': score_weights}
         settings = dict(self.recipe.section('optimization') if self.recipe is not None else self._standard_recipe(optimization=True)['optimization'])
         settings.update({key: value for key, value in options.items() if value is not None})
         if not self.requires_optimization:
             raise ValueError('Optimization needs a search definition in training or input_noise: use low/high or choices on a parameter.')
         check_seed(settings['seed'], 'optimization.seed')
-        check_days(settings['days_of_month'], 'optimization.days_of_month')
+        check_time_selection(settings, 'optimization')
         check_score_weights(settings['score_weights'], self.model.output.data_vars)
         if type(settings['n_trials']) is not int or settings['n_trials'] < 1:
             raise ValueError('n_trials must be a positive integer.')
@@ -317,7 +317,7 @@ class TrainingWorkflow:
         if not path.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
         data = xr.load_dataset(path)
-        data = select_days(data, settings['days_of_month'])
+        data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         if not self.model.is_bls_model and 'ang' in data.dims:
             data = data.sel(ang=90, drop=True)
         validate_model_data(self.model.input, data.sel(data_source='hatpro', drop=True), 'optimization observations')
@@ -325,7 +325,7 @@ class TrainingWorkflow:
         validate_model_data(self.model.output[variables], data.sel(data_source=source, drop=True), 'optimization reference')
         return settings, data
 
-    def load_training_data(self, sources: List[str] = None, end_date_training: str = None, dataset: str = 'training'):
+    def load_training_data(self, sources: List[str] = None, dataset: str = 'training'):
         """
         Load and prepare training and validation data for the retrieval model.
 
@@ -334,11 +334,9 @@ class TrainingWorkflow:
         sources : list of str
             List of data sources used for training (e.g., radiosonde station IDs
             and optionally 'era5').
-        end_date_training : str, optional
-            ISO-format date string (YYYY-MM-DD). If provided, data occurring
-            after this date is excluded from both training and validation sets.
         dataset : str, optional
-            Named split dataset. Omitted sources use all sources in its recipe.
+            Named split dataset, including its training period. Omitted sources
+            use all sources in its recipe.
 
         Notes
         -----
@@ -346,11 +344,14 @@ class TrainingWorkflow:
         - For non-BLS models, selects only 90° elevation angle if present.
         - Stores datasets in `training_data` and `validation_data`.
         """
+        from openMWR.datasets import DatasetWorkflow
+        datasets = DatasetWorkflow(self.project_dir, self.site)
+        datasets.require(dataset, sources=sources, splits=('training', 'validation'))
         if sources is None:
-            from openMWR.datasets import DatasetWorkflow
-            sources = DatasetWorkflow(self.project_dir, self.site).sources(dataset)
+            sources = datasets.sources(dataset)
+        settings = datasets.settings(dataset)
         self.hyper_params.update({
-            'end_date_training': end_date_training,
+            'training_selection': {key: settings[key] for key in (*TIME_SELECTION_KEYS, 'test_days_of_month', 'validation_days_of_month') if key in settings},
             'sources': sources,
             'training_dataset': dataset,
             'station_ids': [s for s in sources if s != 'era5']
@@ -358,11 +359,6 @@ class TrainingWorkflow:
 
         self.training_data = load_combined_dataset(self.site, self.project_dir, 'training', sources, dataset=dataset)
         self.validation_data = load_combined_dataset(self.site, self.project_dir, 'validation', sources, dataset=dataset)
-
-        if end_date_training is not None:
-            # Filter the training data to only include data before the end date
-            self.training_data = self.training_data.sel(time=slice(None, np.datetime64(end_date_training)))
-            self.validation_data = self.validation_data.sel(time=slice(None, np.datetime64(end_date_training)))
 
         #self.training_data = add_negativ_lwp(self.training_data)
         #self.validation_data = add_negativ_lwp(self.validation_data)
@@ -518,7 +514,8 @@ class TrainingWorkflow:
                     for key, value in parameters.items()}
         self.change_hyper_params(**resolved)
 
-    def make_omb_analysis(self, station_ids_for_analysis, data_source='radiosonde', dataset=None, *, days_of_month):
+    def make_omb_analysis(self, station_ids_for_analysis, data_source='radiosonde', dataset=None, *,
+                          start_date=None, end_date=None, days_of_month=None):
         """
         Create and process an OMB (observation-minus-background) analysis.
 
@@ -531,12 +528,13 @@ class TrainingWorkflow:
 
         Notes
         -----
-        - Selects the explicit inclusive days_of_month range.
+        - Intersects optional date bounds and an inclusive days_of_month range.
         - Computes mean and standard deviation of OMB differences.
         """
         from openMWR.omb import Omb_Analysis
 
-        check_days(days_of_month)
+        selection = {key: value for key, value in dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month).items() if value is not None}
+        check_time_selection(selection, 'OMB selection')
         self.omb = Omb_Analysis(
             self.site,
             self.project_dir,
@@ -546,8 +544,10 @@ class TrainingWorkflow:
             dataset=dataset,
         )
 
-        self.omb.days_of_month = dict(days_of_month)
-        self.omb.diff = select_days(self.omb.diff, days_of_month)
+        self.omb.selection = selection
+        self.omb.diff = select_time(self.omb.diff, **selection)
+        if not self.omb.diff.sizes.get('time', 0):
+            raise ValueError('No OMB observations remain after time selection.')
         self.omb.calc_mean_std()
 
     def make_bias_correction(self, specific_freqs=None, factor=None):
@@ -1072,7 +1072,8 @@ class TrainingWorkflow:
             return value
 
     @_logged_run('optimize')
-    def optimize(self, n_trials=None, data_source=None, run_mode=None, dataset=None, *, seed=None, days_of_month=None, score_weights=None):
+    def optimize(self, n_trials=None, data_source=None, run_mode=None, dataset=None, *, seed=None,
+                 start_date=None, end_date=None, days_of_month=None, score_weights=None):
         """
         Perform hyperparameter optimization using Optuna.
 
@@ -1097,7 +1098,8 @@ class TrainingWorkflow:
         - Study is stored beside the retrieval in `optimization.db`.
         """
         settings, an_data = self._optimization_inputs(n_trials=n_trials, data_source=data_source, dataset=dataset,
-                                                     seed=seed, days_of_month=days_of_month, score_weights=score_weights)
+                                                     seed=seed, start_date=start_date, end_date=end_date,
+                                                     days_of_month=days_of_month, score_weights=score_weights)
         n_trials, data_source, analysis_name = settings['n_trials'], settings['data_source'], settings['dataset']
         hyper_params = dict(self.hyper_params)
         self.logger.info('Optimizing %s (trial budget: %d, reference: %s).', self.model.name, n_trials, data_source)
@@ -1114,7 +1116,7 @@ class TrainingWorkflow:
         # Applied bias corrections are already recorded as hyper_params['mean_bias'].
         experiment = plain_value({'model': self.model.checkpoint_structure(), 'hyper_params': hyper_params,
                                   'data_source': data_source, 'analysis_dataset': analysis_name,
-                                  'optimization': {key: settings[key] for key in ('seed', 'days_of_month', 'score_weights')}})
+                                  'optimization': {key: settings[key] for key in ('seed', 'score_weights', *TIME_SELECTION_KEYS) if key in settings}})
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
         previous = study.user_attrs.get('openMWR_experiment')
         if previous is not None:
@@ -1232,51 +1234,39 @@ class TrainingWorkflow:
         return study
 
 
-def separate_training_data(site, source, project_dir, test_fraction=0.1, val_fraction=0.1,
-                           simulation_dataset='simulation_r20', dataset='training', update_only=False, seed=None):
-    """Split simulations, optionally assigning only timestamps absent from old splits.
+def separate_training_data(site, source, project_dir, simulation_dataset='simulation_r20', dataset='training',
+                           *, test_days_of_month, validation_days_of_month,
+                           start_date=None, end_date=None, days_of_month=None):
+    """Split selected simulations by inclusive day-of-month ranges.
 
-    Validation fraction applies to the remaining samples after test selection,
-    preserving the existing split convention. Existing membership/data is never
-    reshuffled by an update. A fresh run can use a seed for reproducibility.
+    All timestamps on a calendar day have the same assignment across sources.
+    Training receives days outside the test and validation ranges. Changed
+    inputs regenerate the three files; no random assignments or old memberships
+    are needed. The dataset workflow skips unchanged inputs.
     """
+    selection = dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month)
+    check_time_selection(selection, 'split')
+    check_split_days(test_days_of_month, validation_days_of_month)
     sources = [source] if isinstance(source, str) else list(source)
     for source_id in sources:
         input_file = dataset_file(project_dir, site, simulation_dataset, source_id)
-        ds = xr.load_dataset(input_file)
-        if not ds.indexes['time'].is_unique:
-            raise ValueError(f'Duplicate timestamps in simulation {input_file}.')
+        with xr.open_dataset(input_file) as original:
+            if not original.indexes['time'].is_unique:
+                raise ValueError(f'Duplicate timestamps in simulation {input_file}.')
+            ds = select_time(original, **selection).load()
+        if not ds.time.size:
+            raise ValueError(f'No profiles remain after time selection for {input_file}.')
         paths = {split: dataset_file(project_dir, site, dataset, source_id, split=split)
                  for split in ('training', 'validation', 'test')}
-        present = [path.is_file() for path in paths.values()]
-        if update_only and any(present) and not all(present):
-            raise ValueError(f'Incomplete existing splits in {paths["training"].parent}; rebuild the split dataset.')
-        old = {key: xr.load_dataset(path) for key, path in paths.items()} if update_only and all(present) else {}
-        if old:
-            assigned = np.concatenate([part.time.values for part in old.values()])
-            if np.unique(assigned).size != assigned.size:
-                raise ValueError('Existing training/validation/test memberships overlap; rebuild the split dataset.')
-            missing = np.setdiff1d(ds.time.values, assigned)
-            if not missing.size:
-                logger.info('Split %s / %s is up to date.', dataset, source_id)
-                continue
-            ds = ds.sel(time=missing)
-        rng = np.random.default_rng(seed) if seed is not None else np.random
-        total_count = ds.time.size + sum(part.time.size for part in old.values())
-        test_count = max(0, int(test_fraction * total_count) - (old['test'].time.size if old else 0))
-        test_count = min(test_count, ds.time.size)
-        test = np.sort(rng.choice(ds.time.values, size=test_count, replace=False))
-        remaining = np.setdiff1d(ds.time.values, test)
-        total_test = test.size + (old['test'].time.size if old else 0)
-        validation_count = max(0, int(val_fraction * (total_count - total_test)) - (old['validation'].time.size if old else 0))
-        validation_count = min(validation_count, remaining.size)
-        validation = np.sort(rng.choice(remaining, size=validation_count, replace=False))
-        assignments = {'test': test, 'validation': validation,
-                       'training': np.setdiff1d(remaining, validation)}
-        for split, times in assignments.items():
-            part = ds.sel(time=times)
-            if old:
-                part = xr.concat([old[split], part], dim='time').sortby('time')
+        day = ds.time.dt.day
+        test = (day >= test_days_of_month['first']) & (day <= test_days_of_month['last'])
+        validation = (day >= validation_days_of_month['first']) & (day <= validation_days_of_month['last'])
+        assignments = {'training': ~(test | validation), 'validation': validation, 'test': test}
+        for split, mask in assignments.items():
+            if not mask.any():
+                raise ValueError(f'No {split} profiles in the selected period of {input_file}; adjust the period or split day ranges.')
+        for split, mask in assignments.items():
+            part = ds.isel(time=mask).sortby('time')
             paths[split].parent.mkdir(parents=True, exist_ok=True)
             part.to_netcdf(paths[split])
             logger.info('Saved %s: %s samples.', paths[split], part.time.size)

@@ -16,7 +16,7 @@ import xarray as xr
 from matplotlib.figure import Figure
 from matplotlib import colormaps
 
-from openMWR.config import check_days, select_days, check_height_range, select_height_range
+from openMWR.config import check_time_selection, select_time, TIME_SELECTION_KEYS, check_height_range, select_height_range
 from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.hatpro_data import calc_derived_quantities
 from openMWR.models import Model, load_model
@@ -42,12 +42,14 @@ class SiteSettings:
     main_model: str
     bls_models: tuple[str, ...]
     include_rpg: bool
-    days_of_month: dict[str, int]
+    days_of_month: dict[str, int] | None
     observation_height_range: list[float] | str
     test_height_range: list[float] | str
     station_id: str | None = None
     training_dataset: str = 'training'
     analysis_dataset: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @dataclass
@@ -123,12 +125,16 @@ def _select_station(data, station_id, path):
     return data.assign_coords(station=available).sel(station=station_id, drop=True), station_id
 
 
-def _observation_note(days_of_month):
-    check_days(days_of_month)
-    return f"Observation days {days_of_month['first']}-{days_of_month['last']} of each month (inclusive)."
+def _observation_note(days_of_month=None, start_date=None, end_date=None):
+    check_time_selection(dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month))
+    note = (f"Observation days {days_of_month['first']}-{days_of_month['last']} of each month (inclusive)."
+            if days_of_month is not None else 'All observation days.')
+    if start_date is not None or end_date is not None:
+        note += f" Date range: {start_date or 'first available'} through {end_date or 'last available'} (inclusive)."
+    return note
 
 
-def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_month=None, station_id=None, dataset=None, observation_height_range=None, test_height_range=None):
+def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_month=None, station_id=None, dataset=None, observation_height_range=None, test_height_range=None, start_date=None, end_date=None):
     from openMWR.config import check_name
     from openMWR.recipes import RetrievalRecipe
 
@@ -144,7 +150,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_m
     settings = dict(recipe.section('evaluation')) if recipe is not None else {}
     if recipe is not None and not settings:
         raise ValueError('Configure an explicit [evaluation] section before evaluating this retrieval.')
-    for key, value in (('data_source', data_source), ('days_of_month', days_of_month), ('station_id', station_id), ('dataset', dataset), ('observation_height_range', observation_height_range), ('test_height_range', test_height_range)):
+    for key, value in (('data_source', data_source), ('days_of_month', days_of_month), ('station_id', station_id), ('dataset', dataset), ('observation_height_range', observation_height_range), ('test_height_range', test_height_range), ('start_date', start_date), ('end_date', end_date)):
         if value is not None:
             settings[key] = value
     source = settings.get('data_source', 'radiosonde')
@@ -155,9 +161,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_m
     if not observed and not test:
         raise ValueError('Enable evaluation.observations or evaluation.test_data.')
     if observed:
-        if 'days_of_month' not in settings:
-            raise ValueError('Specify evaluation.days_of_month explicitly, or pass --days-of-month FIRST LAST, to select observation filtering.')
-        check_days(settings['days_of_month'], 'evaluation.days_of_month')
+        check_time_selection(settings, 'evaluation')
     if 'height' in model.output.dims:
         for enabled, key in ((observed, 'observation_height_range'), (test, 'test_height_range')):
             if enabled:
@@ -171,7 +175,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_m
         if not analysis_path.is_file():
             raise FileNotFoundError(f'Missing evaluation analysis dataset: {analysis_path}. Prepare it before evaluation.')
         data = xr.load_dataset(analysis_path)
-        data = select_days(data, settings['days_of_month'])
+        data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         stations = []
         if source == 'radiosonde':
             data, selected_station = _select_station(data, settings.get('station_id'), analysis_path)
@@ -223,9 +227,9 @@ def validate_evaluation(project_dir, site, retrieval, device='cpu', **options):
 def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
     """Evaluate one saved retrieval, returning numerical results for Python users.
 
-    Recipe evaluation options can be overridden by data_source, days_of_month and
-    station_id. Old checkpoints work without a recipe when the observation
-    filter is supplied explicitly. Saving a report is a separate operation.
+    Recipe evaluation options can be overridden by data_source, start_date,
+    end_date, days_of_month and station_id. Time filters select observations;
+    the test split already owns its period. Saving a report is a separate operation.
     """
     with retrieval_log(project_dir, site, retrieval, 'evaluate'):
         validate_device(device)
@@ -233,7 +237,7 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
         root, model, settings, inputs, paths = _evaluation_inputs(project_dir, site, retrieval, **options)
         logger.info('Evaluation reference: %s; radiosonde station: %s.', settings.get('data_source', 'radiosonde'), settings.get('station_id', 'not applicable'))
         if any(label == 'observations' for label, *_ in inputs):
-            logger.info('Observation selection: %s', _observation_note(settings['days_of_month']))
+            logger.info('Observation selection: %s', _observation_note(**{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings}))
         logger.info('Test data sources from checkpoint: %s.', model.hyper_params.get('sources', model.hyper_params.get('station_ids', [])))
         evaluations = []
         for label, data, reference, variables in inputs:
@@ -243,17 +247,17 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
             evaluation = _evaluate(label, f'{"Observations" if label == "observations" else "Test data"}', pred, reference, variables,
                                    ('RMSE', 'MAE', 'ME') if label == 'observations' else ('RMSE', 'ME'))
             if label == 'observations':
-                evaluation.note = _observation_note(settings['days_of_month'])
+                evaluation.note = _observation_note(**{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
                 setup = (model.training_metadata or {}).get('setup', {})
                 optimization = setup.get('optimization')
                 if optimization:
-                    days = optimization['days_of_month']
+                    selection = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
                     # Older saved checkpoints recorded the two bounds as a list.
-                    if isinstance(days, list):
-                        days = dict(zip(('first', 'last'), days))
-                    overlap = max(days['first'], settings['days_of_month']['first']) <= min(days['last'], settings['days_of_month']['last'])
-                    evaluation.note += f" This checkpoint was optimized against {optimization['data_source']} on days {days['first']}-{days['last']}, using {optimization['score']}."
-                    evaluation.note += ' The selected evaluation days overlap the optimization days.' if overlap else ' The selected evaluation days are outside the optimization days.'
+                    if isinstance(selection.get('days_of_month'), list):
+                        selection['days_of_month'] = dict(zip(('first', 'last'), selection['days_of_month']))
+                    overlap = select_time(data, **selection).time.size > 0
+                    evaluation.note += f" This checkpoint was optimized against {optimization['data_source']}, using {optimization['score']}. Optimization selection: {_observation_note(**selection)}"
+                    evaluation.note += ' The selected evaluation dates overlap the optimization selection.' if overlap else ' The selected evaluation dates are outside the optimization selection.'
             if 'lwp' in variables:
                 evaluation.metrics['lwp_scatter'] = xr.Dataset({'predicted_lwp': pred.lwp, 'reference_lwp': reference.lwp})
             evaluations.append(evaluation)
@@ -261,6 +265,8 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
                     'data_source': settings.get('data_source', 'radiosonde'),
                     'started_utc': started, 'finished_utc': utc_now(), 'device': device,
                     'filters': {'observation_days_of_month': settings.get('days_of_month'),
+                                'observation_start_date': settings.get('start_date'),
+                                'observation_end_date': settings.get('end_date'),
                                 'radiosonde_station_id': settings.get('station_id'),
                                 'observation_height_range': settings.get('observation_height_range'),
                                 'test_height_range': settings.get('test_height_range')},
@@ -274,7 +280,8 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
 def _load_observations(path, source, settings):
     ds = xr.load_dataset(path)
     stations = []
-    ds = select_height_range(select_days(ds, settings.days_of_month), settings.observation_height_range)
+    ds = select_height_range(select_time(ds, start_date=settings.start_date, end_date=settings.end_date,
+                                        days_of_month=settings.days_of_month), settings.observation_height_range)
     if source == "radiosonde":
         ds, station = _select_station(ds, settings.station_id, path)
         stations = [station]
@@ -347,6 +354,8 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
         "main_model": settings.main_model,
         "filters": {
             "observation_days_of_month": settings.days_of_month,
+            "observation_start_date": settings.start_date,
+            "observation_end_date": settings.end_date,
             "radiosonde_station_id": settings.station_id if data_source == "radiosonde" else None,
             "observation_height_range": settings.observation_height_range,
             "test_height_range": settings.test_height_range,
@@ -376,7 +385,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     hatpro, reference = _load_observations(paths[0], data_source, settings)
     if data_source == 'radiosonde':
         metadata['filters']['radiosonde_station_id'] = reference.attrs['analysis_stations'][0]
-    logger.info('Evaluation reference: %s; radiosonde station: %s; %s', data_source, metadata['filters']['radiosonde_station_id'], _observation_note(settings.days_of_month))
+    logger.info('Evaluation reference: %s; radiosonde station: %s; %s', data_source, metadata['filters']['radiosonde_station_id'], _observation_note(settings.days_of_month, settings.start_date, settings.end_date))
     pred = _predict(models, hatpro, device, settings.observation_height_range)
     if settings.include_rpg:
         rpg = hatpro[["T", "rh", "ah", "TD", "iwv", "lwc", "lwp", "p"]].expand_dims(
@@ -391,7 +400,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
         variables,
         ("RMSE", "MAE", "ME"),
     )
-    observed.note = _observation_note(settings.days_of_month)
+    observed.note = _observation_note(settings.days_of_month, settings.start_date, settings.end_date)
     observed.metrics["mean_lwp"] = pred[["lwp"]].mean("time")
     observed.metrics["mame"] = np.abs(
         observed.metrics["error_profiles"].sel(error="ME", drop=True)
@@ -444,7 +453,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     )
     _add_comparators(bls, observed, comparisons)
     bls.note = (
-        _observation_note(settings.days_of_month) + " Zenith comparator metrics come from the zenith observation section. "
+        _observation_note(settings.days_of_month, settings.start_date, settings.end_date) + " Zenith comparator metrics come from the zenith observation section. "
         "The zenith and scan evaluations retain their own observation times; "
         "they are not restricted to common timestamps."
     )
@@ -678,7 +687,9 @@ def render_report(analysis):
     )
     filters = meta["filters"]
     days = filters['observation_days_of_month']
-    filter_text = _observation_note(days) if days is not None else 'No observation evaluation'
+    filter_text = (_observation_note(days, filters.get('observation_start_date'), filters.get('observation_end_date'))
+                   if any(evaluation.key == 'observations' or evaluation.key == 'zenith_observations' for evaluation in analysis.evaluations)
+                   else 'No observation evaluation')
     for label, key in (('Observation', 'observation_height_range'), ('Test', 'test_height_range')):
         heights = filters.get(key)
         if heights is not None:

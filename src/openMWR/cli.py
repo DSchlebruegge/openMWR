@@ -46,13 +46,19 @@ def main(argv=None):
             mode.add_argument('-c', '--continue', dest='run_mode', action='store_const', const='continue', help='Add trials to this retrieval\'s existing optimization study.')
         sub.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization or evaluation.')
         sub.add_argument('--dataset', help='Override the named analysis dataset for optimization or evaluation.')
+        sub.add_argument('-s', '--start-date', help='First observation day for optimization or evaluation, YYYY-MM-DD; fitting/test periods come from the split recipe.')
+        sub.add_argument('-e', '--end-date', help='Last observation day for optimization or evaluation, YYYY-MM-DD (inclusive).')
+        sub.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'), help='Inclusive observation day-of-month range (1 31 selects all days).')
         if command == 'evaluate':
-            sub.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'), help='Inclusive observation day-of-month range (1 31 selects all days).')
             for kind in ('observation', 'test'):
                 sub.add_argument(f'--{kind}-height-range', nargs='+', metavar='HEIGHT', help='Profile height bounds in metres (MIN MAX), or model for the complete model grid.')
             sub.add_argument('--station-id', help='Radiosonde station ID; required when the analysis dataset has multiple stations.')
             sub.add_argument('-o', '--output', type=Path, help='New HTML file (default: dated report in the retrieval evaluation/ directory).')
     args = parser.parse_args(argv)
+    if args.command in ('train', 'evaluate'):
+        selection = {key: getattr(args, key) for key in ('start_date', 'end_date') if getattr(args, key) is not None}
+        if args.days_of_month is not None:
+            selection['days_of_month'] = dict(zip(('first', 'last'), args.days_of_month))
     if args.command == 'evaluate':
         for key in ('observation_height_range', 'test_height_range'):
             value = getattr(args, key)
@@ -108,8 +114,7 @@ def main(argv=None):
         elif args.command == 'evaluate':
             from openMWR.evaluation import evaluate_retrieval, write_report
             options = {key: getattr(args, key) for key in ('data_source', 'station_id', 'dataset', 'observation_height_range', 'test_height_range')}
-            if args.days_of_month is not None:
-                options['days_of_month'] = dict(zip(('first', 'last'), args.days_of_month))
+            options.update(selection)
             if args.output is not None and args.output.exists():
                 raise FileExistsError(f'Report already exists: {args.output}. Choose a new filename.')
             report = evaluate_retrieval(args.project_dir, args.site, args.retrieval, device=args.device, **options)
@@ -118,10 +123,10 @@ def main(argv=None):
             from openMWR.train import TrainingWorkflow
             workflow = TrainingWorkflow.from_recipe(args.project_dir, args.site, args.retrieval, args.device)
             if workflow.requires_optimization:
-                workflow.optimize(n_trials=args.n_trials, data_source=args.data_source, dataset=args.dataset, run_mode=args.run_mode)
+                workflow.optimize(n_trials=args.n_trials, data_source=args.data_source, dataset=args.dataset, run_mode=args.run_mode, **selection)
             else:
-                if args.n_trials is not None or args.data_source is not None or args.dataset is not None:
-                    raise ValueError('--n-trials, --data-source and --dataset require input-noise optimization or search ranges in the recipe.')
+                if args.n_trials is not None or args.data_source is not None or args.dataset is not None or selection:
+                    raise ValueError('--n-trials, --data-source, --dataset and observation-selection flags require input-noise optimization or search ranges in the recipe.')
                 logging.getLogger(__name__).info('Training one model: %s.', args.retrieval)
                 workflow.train(run_mode=args.run_mode)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:

@@ -31,7 +31,7 @@ def recipe(project, name, **values):
                                               'frequencies': 'hatpro', 'angles': 'hatpro_bls',
                                               'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
         'analysis': {'analysis': {'max_time_difference_minutes': 10, 'exclude_rain': True, 'height_range': [0, 10000]}},
-        'split': {'split': {'test_fraction': 0.1, 'validation_fraction': 0.1, 'seed': 42}},
+        'split': {'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},
     }.get(values['kind'], {})
     if values['kind'] == 'profiles':
         source = project / 'sites/test/datasets' / (values.get('inputs', {}).get('source', '') + '.toml')
@@ -59,7 +59,7 @@ def project(tmp_path):
         recipe(tmp_path, model.lower(), kind='simulation', inputs={'profiles': 'profiles'},
                radiative_transfer={'absorption_model': model, 'frequencies': [22.24], 'angles': [90.0]},
                execution={'processes': 1})
-    recipe(tmp_path, 'training', kind='split', inputs={'simulation': 'r17'}, split={'seed': 12})
+    recipe(tmp_path, 'training', kind='split', inputs={'simulation': 'r17'})
     return tmp_path
 
 
@@ -142,6 +142,9 @@ def test_cli_dry_run_and_configuration_errors_write_nothing(project):
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'stations': ['02290']}, 'subset'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'preparation': {'heights': [100, 0]}}, 'must be increasing'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'execution': {'processes': 2}}, 'preparation is serial'),
+    ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 15, 'last': 18}}}, 'must not overlap'),
+    ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 0, 'last': 3}}}, 'at least 1'),
+    ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 1, 'last': 14}, 'validation_days_of_month': {'first': 15, 'last': 31}}}, 'leave days for training'),
 ])
 def test_invalid_graphs_fail_before_output_creation(project, values, message):
     recipe(project, 'bad', **values)
@@ -158,7 +161,7 @@ def test_invalid_graphs_fail_before_output_creation(project, values, message):
     ('profiles', 'preparation', 'incomplete_profiles'),
     ('r17', 'radiative_transfer', 'absorption_model'),
     ('r17', 'radiative_transfer', 'infrared'),
-    ('training', 'split', 'seed'),
+    ('training', 'split', 'test_days_of_month'),
 ])
 def test_missing_scientific_choices_fail_before_processing(project, name, section, key):
     path = project / 'sites/test/datasets' / f'{name}.toml'
@@ -275,7 +278,11 @@ def test_cli_split_creation_update_and_target_only_rebuild(project):
     paths = {split: dataset_file(project, 'test', 'training', '03715', split=split)
              for split in ('training', 'validation', 'test')}
     before = {split: xr.load_dataset(path) for split, path in paths.items()}
-    assert [before[key].time.size for key in ('training','validation','test')] == [33, 3, 4]
+    assert [before[key].time.size for key in ('training','validation','test')] == [31, 3, 6]
+    np.testing.assert_array_equal(before['test'].time.values, pd.to_datetime([
+        '2020-01-01', '2020-01-02', '2020-01-03', '2020-02-01', '2020-02-02', '2020-02-03']).values)
+    np.testing.assert_array_equal(before['validation'].time.values,
+                                  pd.to_datetime(['2020-01-15', '2020-01-16', '2020-01-17']).values)
     hashes = {key: path.read_bytes() for key, path in paths.items()}
     workflow.build('training')
     assert hashes == {key: path.read_bytes() for key, path in paths.items()}
@@ -293,6 +300,63 @@ def test_cli_split_creation_update_and_target_only_rebuild(project):
     main(['data', 'test', 'training', '-p', str(project), '-r'])
     assert dataset_file(project, 'test', 'r17', '03715').read_bytes() == source_bytes
     assert source_bytes != original
+    # Rebuilding gives exactly the same memberships and profile values.
+    for split, data in after.items():
+        xr.testing.assert_identical(xr.load_dataset(paths[split]), data)
+
+
+def test_calendar_split_groups_whole_days_across_sources_and_months(project):
+    recipe(project, 'source', kind='radiosonde', stations=['03715', '02290'], start_year=2020, end_year=2020)
+    dates = pd.to_datetime(['2020-01-01', '2020-01-03', '2020-01-04', '2020-01-15', '2020-01-17',
+                            '2020-02-02', '2020-02-16', '2020-02-29', '2020-03-01'])
+    times = np.sort(np.concatenate([dates.values, (dates + pd.Timedelta(hours=12)).values]))
+    workflow = saved_simulation(project, times)
+    other = synthetic_simulation(times).assign_coords(station=['02290'])
+    other.to_netcdf(dataset_file(project, 'test', 'r17', '02290'))
+    workflow.record('r17')
+    workflow.build('training')
+    expected = {'test': ['2020-01-01', '2020-01-03', '2020-02-02', '2020-03-01'],
+                'validation': ['2020-01-15', '2020-01-17', '2020-02-16'],
+                'training': ['2020-01-04', '2020-02-29']}
+    for source in ('03715', '02290'):
+        original = synthetic_simulation(times).assign_coords(station=[source])
+        for split, dates in expected.items():
+            dates = pd.to_datetime(dates)
+            expected_times = np.sort(np.concatenate([dates.values, (dates + pd.Timedelta(hours=12)).values]))
+            part = xr.load_dataset(dataset_file(project, 'test', 'training', source, split=split))
+            xr.testing.assert_identical(part, original.sel(time=expected_times))
+
+
+def test_short_calendar_period_reports_empty_partition_before_writing(project):
+    workflow = saved_simulation(project, pd.date_range('2020-01-01', periods=3).values)
+    with pytest.raises(ValueError, match='No training profiles.*adjust the period or split day ranges'):
+        workflow.build('training')
+    assert not list((project / 'data/sites/test/training').glob('*.nc'))
+
+
+def test_split_period_selects_all_three_sets_before_assignment(project):
+    times = pd.date_range('2019-12-31', '2020-02-02', freq='12h').values
+    workflow = saved_simulation(project, times)
+    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'},
+           split={'start_date': '2020-01-02', 'end_date': '2020-01-31'})
+    workflow.build('training')
+    paths = [dataset_file(project, 'test', 'training', '03715', split=split)
+             for split in ('training', 'validation', 'test')]
+    before = [xr.load_dataset(path) for path in paths]
+    combined = np.sort(np.concatenate([part.time.values for part in before]))
+    np.testing.assert_array_equal(combined, pd.date_range('2020-01-02', '2020-01-31T12:00', freq='12h').values)
+    # Source updates outside the selected period do not add samples to any split.
+    extra = pd.date_range('2019-12-31', '2020-02-15', freq='12h').values
+    synthetic_simulation(extra).to_netcdf(dataset_file(project, 'test', 'r17', '03715'))
+    workflow.build('training')
+    for original, path in zip(before, paths):
+        xr.testing.assert_identical(original, xr.load_dataset(path))
+    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'},
+           split={'start_date': '2020-01-02', 'end_date': '2020-01-30'})
+    with pytest.raises(ValueError, match='end_date changed'):
+        DatasetWorkflow(project, 'test').build('training')
+    for original, path in zip(before, paths):
+        xr.testing.assert_identical(original, xr.load_dataset(path))
 
 
 def test_changed_settings_require_rebuild_before_any_deletion(project):
@@ -300,10 +364,10 @@ def test_changed_settings_require_rebuild_before_any_deletion(project):
     saved_simulation(project, times).build('training')
     path = dataset_file(project, 'test', 'training', '03715', split='training')
     original = path.read_bytes()
-    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'}, split={'test_fraction': 0.2})
+    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'}, split={'test_days_of_month': {'first': 1, 'last': 6}})
     with pytest.raises(ValueError, match='settings or input definitions changed') as error:
         DatasetWorkflow(project, 'test').build('training')
-    assert 'training: test_fraction changed from 0.1 to 0.2' in str(error.value)
+    assert 'training: test_days_of_month.last changed from 3 to 6' in str(error.value)
     hint = rebuild_hint(error.value)
     assert hint[3:hint.index('--project-dir')] == ['training']
     assert path.read_bytes() == original
@@ -325,9 +389,7 @@ def test_rebuild_hint_repairs_only_the_affected_chain(project, monkeypatch, chan
     def no_download(*args, **kwargs):
         pytest.fail('A rebuild hint must reuse the healthy raw cache.')
     monkeypatch.setattr('openMWR.dwd_opendata.update_radiosonde_data', no_download)
-    install_raw(project, pd.date_range('2020-01-01', periods=3, freq='12h').values)
-    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'},
-           split={'test_fraction': 0.5, 'validation_fraction': 0.5, 'seed': 12})
+    install_raw(project, pd.to_datetime(['2020-01-01', '2020-01-04', '2020-01-15']).values)
     DatasetWorkflow(project, 'test').build(['training', 'r20'], with_dependencies=True)
     raw_path = radiosonde_year_file(project, '03715', 2020)
     raw_bytes = raw_path.read_bytes()
@@ -430,7 +492,7 @@ def test_readiness_rejects_datasets_that_need_rebuilding(project, change):
     workflow = saved_simulation(project, pd.date_range('2020-01-01', periods=20).values)
     workflow.build('training')
     if change == 'definition':
-        workflow.recipe('training').values['split']['seed'] = 13
+        workflow.recipe('training').values['split']['test_days_of_month']['last'] = 4
     elif change == 'input_generation':
         workflow.record('r17', rebuilt=True)
     else:

@@ -1,6 +1,7 @@
 """Shared configuration checks, independent of recipes and workflow execution."""
 
 from difflib import get_close_matches
+from datetime import date
 import math
 from numbers import Integral, Real
 import tomllib
@@ -10,6 +11,7 @@ from openMWR.paths import project_root
 INTEGER_TRAINING = ("epochs", "batch_size", "repeats_for_linear_regression", "epoch_max_lr")
 _NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
 TRAINING_PARAMETERS = _NN_TRAINING | {"repeats_for_linear_regression", "seed", "bias_weight"}
+TIME_SELECTION_KEYS = ('start_date', 'end_date', 'days_of_month')
 
 
 def training_parameters(is_mlr, loss_fn=None):
@@ -52,9 +54,47 @@ def check_days(days, label='days_of_month'):
         raise ValueError(f'{label} requires 1 <= first <= last <= 31.')
 
 
-def select_days(data, days):
-    check_days(days)
-    return data.where((data.time.dt.day >= days['first']) & (data.time.dt.day <= days['last']), drop=True)
+def check_split_days(test_days_of_month, validation_days_of_month):
+    """Require distinct monthly test/validation ranges, leaving training days."""
+    for key, days in (('test_days_of_month', test_days_of_month),
+                      ('validation_days_of_month', validation_days_of_month)):
+        check_days(days, f'split.{key}')
+    if max(test_days_of_month['first'], validation_days_of_month['first']) <= min(test_days_of_month['last'], validation_days_of_month['last']):
+        raise ValueError('split.test_days_of_month and validation_days_of_month must not overlap.')
+    if sum(days['last'] - days['first'] + 1 for days in (test_days_of_month, validation_days_of_month)) == 31:
+        raise ValueError('Split day ranges must leave days for training.')
+
+
+def check_time_selection(settings, label='selection'):
+    """Check optional ISO date bounds and an inclusive day-of-month range."""
+    for key in ('start_date', 'end_date'):
+        value = settings.get(key)
+        if value is not None:
+            try:
+                if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+                    raise ValueError
+            except ValueError:
+                raise ValueError(f'{label}.{key} must be a quoted ISO date (YYYY-MM-DD).') from None
+    if settings.get('start_date') is not None and settings.get('end_date') is not None:
+        if settings['start_date'] > settings['end_date']:
+            raise ValueError(f'{label}.start_date must not be after end_date.')
+    if settings.get('days_of_month') is not None:
+        check_days(settings['days_of_month'], f'{label}.days_of_month')
+
+
+def select_time(data, *, start_date=None, end_date=None, days_of_month=None):
+    """Intersect date and monthly selections, including the whole end day."""
+    import numpy as np
+
+    check_time_selection(dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month))
+    selected = data.time.notnull()
+    if start_date is not None:
+        selected = selected & (data.time >= np.datetime64(start_date))
+    if end_date is not None:
+        selected = selected & (data.time < np.datetime64(end_date) + np.timedelta64(1, 'D'))
+    if days_of_month is not None:
+        selected = selected & (data.time.dt.day >= days_of_month['first']) & (data.time.dt.day <= days_of_month['last'])
+    return data.isel(time=selected)
 
 
 def check_score_weights(weights, variables):

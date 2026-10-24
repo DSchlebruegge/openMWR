@@ -186,10 +186,28 @@ Supported recipe kinds and input roles are:
 | `hatpro` | None | Required dates; `[observations] import_retrieval_data` inherits the site setting (off when absent) |
 | `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also require `incomplete_profiles`, `cloud` and `quality`, with optional cutoff |
 | `simulation` | `profiles` | `[radiative_transfer] backend`, `absorption_model`, `frequencies`, `angles`, required `infrared` microphysics, optional `frequency_shift` |
-| `split` | `simulation` | Required `[split] test_fraction`, `validation_fraction` (fraction of the remainder), `seed` |
+| `split` | `simulation` | Required `[split] test_days_of_month`, `validation_days_of_month`; optional `start_date`, `end_date`, `days_of_month` |
 | `analysis` | `observations`: HATPRO; `reference`: simulation | Required `[analysis] max_time_difference_minutes`, `exclude_rain`, `height_range`; optional `stations` |
 
 Derived recipes inherit their input stations unless selecting a subset.
+Split recipes select their profile pool, then assign whole days to test and
+validation using inclusive monthly ranges. All other days go to training:
+
+```toml
+[split]
+start_date = "1990-01-01"       # optional pool bounds
+end_date = "2024-10-31"         # includes the entire day
+test_days_of_month = { first = 1, last = 3 }
+validation_days_of_month = { first = 15, last = 17 }
+```
+
+The day-of-month comes from the dataset's UTC time coordinate. The same rule
+applies to every source/station and all timestamps within each day.
+Ranges must not overlap and the selected pool must contain profiles for all
+three splits. Missing profiles and month lengths determine the resulting sizes;
+there are no split fractions or random seed. Changing the selection requires
+an explicit rebuild or a new dataset name. Unchanged inputs skip processing;
+changed inputs regenerate the three files with the same calendar rule.
 Scientific settings, including the RT backend/model and grids, must be explicit.
 Grids accept numeric lists or names from the project's `grids.toml`. Its starter contains
 `levels_208_30km` for 208 heights from 0 to 30,000 m, `hatpro` for frequencies (GHz), and
@@ -391,7 +409,6 @@ iwv = "z_norm"
 [data]
 dataset = "training"        # named split dataset
 sources = ["03715"]          # station IDs and/or "era5"
-end_date_training = "2024-10-31"
 
 [training]
 seed = 42                  # integer, or "random" for an unseeded run
@@ -429,7 +446,8 @@ station_id = "03715"        # explicit radiosonde station identifier
 ```
 
 The retrieval folder supplies the model name. `data.dataset` selects a named
-split dataset; omit `data.sources` to use all its sources. For example,
+split dataset, which owns the fitting and test period; omit `data.sources` to
+use all its sources. There is no separate retrieval training cutoff. For example,
 `training_r17.toml` can use `kind = "split"` and
 `[inputs] simulation = "simulation_r17"` to prepare inputs for an R17 retrieval.
 Optimization/evaluation/OMB/bias sections explicitly select their reference
@@ -560,9 +578,31 @@ new retrieval name before optimization can continue; their histories remain read
 Evaluation writes dated portable HTML files under the retrieval's `evaluation/`
 directory. Set `evaluation.observations = false` or `evaluation.test_data = false`
 to select its inputs. Optimization, OMB noise, bias correction and evaluation
-all use the same inclusive `days_of_month = { first = 1, last = 20 }` format.
-Set first/last to 1/31 for all days. Evaluation can override it with
-`--days-of-month FIRST LAST`. Profile evaluations require explicit
+all accept the same optional `start_date`, `end_date` and
+`days_of_month = { first = 1, last = 20 }` settings in their respective sections.
+Filters intersect: date bounds include the entire start/end day, and the monthly
+range is inclusive and repeats in every selected month. Omitted bounds impose
+no restriction; omit `days_of_month` or set first/last to 1/31 for all days.
+For example, optimize on one year and evaluate on the next:
+
+```toml
+[optimization]
+# Other optimization settings remain as configured.
+start_date = "2024-01-01"
+end_date = "2024-12-31"
+
+[evaluation]
+# Other evaluation settings remain as configured.
+start_date = "2025-01-01"
+end_date = "2025-12-31"
+```
+
+Analysis datasets retain all matched dates; these selections apply when using
+them. `train` (for optimization) and `evaluate` can override the recipe selection
+with `--start-date` / `-s`, `--end-date` / `-e`, and `--days-of-month FIRST LAST`.
+These flags do not change the fitting or simulated test period. Python
+`optimize()`, `make_omb_analysis()` and `evaluate_retrieval()` take the same
+selection keywords. Profile evaluations require explicit
 `observation_height_range` and `test_height_range` for their enabled inputs.
 Each accepts `[minimum, maximum]` in metres or `"model"` for the whole model grid.
 CLI overrides are `--observation-height-range MIN MAX` and
