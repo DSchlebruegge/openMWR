@@ -10,6 +10,8 @@ from datetime import date
 import json
 import logging
 from pathlib import Path
+from reprlib import repr as short_repr
+from shlex import join as shell_join
 import shutil
 import tomllib
 from uuid import uuid4
@@ -52,6 +54,26 @@ def _coverage_shrank(previous, current):
             return True
     return any(_coverage_shrank(old, current.get('inputs', {}).get(role, {}))
                for role, old in previous.get('inputs', {}).items())
+
+
+def _setting_changes(previous, current, path=''):
+    """Describe changed fields, including individual entries in numeric grids."""
+    if isinstance(previous, dict) and isinstance(current, dict):
+        for key in sorted(previous.keys() | current.keys()):
+            field = f'{path}.{key}' if path else key
+            if key not in previous:
+                yield f'{field} added: {short_repr(current[key])}'
+            elif key not in current:
+                yield f'{field} removed (was {short_repr(previous[key])})'
+            else:
+                yield from _setting_changes(previous[key], current[key], field)
+    elif isinstance(previous, list) and isinstance(current, list):
+        if len(previous) != len(current):
+            yield f'{path}: number of values changed from {len(previous)} to {len(current)}'
+        for index, (old, new) in enumerate(zip(previous, current)):
+            yield from _setting_changes(old, new, f'{path}[{index}]')
+    elif previous != current:
+        yield f'{path} changed from {json.dumps(previous)} to {json.dumps(current)}'
 
 
 @dataclass
@@ -427,12 +449,43 @@ class DatasetWorkflow:
 
     def _state(self, name):
         path = self.recipe(name).directory / 'state.json'
-        return json.loads(path.read_text()) if path.is_file() else {}
 
-    def _check_state(self, name, rebuilding=False):
-        if rebuilding:
-            return
-        state = self._state(name)
+        def valid_tree(node, field):
+            return (isinstance(node, dict) and isinstance(node.get(field), dict)
+                    and isinstance(node.get('inputs'), dict)
+                    and all(valid_tree(value, field) for value in node['inputs'].values()))
+
+        try:
+            state = json.loads(path.read_text())
+            expected = {'definition': dict, 'effective': dict, 'generation': str,
+                        'input_generations': dict, 'input_files': dict, 'coverage': dict}
+            if not isinstance(state, dict):
+                raise ValueError('expected a JSON object')
+            for key, kind in expected.items():
+                if not isinstance(state.get(key), kind):
+                    raise ValueError(f'invalid or missing {key}')
+            if not valid_tree(state['definition'], 'settings') or not valid_tree(state['coverage'], 'range'):
+                raise ValueError('invalid dependency definition or coverage')
+            return state
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise ValueError(f'Cannot read processing record {path}: {exc}. Its processing history cannot be verified') from exc
+
+    def _record_changes(self, name, previous, current, field='settings'):
+        for change in _setting_changes(previous[field], current[field]):
+            yield f'{name}: {change}'
+        old_inputs = previous.get('settings', {}).get('inputs', {})
+        for role, input_name in self.recipe(name).inputs.items():
+            if role in previous['inputs'] and (field == 'range' or isinstance(old_inputs, dict) and old_inputs.get(role) == input_name):
+                yield from self._record_changes(input_name, previous['inputs'][role], current['inputs'][role], field)
+
+    def _state_problem(self, name):
+        """Return a rebuild reason without processing data or raising state errors."""
+        try:
+            state = self._state(name)
+        except ValueError as exc:
+            return str(exc)
         has_output = any(p.is_file() for p in self.files(name))
         if not has_output:
             return
@@ -440,23 +493,61 @@ class DatasetWorkflow:
             return  # A matching shared raw cache may predate this site recipe.
         reason = None
         if not state:
-            reason = 'output has no processing record'
+            reason = f"Missing processing record {self.recipe(name).directory / 'state.json'}; the existing data's processing history cannot be verified"
         elif state.get('requires_rebuild'):
             reason = state.get('provenance', 'historical processing settings are unknown')
         elif state.get('definition') != self._definition(name):
-            reason = 'scientific settings or input definitions changed'
+            changes = list(self._record_changes(name, state['definition'], self._definition(name)))
+            reason = 'scientific settings or input definitions changed:\n  ' + '\n  '.join(changes[:5])
+            if len(changes) > 5:
+                reason += f'\n  ... and {len(changes) - 5} more changes'
         elif (self.recipe(name).kind not in ('radiosonde', 'era5')
               and _coverage_shrank(state.get('coverage', {}), self._coverage(name))):
-            reason = 'requested date coverage narrowed'
+            changes = self._record_changes(name, state['coverage'], self._coverage(name), 'range')
+            reason = 'requested date coverage narrowed:\n  ' + '\n  '.join(changes)
         elif (self.recipe(name).kind == 'hatpro'
               and state.get('effective', {}).get('start_date') != self.settings(name)['start_date']):
-            reason = 'changing historical HATPRO coverage requires regeneration'
+            old = state['effective'].get('start_date')
+            new = self.settings(name)['start_date']
+            reason = f'changing historical HATPRO coverage requires regeneration:\n  {name}: start_date changed from {json.dumps(old)} to {json.dumps(new)}'
         else:
             for input_name, generation in state.get('input_generations', {}).items():
-                if generation != self._state(input_name).get('generation'):
+                try:
+                    input_state = self._state(input_name)
+                except ValueError as exc:
+                    return f'input {input_name}: {exc}'
+                if generation != input_state.get('generation'):
                     reason = f'input {input_name} was rebuilt'
+        return reason
+
+    def _rebuild_command(self, targets, forced=()):
+        """Select the affected chain and missing prerequisites, retaining healthy caches."""
+        graph = self._graph(targets)
+        needed = set(forced) | {name for name in graph if self._state_problem(name)}
+        previous = None
+        while needed != previous:
+            previous = needed.copy()
+            for name in graph:
+                inputs = self.recipe(name).inputs.values()
+                if needed.intersection(inputs):
+                    needed.add(name)
+                if name in needed:
+                    for input_name in inputs:
+                        try:
+                            self._require_files(input_name)
+                        except FileNotFoundError:
+                            needed.add(input_name)
+        names = [name for name in graph if name in needed]
+        return shell_join(['openMWR', 'data', self.site, *(names or targets),
+                           '--project-dir', str(self.project_dir), '--rebuild'])
+
+    def _check_state(self, name, rebuilding=False, *, targets=None):
+        if rebuilding:
+            return
+        reason = self._state_problem(name)
         if reason:
-            raise ValueError(f'{name}: {reason}. Rebuild this dataset explicitly with --rebuild, or use a new dataset name.')
+            command = self._rebuild_command(targets or [name])
+            raise ValueError(f'{name}: {reason}.\nRebuild this dataset explicitly with its affected dependencies:\n  {command}\nShared raw caches are retained; a new dataset name is also an option.')
 
     def _input_stats(self, name):
         return {str(p.relative_to(self.project_dir)): [p.stat().st_size, p.stat().st_mtime_ns]
@@ -509,14 +600,15 @@ class DatasetWorkflow:
             logger.info('Dataset order: %s', ' -> '.join(order))
             # Validate the whole selected operation before deleting any output or downloading.
             for name in order:
-                self._check_state(name, rebuilding=rebuild and name in selected)
+                self._check_state(name, rebuilding=rebuild and name in selected, targets=names)
                 if rebuild and name not in selected and any(p.is_file() for p in self.files(name)):
                     if ancestors[name] & selected:
-                        raise ValueError(f'{name}: a selected input will be rebuilt. Select {name} for rebuild too, or rebuild the input separately first.')
+                        command = self._rebuild_command(names, forced=selected)
+                        raise ValueError(f'{name}: a selected input will be rebuilt. Rebuild the affected chain with:\n  {command}')
                 for input_name in self.recipe(name).inputs.values():
                     if input_name not in order:
                         self._require_files(input_name)
-                        self._check_state(input_name)
+                        self._check_state(input_name, targets=names)
             for name in order:
                 rebuilding = rebuild and name in selected
                 recipe = self.recipe(name)
@@ -526,8 +618,8 @@ class DatasetWorkflow:
                     continue
                 for input_name in recipe.inputs.values():
                     self._require_files(input_name)
-                    self._check_state(input_name)
-                self._check_state(name, rebuilding=rebuilding)
+                    self._check_state(input_name, targets=names)
+                self._check_state(name, rebuilding=rebuilding, targets=names)
                 if rebuilding and recipe.directory.exists():
                     shutil.rmtree(recipe.directory)
                 recipe.directory.mkdir(parents=True, exist_ok=True)

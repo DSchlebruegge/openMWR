@@ -267,6 +267,13 @@ libRadtran's Hu-Stamnes cloud optics.
 Effective settings and input identities are recorded in `state.json`, and each
 dataset has `build.log`. Changing scientific settings or rebuilding an input
 requires an explicit downstream rebuild, preventing mixed processing settings.
+Rebuild errors identify changed fields and their old/new values, including
+the responsible input dataset. They print a command for the affected chain,
+with an explicit project directory so it also works outside the project folder.
+The hint selects the necessary datasets directly; healthy source caches are
+reused without a routine dependency refresh. Missing or unreadable processing
+records show their path and explain that the existing processing history cannot
+be verified. An explicit rebuild regenerates both data and its processing record.
 Moving a recipe alone does not move its generated data; keep the dataset name
 stable when updating it.
 

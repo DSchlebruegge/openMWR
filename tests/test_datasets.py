@@ -3,6 +3,7 @@
 import json
 from datetime import date
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -258,6 +259,11 @@ def saved_simulation(project, times):
     return workflow
 
 
+def rebuild_hint(error):
+    return shlex.split(next(line.strip() for line in str(error).splitlines()
+                            if line.strip().startswith('openMWR data ')))
+
+
 def test_cli_split_creation_update_and_target_only_rebuild(project):
     times = pd.date_range('2020-01-01', periods=40).values
     workflow = saved_simulation(project, times)
@@ -294,16 +300,109 @@ def test_changed_settings_require_rebuild_before_any_deletion(project):
     path = dataset_file(project, 'test', 'training', '03715', split='training')
     original = path.read_bytes()
     recipe(project, 'training', kind='split', inputs={'simulation': 'r17'}, split={'test_fraction': 0.2})
-    with pytest.raises(ValueError, match='settings or input definitions changed'):
+    with pytest.raises(ValueError, match='settings or input definitions changed') as error:
         DatasetWorkflow(project, 'test').build('training')
+    assert 'training: test_fraction changed from 0.1 to 0.2' in str(error.value)
+    hint = rebuild_hint(error.value)
+    assert hint[3:hint.index('--project-dir')] == ['training']
     assert path.read_bytes() == original
-    DatasetWorkflow(project, 'test').build('training', rebuild=True)
+    from openMWR.cli import main
+    main(hint[1:])
     assert path.read_bytes() != original
     # Rebuilt input identity also requires downstream regeneration.
     workflow = DatasetWorkflow(project, 'test')
     workflow.record('r17', rebuilt=True)
     with pytest.raises(ValueError, match='input r17 was rebuilt'):
         workflow.build('training')
+
+
+@pytest.mark.parametrize('change', ['setting', 'input_name', 'corrupt_input', 'selected_rebuild'])
+def test_rebuild_hint_repairs_only_the_affected_chain(project, monkeypatch, change):
+    from openMWR.cli import main
+
+    monkeypatch.setattr('openMWR.run_RT.calculate_IR_band_TB', lambda *args, **kwargs: 200.0)
+    def no_download(*args, **kwargs):
+        pytest.fail('A rebuild hint must reuse the healthy raw cache.')
+    monkeypatch.setattr('openMWR.dwd_opendata.update_radiosonde_data', no_download)
+    install_raw(project, pd.date_range('2020-01-01', periods=3, freq='12h').values)
+    recipe(project, 'training', kind='split', inputs={'simulation': 'r17'},
+           split={'test_fraction': 0.5, 'validation_fraction': 0.5, 'seed': 12})
+    DatasetWorkflow(project, 'test').build(['training', 'r20'], with_dependencies=True)
+    raw_path = radiosonde_year_file(project, '03715', 2020)
+    raw_bytes = raw_path.read_bytes()
+    r20_path = dataset_file(project, 'test', 'r20', '03715')
+    r20_bytes = r20_path.read_bytes()
+    targets = ['training', 'r20']
+    options = {}
+    expected = ['r17', 'training']
+    if change == 'setting':
+        path = project / 'sites/test/datasets/r17.toml'
+        values = tomllib.loads(path.read_text())
+        values['radiative_transfer']['absorption_model'] = 'R20'
+        path.write_text(tomli_w.dumps(values))
+    elif change == 'input_name':
+        path = project / 'sites/test/datasets/training.toml'
+        values = tomllib.loads(path.read_text())
+        values['inputs']['simulation'] = 'r20'
+        path.write_text(tomli_w.dumps(values))
+        expected = ['training']
+    elif change == 'corrupt_input':
+        (project / 'data/sites/test/r17/state.json').write_text('{')
+    else:
+        targets = ['profiles', 'training']
+        options = {'with_dependencies': True, 'rebuild': True}
+        expected = ['profiles', 'r17', 'training']
+    before = {path: path.read_bytes() for path in (project / 'data').rglob('*') if path.is_file()}
+    with pytest.raises(ValueError) as error:
+        DatasetWorkflow(project, 'test').build(targets, **options)
+    assert before == {path: path.read_bytes() for path in (project / 'data').rglob('*') if path.is_file()}
+    message = str(error.value)
+    if change == 'setting':
+        assert 'r17: absorption_model changed from "R17" to "R20"' in message
+    elif change == 'input_name':
+        assert 'training: inputs.simulation changed from "r17" to "r20"' in message
+    elif change == 'corrupt_input':
+        assert str(project / 'data/sites/test/r17/state.json') in message
+        assert 'processing history cannot be verified' in message
+    hint = rebuild_hint(error.value)
+    assert hint[3:hint.index('--project-dir')] == expected
+    assert hint[hint.index('--project-dir') + 1] == str(project)
+    assert '--with-dependencies' not in hint
+    main(hint[1:])
+    assert raw_path.read_bytes() == raw_bytes
+    assert r20_path.read_bytes() == r20_bytes
+    DatasetWorkflow(project, 'test').require('training')
+
+
+@pytest.mark.parametrize('damage', ['missing', 'invalid_json', 'invalid_structure'])
+def test_missing_or_damaged_state_has_a_working_recovery_hint(project, damage):
+    from openMWR.cli import main
+
+    workflow = saved_simulation(project, pd.date_range('2020-01-01', periods=20).values)
+    workflow.build('training')
+    path = project / 'data/sites/test/training/state.json'
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'invalid_json':
+        path.write_text('{')
+    else:
+        state = json.loads(path.read_text())
+        state['definition']['inputs']['simulation'] = []
+        path.write_text(json.dumps(state))
+    files = {p: p.read_bytes() for p in (project / 'data').rglob('*') if p.is_file()}
+    for action in (lambda: workflow.build('training'), lambda: workflow.require('training')):
+        with pytest.raises(ValueError) as error:
+            action()
+        assert str(path) in str(error.value)
+        assert 'processing history cannot be verified' in str(error.value)
+        hint = rebuild_hint(error.value)
+        assert hint[3:hint.index('--project-dir')] == ['training']
+    assert files == {p: p.read_bytes() for p in (project / 'data').rglob('*') if p.is_file()}
+    simulation_path = dataset_file(project, 'test', 'r17', '03715')
+    simulation_bytes = simulation_path.read_bytes()
+    main(hint[1:])
+    assert simulation_path.read_bytes() == simulation_bytes
+    DatasetWorkflow(project, 'test').require('training')
 
 
 def test_readiness_checks_selected_sources_and_splits(project):
@@ -472,8 +571,9 @@ def test_era5_profiles_are_reusable_and_incremental(project):
     DatasetWorkflow(project, 'test').build('era5_profiles')
     assert xr.load_dataset(output).time.size == 4
     recipe(project, 'era5', kind='era5', start_date='2020-01-01', end_date='2020-01-01', hour_interval=6)
-    with pytest.raises(ValueError, match='date coverage narrowed'):
+    with pytest.raises(ValueError, match='date coverage narrowed') as error:
         DatasetWorkflow(project, 'test').build('era5_profiles')
+    assert 'era5: end_date changed from "2020-01-02" to "2020-01-01"' in str(error.value)
     raw_bytes = raw_file.read_bytes()
     DatasetWorkflow(project, 'test').build('era5_profiles', rebuild=True)
     assert xr.load_dataset(output).time.size == 3
