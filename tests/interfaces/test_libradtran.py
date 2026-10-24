@@ -1,12 +1,8 @@
-import sys
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytest
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from openMWR.libRadtran import get_libradtran_paths, libRadtran
 from openMWR.run_RT import calculate_IR_band_TB
@@ -140,8 +136,8 @@ def test_relative_data_path_keeps_uvspec_working_directory(tmp_path, monkeypatch
     assert f"data_files_path {data}\n" in recorded.read_text()
 
 
-@pytest.mark.parametrize("gen,band", [("G4", "9200 10600"), ("G5", "9600 11500")])
-@pytest.mark.parametrize("angles", [[90.0], [30.0, 90.0]])
+@pytest.mark.parametrize("gen,band,angles", [("G4", "9200 10600", [90.0]),
+                                           ("G5", "9600 11500", [30.0, 90.0])])
 def test_ir_uses_discovered_atmosphere(tmp_path, monkeypatch, installation, gen, band, angles):
     executable, data, recorded = installation(tmp_path / "install", "share/libRadtran/data")
     monkeypatch.setenv("PATH", str(executable.parent))

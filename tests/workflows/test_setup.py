@@ -1,7 +1,6 @@
 """Create an editable radiosonde starter without processing any data."""
 
-import subprocess
-import sys
+from tests.fixtures.cli import run_cli
 import tomllib
 
 import pytest
@@ -13,8 +12,7 @@ from openMWR.site import create_site
 
 
 def command(project, site):
-    return subprocess.run([sys.executable, '-m', 'openMWR', 'create-site', site,
-        '-p', str(project)], cwd=project.parent, capture_output=True, text=True)
+    return run_cli('create-site', site, '-p', str(project))
 
 
 def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_path):

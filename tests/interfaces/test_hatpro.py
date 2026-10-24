@@ -1,14 +1,9 @@
-import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from openMWR import hatpro_data
 from openMWR.site import create_site
