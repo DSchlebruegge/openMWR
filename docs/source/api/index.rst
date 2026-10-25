@@ -15,9 +15,12 @@ openMWR
     atm
     calc_errors
     cloud
+    config
     consts
+    datasets
     dwd_opendata
     era5
+    evaluation
     hatpro_data
     libRadtran
     models
@@ -26,8 +29,9 @@ openMWR
     paths
     plot
     radiosonde
+    recipes
     run_RT
-    run
+    predict
     site
     train
     utils

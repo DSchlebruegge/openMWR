@@ -12,10 +12,13 @@ It also supports the training of retrieval algorithms for elevation scans, to st
 the boundary layer.
 
 `OpenMWR` also includes the `torchMWRT` package, a PyTorch translation of the radiative-transfer 
-calculation core of [PyRTlib](https://github.com/SatCloP/pyrtlib). It produces the same results as 
-`PyRTlib` while being orders of magnitude faster. That is mainly achieved by 
-heavy vectorizations. It also supports GPU acceleration and automatic differentiation, 
-which is, however, not necessary for the classical retrieval algorithms.
+calculation core of [PyRTlib](https://github.com/SatCloP/pyrtlib). It calculates brightness temperatures in batches and supports GPU acceleration
+and automatic differentiation.
+
+Start with [Installation](user_guide/installation.md), then
+[Create a Retrieval](user_guide/create_retrieval.md). The tutorial uses TOML
+recipes and the `openMWR` commands. The same workflows are available
+[from Python](user_guide/python_usage.md).
 
 ## User Guide
 

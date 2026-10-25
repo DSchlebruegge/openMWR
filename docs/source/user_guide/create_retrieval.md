@@ -1,81 +1,111 @@
 # Create a Retrieval
 
-This section describes how to create a retrieval using the `openMWR` package.
-
-The main steps are:
+This section describes how to create a retrieval using radiosonde profiles and
+simulated brightness temperatures. The main steps are:
 
 1. Create the site configuration
 2. Download and prepare the training data
 3. Run the forward calculation
-4. Separate in training, validation, and test datasets
-5. Create an analysis dataset from real measurements
-6. Train the retrieval model
+4. Separate training, validation and test datasets
+5. Train the retrieval model
+6. Compare the retrieval with real measurements
 
+Follow [Installation](installation.md) first. Run the commands from your working
+project, with its virtual environment activated. The example uses `my_site` as
+the site name and Munich settings. Replace these with your own.
 
-All the code snippets below can be found in the python script `bin/main.py`. 
-It is recommended to run the script step by step and comment out the parts that are not needed.
-The script can be run from the command line as follows:
-
-```bash
-.venv/bin/python bin/main.py
-```
-Run from the working-project root containing `data/` and `sites/`. All affected
-openMWR functions take this root as `project_dir`.
-
-```python
-PROJECT_DIR = '.'
-```
-
+The commands read TOML files, called *recipes*, which describe datasets and
+retrievals. The first step creates these files.
 
 ## Create the Site Configuration
 
-Before you can create a retrieval, you need to set up the site configuration. 
-This includes defining the site name, location, and any other relevant parameters for a specific microwave radiometer.
-Here is an example of how to create a site configuration for the G5 Hatpro in munich:
-
-```python
-from openMWR.site import create_site
-
-site = 'munich_G5'
-create_site(
-            site,
-            project_dir=PROJECT_DIR,
-            hatpro_data_dir="/project/meteo/data/hatpro-g5",
-            retrieval_output_dir="/project/meteo/data/hatpro-g5/mim_retrieval",
-            gen='G5',
-            mwr_height=550,
-            rpg_retrieval_exists = True, 
-            mwr_measurement_start_date = '2024-11-01',
-            latitude = 48.148,
-            longitude = 11.573,
-            plot_dir='/project/meteo/homepages/quicklooks/hatpro/G5'
-            )
+```bash
+openMWR create-site my_site
 ```
-(See {py:func}`openMWR.site.create_site`)
 
-`hatpro_data_dir` is the directory where the MWR data is stored.
-It should contain subfolders for each year, e.g. 'Y2025', 'Y2024', etc.
-`gen` is the generation of the Hatpro MWR (G4 or G5).
-`mwr_height` is the height of the MWR above sea level in meters.
-`rpg_retrieval_exists` indicates whether an RPG retrieval is available for the site.
-`mwr_measurement_start_date` is the date when the MWR measurements start (format: 'YYYY-MM-DD').
-`latitude` and `longitude` are the coordinates of the site.
-`plot_dir` (optional) is the directory where the plots will be saved, when it is run optionally with e.g. `bin/cron_job.py` (see [Run Operational](#run_operational)).
-`retrieval_output_dir` (optional) is the directory where the retrieval results will be saved, when it is run optionally with e.g. `bin/cron_job.py` (see [Run Operational](#run_operational)).
+This creates site settings, dataset recipes and retrieval examples. They contain
+example settings to review for your instrument and application:
 
-The function `create_site` writes `{PROJECT_DIR}/sites/{site}/site.toml` and creates
-the bulk-data directories under `{PROJECT_DIR}/data/sites/{site}/`. Existing
-setting names are retained. Relative observation, result, and plot paths are
-resolved from the project root; absolute paths are also supported.
+```text
+grids.toml
+sites/my_site/
+    site.toml
+    datasets/
+        radiosondes.toml
+        profiles.toml
+        simulation.toml
+        training.toml
+        hatpro.toml
+        analysis_radiosonde.toml
+    retrieval/
+        NN_example/retrieval.toml
+        ...
+data/sites/my_site/
+```
 
+The TOML snippets below show sections to edit in these generated files.
+Keep the other settings unless instructed otherwise.
+
+`sites/` contains configuration and trained retrievals. `data/` contains
+downloaded and generated datasets. `grids.toml` defines named height, frequency
+and elevation-angle grids shared by the sites in this project.
+Creating a site does not download or process data and refuses to overwrite an
+existing site.
+
+Uncomment and fill in the instrument settings at the top of
+`sites/my_site/site.toml`, before `[prediction]`. For the G5 HATPRO in Munich:
+
+```toml
+gen = "G5"
+mwr_height = 550
+latitude = 48.148
+longitude = 11.573
+```
+
+`gen` is the instrument generation (`G4` or `G5`). `mwr_height` is its height in
+metres above sea level. Coordinates are in decimal degrees. Local measurement
+paths are needed later for evaluation and prediction.
+
+## How the datasets fit together
+
+The diagram shows the available dataset types and how their inputs connect.
+The names below each type correspond to recipe filenames without `.toml`.
+`create-site` supplies the radiosonde path. [ERA5](#using-era5) is an alternative
+that you can add later.
+
+```{figure} ../../_static/dataset_workflow.svg
+:alt: Radiosondes or ERA5 feed prepared profiles, then simulations. Simulations feed training splits and analysis datasets. Analysis also takes HATPRO measurements.
+:width: 780px
+:align: center
+
+Dataset dependencies. Each prepared-profile recipe selects one source.
+```
+
+A recipe's `[inputs]` section names the datasets it uses. For example,
+`simulation.toml` selects `profiles`, and `training.toml` selects `simulation`.
+An analysis dataset needs two inputs: HATPRO observations and a simulation dataset
+with matching reference profiles. It does not use the training split.
+
+Several recipes can share an input. To compare two absorption models, keep one
+prepared-profile dataset and create two simulation recipes with different names.
+You can also prepare the same source in different ways. Each derived dataset is
+saved under `data/sites/my_site/<recipe-name>/`.
+
+`openMWR data` builds or updates the selected datasets. Adding
+`--with-dependencies` follows the arrows from their sources first. Without it,
+the inputs must already exist. The steps below run separately so you can inspect
+each result.
 
 ## Download and Prepare the Training Data
 
-To generate training data, either the measurement data from radiosondes or era5 data can be used. The recommended option is to use radiosonde data, as it provides more accurate and higher-resolution profiles of atmospheric parameters. It has also been tested more extensively.
+The tutorial uses radiosondes from the German weather service (DWD). ERA5 can
+also supply profiles. See [Using ERA5](#using-era5) below.
 
-### Radiosonde Data
+### Download radiosonde data
 
-The first step is deciding which radiosonde stations to use for the training data. Currently, only radiosondes from the German weather service can be downloaded. For sites outside of Germany, a download option must first be implemented. Below is a map of radiosonde stations in Germany, along with a table of their station IDs. It is useful to use the stations that are closest to the MWR site. For the example of Munich, the Oberschleißheim station alone was enough as it had data since 1990 and about 20000 usable profiles.
+Choose stations that represent the atmospheric conditions at the MWR site.
+The example uses Oberschleißheim near Munich. The built-in downloader reads
+DWD high-resolution radiosonde data. Other providers need a separate importer.
 
 ```{figure} ../../_static/radiosonde.jpg
 :alt: Radiosonde stations in Germany
@@ -105,220 +135,357 @@ Radiosonde stations in Germany (source: [DWD](https://www.dwd.de/DE/derdwd/messn
 
 Source: [DWD](https://opendata.dwd.de/climate_environment/CDC/observations_germany/radiosondes/high_resolution/recent/sec_aero_Beschreibung_Stationen.txt)
 
-The download process is separated into two steps. First, the raw radiosonde data is downloaded and saved locally.
-Then, the data is processed and prepared for radiative transfer calculations. This first step is independent of any site configuration, and the data can be reused for multiple sites. The only thing that needs to be specified is the start and end years between which the program will try to download the data. The default end year is the current year. 
 
-```python
-from openMWR.dwd_opendata import download_radiosondes
+Edit `sites/my_site/datasets/radiosondes.toml`:
 
-station_ids = ['03715'] # Oberschleißheim
-for station_id in station_ids: 
-    download_radiosondes(station_id, project_dir=PROJECT_DIR, start_year=1990)
+```toml
+stations = ["03715"]
+start_year = 1990
+end_year = "current_year"
 ```
-(See {py:func}`openMWR.dwd_opendata.download_radiosondes`)
 
-The second step involves processing and preparing the downloaded raw data for the radiative transfer calculation. 
-Among more filtering steps, the function does the following:
-- Loads the raw radiosonde data files for the specified station.
-- Filters out all profiles that do not reach a height of 15 km.
-- Adds a liquid water content (LWC) profile calculated using the adiabatic model. (See {py:mod}`openMWR.cloud`)
-- Changes the height coordinate to height above ground level.
-- Interpolates the profiles to a specified set of heights.
-- Fills in missing values caused by the radiosonde not reaching the maximum height using the monthly mean of the available profiles.
-- Adds derived data, such as absolute humidity, dew point, LWP and IWV.
+Quote station IDs to preserve leading zeros. These years select the source
+coverage, including profiles for later measurement comparisons. The training
+period is selected separately below. For a first run, a shorter source period
+reduces download and processing time.
 
-In order to run the function, one must provide a height grid in form of a numpy array for interpolation. This grid will also be the output grid for the retrieval. (Note that the output grid can be a subset of the original grid.)
-The standard heights used in openMWR can be imported from `openMWR.consts`.
-
-For the zero height, either the radiosonde station height or the MWR height can be used. In the latter case, the radiosonde profiles are cut off. This is recommended when the MWR height is significantly higher than the radiosonde station height. This behavior can be configured using the parameter `cut_off_at_mwr_height`.
-
-```python
-from openMWR.radiosonde import create_radiosonde_dataset_for_RT
-from openMWR.consts import std_heights
-
-for station_id in station_ids: 
-    create_radiosonde_dataset_for_RT(
-        site,
-        station_id,
-        project_dir=PROJECT_DIR,
-        heights=std_heights,
-        cut_off_at_mwr_height=False,
-    )
+```bash
+openMWR data my_site radiosondes
 ```
-(See {py:func}`openMWR.radiosonde.create_radiosonde_dataset_for_RT`)
 
-### Era5 Data
+Raw profiles are saved under `data/radiosondes/station_03715/` and can be reused
+by other sites and recipes. The station list is inherited by the following steps.
 
-The era5 data can be used as an alternative to radiosonde data for training data generation but also for analysis of the retrieval.
-The era5 data is downloaded and processed using the `ERA5Processor` class. After creating an instance of the class with the site name, the raw data dataset can be created using the `create_original_dataset` method. The method has an option to set the temporal frequency of the data (in hours). The default is 6 hour. A start and end date can also be specified. The default values are the `mwr_measurement_start_date` from the site configuration until 5 days before the current date.
+### Prepare profiles
 
-```python
-from openMWR.era5 import ERA5Processor
+`sites/my_site/datasets/profiles.toml` selects the radiosonde source:
 
-era5 = ERA5Processor(site, project_dir=PROJECT_DIR, start_date='2025-01-01')
-era5.create_original_dataset(h_freq=2)
+```toml
+[inputs]
+source = "radiosondes"
+
+[preparation]
+incomplete_profiles = "monthly_mean"
+heights = "levels_208_30km"
 ```
-(See {py:class}`openMWR.era5.ERA5Processor` and {py:meth}`openMWR.era5.ERA5Processor.create_original_dataset`)
+
+With the generated settings, preparation:
+
+- Rejects profiles with a top below 15 km above sea level or fewer than 500 valid levels.
+- Estimates liquid water content (LWC) from humidity and a scaled adiabatic cloud model.
+- Changes the height coordinate to height above the radiosonde station.
+- Interpolates to the selected height grid.
+- Completes missing upper levels using monthly means of the available profiles.
+- Adds derived quantities, including liquid water path (LWP) and integrated water vapour (IWV).
+
+Cloud estimates and monthly completion are modelling assumptions. The recipe
+states the cloud thresholds and adiabatic fraction. Its comments describe the
+available formulas. `incomplete_profiles = "filter"` instead rejects profiles
+that do not cover the required grid. Both choices reject profiles that still
+lack the fields needed for radiative transfer.
+
+`levels_208_30km` names 208 heights up to 30 km in `grids.toml`. You can add another
+named grid there or use a numeric list in the recipe. Heights are in metres.
+The retrieval can use this grid or a subset of it.
+
+To use the MWR height as the profile base instead of the radiosonde station
+height, set `cut_off_at_mwr_height = true` under `[preparation]`. This cuts off
+the lower profile when the instrument is above the station.
+
+```bash
+openMWR data my_site profiles
+```
+
+Prepared profiles are saved as `data/sites/my_site/profiles/03715.nc`.
 
 ## Run the forward calculation
 
-The forward calculation for the radiosonde data can be run using the `create_radiosonde_dataset_with_RT` function from `openMWR.radiosonde`. Internally this calls {py:func}`openMWR.run_RT.run_RT` and supports two microwave RT backends: {py:class}`TorchMWRT` (default) and [pyrtlib](https://github.com/SatCloP/pyrtlib). For the infrared sensor on the MWR, [libradtran](https://www.libradtran.org/doku.php?id=start) is used.
+The forward calculation simulates the microwave and infrared brightness
+temperatures for each prepared profile. Review
+`sites/my_site/datasets/simulation.toml`:
 
-The arguments of the function are the station ID, the site name, the data directory, and the frequencies and elevation angles for which the brightness temperatures should be calculated. The angles only need to be specified if boundary layer scans with the MWR are performed and a retrieval for these is planned. The default angles are set to 90 degrees only. For the frequencies and angles standard values can be imported from `openMWR.consts`. 
+```toml
+[inputs]
+profiles = "profiles"
 
-There is also an option to use a frequency shift for each channel, which will be subtracted from the original frequencies for the calculation. To use a frequency shift, use the argument `freq_shift` and provide a numpy array with the same length as the frequencies array.
-
-It is recommended to use multiprocessing to speed up the calculation. The number of processes can be set using the `num_of_processes` argument. All the radiosonde profiles will be distributed to the processes equally and then calculated in parallel. The maximum number of processes should not exceed the number of CPU cores available on the machine. To get the maximum number of CPU cores available, `os.cpu_count()` can be used.
-If `TorchMWRT` is used as RT backend, multiprocessing is not used for the forward calculation of the brightness temperatures, because it is not nessecary. I usually just takes a few minuits, because it is havily vectorized. The `num_of_processes` argument is then only used for the forward calculation of the infrared brightness temperature with libradtran.
-
-```python
-from openMWR.radiosonde import create_radiosonde_dataset_with_RT
-from openMWR.consts import std_freqs, std_angles
-
-for station_id in station_ids: 
-    create_radiosonde_dataset_with_RT(
-        station_id,
-        site,
-        project_dir=PROJECT_DIR,
-        freqs=std_freqs,
-        angles=std_angles,
-        num_of_processes=20,
-        RT_model='torchMWRT',
-    )
+[radiative_transfer]
+backend = "torchMWRT"
+absorption_model = "R24"
+frequencies = "hatpro"
+angles = "hatpro_bls"
 ```
-(See {py:func}`openMWR.radiosonde.create_radiosonde_dataset_with_RT`)
 
-The forward calculation for the ERA5 data can be run using the `create_forward_calc_dataset` method of the `ERA5Processor` class. The arguments are similar to those of the `create_radiosonde_dataset_with_RT` function, including the optional `RT_model` argument. The number of processes can also be set to speed up the calculation. In case of the era5 data, the interpolation to the specified heights is also performed during the forward calculation.
+`torchMWRT` is the PyTorch implementation of the microwave calculation. `pyrtlib`
+is an alternative backend. R24 selects the absorption model. Frequencies (GHz)
+and elevation angles (degrees) refer to grids in `grids.toml`.
+The supplied scan angles include zenith, so this dataset supports both zenith
+and boundary layer scan retrievals. For zenith only, use `angles = [90.0]`.
 
-```python
-era5.create_forward_calc_dataset(std_freqs, std_heights, std_angles, num_of_processes=12)
+The infrared calculation uses [libRadtran](installation.md#install-libradtran).
+Its cloud droplet concentration and minimum effective radius are set in
+`[radiative_transfer.infrared]`.
+
+```bash
+openMWR data my_site simulation
 ```
-(See {py:meth}`openMWR.era5.ERA5Processor.create_forward_calc_dataset`)
 
-## Separate in training, validation, and test datasets
+Results are saved as `data/sites/my_site/simulation/03715.nc`.
+To control parallel processing, add `[execution]` with `processes = 4`, for
+example. With torchMWRT, this controls the libRadtran workers. The microwave
+calculation processes profiles in batches. Choose a worker count that fits your
+available CPU cores and memory.
 
-The forward calculation datasets that were created need to be separated into training, validation, and test datasets. This can be done using the `separate_training_data` function from the `openMWR.train` module. The `source` argument needs to be set to either a radiosonde station ID (for example `'03715'`) or `'era5'`. The function randomly selects 10% of the time indices for the test dataset and another 10% for the validation dataset. The remaining 80% of the data is used for training. These fractions can be adjusted using the `test_fraction` and `val_fraction` arguments.
+For channel-frequency experiments, `frequency_shift` accepts one offset per
+channel under `[radiative_transfer]`. Offsets are in GHz and are subtracted from
+the nominal frequencies. Copy the recipe to a new name before changing the
+simulation if you want to keep both datasets.
 
-```python
-from openMWR.train import separate_training_data
+## Separate training, validation and test datasets
 
-for station_id in station_ids: 
-    separate_training_data(site, source=station_id, project_dir=PROJECT_DIR)
+`sites/my_site/datasets/training.toml` selects the profile period and assigns
+whole UTC days to the three datasets. Edit its `[split]` section:
+
+```toml
+[split]
+end_date = "2024-10-31"
+test_days_of_month = { first = 1, last = 3 }
+validation_days_of_month = { first = 15, last = 17 }
 ```
-or 
-```python
-separate_training_data(site, source='era5', project_dir=PROJECT_DIR)
+
+Here, days 1–3 of every month are used for testing, days 15–17 for validation,
+and the remaining days for training. Bounds are inclusive. The same assignment
+applies across stations. These are calendar groups, not fixed percentages or a
+guarantee of statistical independence.
+
+Training adjusts the model using the training group and selects the saved neural
+network using validation loss. The test group is reserved for evaluation.
+The `end_date` above applies to all three groups. Choose it before the observations
+used for optimization and final comparison. The example reserves observations
+from November 2024 onwards. Optional `start_date` limits the beginning of the pool.
+
+```bash
+openMWR data my_site training
 ```
-(See {py:func}`openMWR.train.separate_training_data`)
 
-## Create an analysis dataset from real measurements
+The three files are stored under `data/sites/my_site/training/`, for example
+`training_03715.nc`, `validation_03715.nc` and `test_03715.nc`.
 
-An analysis dataset is a collection of real measurements with corresponding atmospheric profiles. It is not strictly necessary for training the retrieval model, but it is useful to evaluate the performance of the retrieval later on. It can also be used to optimize hyperparameters during training.
+### Build or update the whole chain
 
-Before creating the analysis dataset, the MWR measurement data needs to be prepared. This is done using the `create_hatpro_dataset` function from the `openMWR.hatpro_data` module. This function reads in netCDF files created by the RPG software and combines them into two datasets: one for the normal zenith mode and one for the boundary layer scan mode (BLS). The function can also read in data from the RPG retrieval if `import_retrieval_data` is set to True. By default it uses the `rpg_retrieval_exists` parameter from site config. The prepared datasets are saved in the site folder under `{PROJECT_DIR}/data/sites/{site}/hatpro/`.
+The preceding commands run one step at a time, using existing inputs. To run
+the prerequisites automatically, use:
 
-```python
-from openMWR.hatpro_data import create_hatpro_dataset
-create_hatpro_dataset(site, project_dir=PROJECT_DIR)
+```bash
+openMWR data my_site training --with-dependencies --dry-run
+openMWR data my_site training --with-dependencies
 ```
-(See {py:func}`openMWR.hatpro_data.create_hatpro_dataset`)
 
-After preparing the MWR data, the analysis dataset can be created using the `create_analysis_dataset` function from the `openMWR.radiosonde` module. This function requires the site name and a list of radiosonde station IDs to be used for the analysis. These IDs may differ from those that will be used for training, but the site data must be downloaded as described above.
-The function matches MWR measurement times with radiosonde data times to create a dataset with corresponding profiles and brightness temperatures. The analysis dataset is saved in the site folder under `{PROJECT_DIR}/data/sites/{site}/analysis/`. This process is applied to both boundary layer scan data and normal zenith mode data.
+The first command checks the configuration and prints the processing order
+without writing or downloading. The second creates missing datasets or updates
+existing ones, following `radiosondes → profiles → simulation → training`.
 
-It can be specified whether to use the forward calculation data or just the prepared radiosonde data for the profiles in the analysis dataset. Using forward calculation data allows for an Observation minus Background (OmB) analysis later on, but requires that a forward calculation has been run for the radiosonde stations used in the analysis. This can be set using the `from_forward_calc` argument. Default is True.
-
-```python
-from openMWR.radiosonde import create_analysis_dataset
-station_ids_for_analysis = ['02290']
-create_analysis_dataset(site, station_ids_for_analysis, project_dir=PROJECT_DIR, from_forward_calc=True)
-```
-(See {py:func}`openMWR.radiosonde.create_analysis_dataset`)
-
-To create an analysis dataset from era5 data, the `create_analysis_dataset_from_forward_calc` method of the `ERA5Processor` class can be used. This method matches MWR measurement times with era5 data times to create a dataset with corresponding profiles and brightness temperatures. The analysis dataset is saved in the site folder under `{PROJECT_DIR}/data/sites/{site}/analysis/`.
-
-It also requires the hatpro dataset to be created first using the `create_hatpro_dataset` function as described above.
-
-```python
-era5.create_analysis_dataset_from_forward_calc()
-```
-(See {py:meth}`openMWR.era5.ERA5Processor.create_analysis_dataset_from_forward_calc`)
+Running `data` again updates the selected datasets. Without
+`--with-dependencies`, it uses the inputs already on disk. With that option,
+source steps also check for new data. Changed processing settings require an
+explicit rebuild. The error gives the command for the affected datasets.
+`--rebuild` replaces only the selected dataset outputs. Raw source caches are
+reused unless a source dataset itself is selected for rebuilding.
 
 ## Train the retrieval model
 
-### Create and initialize the model
-To train the retrieval model, first a model instance needs to be created using the {py:class}`Model <openMWR.models.Model>` class from the `openMWR.models` module, which is a child class of the {py:class}`BaseModel <openMWR.models.BaseModel>` class. There can also be custom models created by inheriting from the `BaseModel` class. For most cases the `Model` class is sufficient, as many different configurations can be initialized.
+### Configure the model
 
-The minimum required parameters for the init are the name of the model and the heights and frequencies used for the retrieval. Other parameters can also be set, such as the number of layers, number of neurons per layer, additional input variables, etc. See the {py:class}`Model <openMWR.models.Model>` documentation for more details.
+Open `sites/my_site/retrieval/NN_example/retrieval.toml`. Its `[model]` section
+selects a zenith neural network with hidden layers of 1024, 64 and 1024 neurons.
+`freqs = "dataset"` and `heights = "dataset"` inherit the grids from the
+`training` dataset selected under `[data]`.
 
-By default a feedforward neural network with 3 hidden layers with 1024, 64 and 1024 neurons is created. The model has as input the brightness temperatures for all frequencies plus additional input variables and as output the temperature, humidity, and liquid water content profiles plus liquid water path and integrated water vapor. Predicting all variables at once has shown to improve the retrieval performance but separate models for each variable can also be configured. The default additional input variables are the brightness temperature of the infrared sensor, surface temperature, surface pressure, surface relative humidity, the cosine of the day of year, and the sine of the day of year.
-
-For the neural network architecture and the training process, the [PyTorch](https://pytorch.org/) library is used.
-
-```python
-from openMWR.models import Model
-
-model = Model('NN_1', std_heights, std_freqs)
-```
+Inputs are microwave and infrared brightness temperatures, surface temperature,
+pressure and relative humidity, and the sine and cosine of the day of year.
+Outputs are temperature, relative humidity and LWC profiles, plus LWP and IWV.
+Normalization and loss weights are written explicitly in the recipe.
+The network and its training use PyTorch.
 
 ### Train the model
 
-The training process is handled by the {py:class}`TrainingWorkflow <openMWR.train.TrainingWorkflow>` class from the `openMWR.train` module. An instance of the class is created with the model, site name and device (cpu or cuda). It is recommended to use a GPU for training, as it speeds up the process significantly. This can be done by setting the device to 'cuda' if a compatible GPU is available.
+`[training]` specifies the epochs, batch size, learning-rate schedule, loss,
+weight decay and random seed. `[input_noise]` specifies the standard deviations
+of noise added to the inputs during training, in each input's units. For example,
+`TB = 0.5` adds noise with a standard deviation of 0.5 K to each microwave channel.
+These values describe the training perturbations, not measured instrument errors.
 
-```python
-from openMWR.train import TrainingWorkflow
-
-device = "cuda" #if torch.cuda.is_available() else "cpu"
-
-workflow = TrainingWorkflow(model, site, device, project_dir=PROJECT_DIR)
+```bash
+openMWR train my_site NN_example
 ```
 
-The next step is to load the training data using the {py:meth}`load_training_data <openMWR.train.TrainingWorkflow.load_training_data>` method. The method requires a list of data sources, which can include radiosonde station IDs and 'era5'. It is recommended to set an end date for the training data using the `end_date_training` argument. This limits the training data to a specific time period in order to have the possibility to evaluate the retrieval on real measurement data with atmospheric profiles, which were not used for training.
+The command uses the CPU. Add `--device cuda` to use a compatible GPU.
+The trained model and `training.log` are saved beside `retrieval.toml` as
+`sites/my_site/retrieval/NN_example/model.pth` and `training.log`.
 
-```python
-end_date_training = '2024-10-31'
-sources = ['03715'] # ['03715', 'era5']
+To try different settings while keeping a model, copy its recipe into a new
+retrieval directory and use that name in the command. To replace the current
+model deliberately, run `train` with `--fresh`.
 
-workflow.load_training_data(sources, end_date_training)
+## Compare the retrieval with real measurements
+
+An analysis dataset pairs MWR measurements with reference profiles and their
+simulated brightness temperatures. It is used for measurement comparisons and
+can also be used for optimization. It is not needed for the fixed-value training
+above.
+
+### Prepare measurements and matching profiles
+
+Fill in the local input path and measurement start at the top of `site.toml`,
+before `[prediction]`:
+
+```toml
+hatpro_data_dir = "/path/to/hatpro-data"
+mwr_measurement_start_date = "2024-11-01"
 ```
 
-Between creating the instance and starting the training, hyperparameters for the training need to be set. This can be done using the {py:meth}`add_standard_training_hyper_params <openMWR.train.TrainingWorkflow.add_standard_training_hyper_params>` method, which uses default values unless specific values are provided as arguments. Other ways to set hyperparameters include using the same as in an already trained model with the {py:meth}`get_hyper_params_from_existing_model <openMWR.train.TrainingWorkflow.get_hyper_params_from_existing_model>` method.
+The input root must contain the RPG NetCDF files in folders such as
+`Y2024/M11/D21/`. Set `rpg_retrieval_exists = true` if the instrument's retrieval
+products are also present and should be included for comparison.
+`datasets/hatpro.toml` uses the site start and `end_date = "today"`. Set explicit
+dates there to limit the measurement period.
 
-```python
-workflow.add_standard_training_hyper_params()
+`datasets/analysis_radiosonde.toml` pairs `hatpro` with `simulation`.
+The example allows a time difference of at most 10 minutes and excludes rain.
+To keep the full model grid available for optimization, change its `[analysis]`
+section to:
+
+```toml
+[analysis]
+max_time_difference_minutes = 10
+exclude_rain = true
+height_range = [0, 30000]
 ```
 
-One other important step before training is to add input noise parameters using the {py:meth}`add_input_noise_params <openMWR.train.TrainingWorkflow.add_input_noise_params>` method. This method adds for each variable the standard deviation of the noise that will be added to the input during training. Adding noise to the simulated brightness temperatures is necessary to mimic real measurements. By default, the method uses predefined noise values, but custom values can also be provided as keyword arguments.
+This range must cover the model's output heights for profile optimization.
+Evaluation selects a smaller range separately. Build the dataset:
 
-```python
-workflow.add_input_noise_params()
+```bash
+openMWR data my_site analysis_radiosonde --with-dependencies
 ```
 
-Finally, the training is started using the {py:meth}`train <openMWR.train.TrainingWorkflow.train>` method. The trained model is saved to `{PROJECT_DIR}/sites/{site}/retrieval/{model_name}/model.pth`.
+This also updates its source profiles and simulations. Matched datasets are
+saved as `data/sites/my_site/analysis_radiosonde/zenith.nc` and `bls.nc`.
+The reference profiles must cover the selected observation period.
 
-```python
-workflow.train()
+### Evaluate the model
+
+The retrieval recipe's `[evaluation]` section enables comparison with both the
+simulated test data and real observations. It selects observation days 21–31
+and profile heights up to 10 km. Test-data evaluation uses the whole model grid.
+Add the observation start date to this section:
+
+```toml
+start_date = "2024-11-01"
 ```
 
-### Optimize hyperparameters and input noise
-
-The training workflow also has methods to optimize hyperparameters and input noise parameters. These methods run multiple training runs with different parameter combinations and evaluate the performance on real measurements to find the best combination. Internally the [Optuna](https://optuna.org/) library is used for the optimization. A workflow for optimization could look like this:
-
-```python
-workflow = TrainingWorkflow(model, site, device, project_dir=PROJECT_DIR)
-
-end_date_training = '2024-10-31'
-sources = ['03715'] # ['03715', 'era5']
-workflow.load_training_data(sources, end_date_training)
-
-workflow.change_hyper_params(epochs=workflow.suggest_int(50, 200))
-workflow.add_input_noise_params(optimization=True)
-workflow.optimize(n_trials=100, data_source='radiosonde')
+```bash
+openMWR evaluate my_site NN_example
 ```
 
-Here as an example the number of epochs for training is optimized between 50 and 200, but more important the input noise parameters are optimized. To evaluate the performance of each trial the {py:meth}`optimize <openMWR.train.TrainingWorkflow.optimize>` method uses the analysis dataset created above. The `data_source` argument specifies whether to use radiosonde or era5 data for that.
-The model is saved to `{PROJECT_DIR}/sites/{site}/retrieval/{model_name}/model.pth` every time a new best trial is found. The progress is saved as a study in `{PROJECT_DIR}/sites/{self.site}/optimization_studies.db`.
+The command prints the path of an HTML report under the retrieval's `evaluation/`
+directory. Open it in a browser. Measurement comparison and simulated test
+performance answer different questions. The latter does not measure performance
+on the instrument's observations.
 
-## Notes
+Without local observations, set `observations = false` in `[evaluation]` and
+leave `test_data = true` to evaluate only the simulated test group.
+See [Retrieval Analysis](retrieval_analysis.ipynb) for custom comparisons and plots.
 
-- Most of the data generation functions above have an update option, so that not all the data has to be regenerated when new data is available. To update data the script `bin/update.py` can be used. Comment out the parts that are not needed.
+## Optimize hyperparameters and input noise
+
+The generated `NN_opt_example` recipe demonstrates parameter searches. A fixed
+value is replaced by an explicit range in the same place, for example under
+`[training]`:
+
+```toml
+weight_decay = { low = 1e-8, high = 1e-4, log = true }
+```
+
+Its `[input_noise]` section also contains search ranges. `[optimization]`
+sets the trial count, sampling seed, analysis dataset and scoring weights.
+The example score weights temperature RMSE by 1.0 and relative-humidity RMSE by
+0.1, with the model's height weights applied across its full output grid.
+Here that includes monthly-completed upper levels. Review this objective and
+the output grid for your use.
+
+Add `start_date = "2024-11-01"` to both `[optimization]` and `[evaluation]`
+in this recipe. It uses observation days 1–20 for optimization and 21–31 for
+final evaluation. Keep the final evaluation selection out of parameter tuning.
+
+```bash
+openMWR train my_site NN_opt_example
+openMWR evaluate my_site NN_opt_example
+```
+
+`train` starts an Optuna study whenever the recipe contains a search. It saves
+the best model as `model.pth`, with `optimization.db` and `optimization.log` in
+the same retrieval folder. To add 20 trials to a compatible existing study:
+
+```bash
+openMWR train my_site NN_opt_example --continue --n-trials 20
+```
+
+Use a new retrieval name for a changed experiment, or `--fresh` to replace its
+model and study. Continuation checks the experiment settings. It does not freeze
+the underlying datasets. Keep those unchanged when continuing a study.
+
+## Other retrievals
+
+The generated examples also include `MLR_example` for multilinear regression,
+`NN_BLS_example` for boundary layer scans, and `SPC_example` for spectral
+consistency. Each has an `_opt_example` counterpart. They use the same commands
+with their own retrieval name. Scan models need simulations at their input angles.
+
+Next, [run and plot a retrieval](run_retrieval.ipynb), set up
+[regular prediction and updates](run_operational.md), or use the same workflows
+[from Python](python_usage.md).
+
+## Using ERA5
+
+ERA5 can provide profiles for training or measurement comparison. It requires
+CDS access configured for `cdsapi`. Follow the
+[CDS API setup instructions](https://cds.climate.copernicus.eu/how-to-api).
+
+Create `sites/my_site/datasets/era5.toml` with this complete source recipe:
+
+```toml
+kind = "era5"
+start_date = "2024-01-01"
+end_date = "today"
+delay_days = 5
+hour_interval = 6
+```
+
+Create `datasets/profiles_era5.toml` with:
+
+```toml
+kind = "profiles"
+
+[inputs]
+source = "era5"
+
+[preparation]
+heights = "levels_208_30km"
+```
+
+ERA5 preparation uses its atmospheric fields. The radiosonde cloud and completion
+settings do not apply. Copy `simulation.toml` to `simulation_era5.toml` and
+change `[inputs].profiles` to `"profiles_era5"`. Copy `training.toml` to
+`training_era5.toml` and change `[inputs].simulation` to `"simulation_era5"`.
+Choose source and split dates that cover the intended training period.
+
+```bash
+openMWR data my_site training_era5 --with-dependencies
+```
+
+Copy a retrieval recipe into a new retrieval folder and set its `[data].dataset`
+to `"training_era5"`. For measurement comparison, copy
+`analysis_radiosonde.toml` to `analysis_era5.toml`, set `[inputs].reference` to
+`"simulation_era5"`, and build it with dependencies. In the retrieval's evaluation
+or optimization section, select `data_source = "era5"` and
+`dataset = "analysis_era5"`. ERA5 comparisons are comparisons with a reanalysis.

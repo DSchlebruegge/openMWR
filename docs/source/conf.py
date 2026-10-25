@@ -87,6 +87,7 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"
 
 
 nb_execution_mode = "off"
+myst_heading_anchors = 3
 
 html_theme_options = {
     "header_links_before_dropdown": 8,

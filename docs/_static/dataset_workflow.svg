@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 450" role="img" aria-labelledby="title description">
+  <title id="title">openMWR dataset dependencies</title>
+  <desc id="description">Raw radiosondes or ERA5 feed prepared profiles. Prepared profiles feed simulations. Simulations feed training splits and matched analysis datasets. Analysis also takes HATPRO measurements. Each prepared-profile recipe selects one source.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#526575"/>
+    </marker>
+  </defs>
+  <rect width="780" height="450" rx="8" fill="#fff"/>
+  <g fill="none" stroke="#526575" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M 135 78 V 103 H 250 V 124"/>
+    <path d="M 390 78 V 103 H 300 V 124"/>
+    <path d="M 275 192 V 228"/>
+    <path d="M 275 296 V 320 H 175 V 346"/>
+    <path d="M 275 296 V 320 H 545 V 346"/>
+    <path d="M 645 78 V 346"/>
+  </g>
+  <g stroke="#9aabb8" stroke-width="1.5">
+    <rect x="20" y="14" width="230" height="64" rx="6" fill="#f3f6f8"/>
+    <rect x="275" y="14" width="230" height="64" rx="6" fill="#f3f6f8" stroke-dasharray="5 4"/>
+    <rect x="530" y="14" width="230" height="64" rx="6" fill="#f3f6f8"/>
+    <rect x="115" y="128" width="320" height="64" rx="6" fill="#eaf3fa"/>
+    <rect x="115" y="232" width="320" height="64" rx="6" fill="#eaf3fa"/>
+    <rect x="20" y="350" width="310" height="82" rx="6" fill="#eaf3fa"/>
+    <rect x="430" y="350" width="330" height="82" rx="6" fill="#eaf3fa"/>
+  </g>
+  <g fill="#203644" font-family="sans-serif" text-anchor="middle">
+    <g font-size="16" font-weight="600">
+      <text x="135" y="40">DWD radiosondes</text>
+      <text x="390" y="40">ERA5</text>
+      <text x="645" y="40">HATPRO measurements</text>
+      <text x="275" y="154">Prepared profiles</text>
+      <text x="275" y="258">Simulations</text>
+      <text x="175" y="376">Training split</text>
+      <text x="595" y="376">Matched comparisons</text>
+    </g>
+    <g font-size="14">
+      <text x="135" y="62">radiosondes</text>
+      <text x="390" y="62">era5 (optional)</text>
+      <text x="645" y="62">hatpro</text>
+      <text x="275" y="176">profiles / profiles_era5</text>
+      <text x="275" y="280">simulation / simulation_era5</text>
+      <text x="175" y="399">training / training_era5</text>
+      <text x="175" y="420">training · validation · test</text>
+      <text x="595" y="403">analysis_radiosonde / analysis_era5</text>
+    </g>
+  </g>
+</svg>

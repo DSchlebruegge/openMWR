@@ -1,64 +1,60 @@
 # Run Retrieval Operational
 
-## Cron Job
+## Predict daily measurements
 
-To run the retrieval operationally, we set up a cron job that executes the `cron_job.py` script located in the `bin` directory. This script is run every hour.
+After training and evaluation, apply a saved retrieval to local HATPRO files:
 
-The cron job performs the following tasks:
-1. It retrieves the current date and time.
-2. It runs the retrieval for the current day.
-3. It saves the results of the retrieval.
-4. It generates and saves plots of the retrieval results such as Skew-T diagrams and time-height plots.
-5. If the current time is within the first hour of the day, it also re-runs the retrieval for the previous day to include any late-arriving data.
-6. At 4:00 a.m. UTC, it updates the locally saved radiosonde data to ensure that the most recent atmospheric profiles are available for plotting.
+```bash
+openMWR predict my_site NN_example --date 2025-01-12
+```
 
-The plots are saved in the directory specified in the site's configuration file as `plot_dir`.
-The retrieval results are saved in the directory specified in the site's configuration file as `retrieval_output_dir`.
+For an inclusive range of UTC dates:
 
-The `cron_job.py` script can also be run manually for past dates by providing the following arguments:
+```bash
+openMWR predict my_site NN_example --start-date 2025-01-01 --end-date 2025-01-31
+```
 
-Run just one day:
+Prediction reads the local measurement path from `site.toml`. It does not download
+data or update prepared datasets. The saved model supplies its input grids and
+normalization. Training data is not needed.
 
-    ./cron_job.py [site] [year] [month] [day]
+Files are saved under `data/sites/my_site/predictions/YYYY/MM/` as
+`YYYYMMDD_retrieval.nc` and, for scans, `YYYYMMDD_retrieval_bls.nc`.
+Set `retrieval_output_dir` in `site.toml` or pass `--output-dir` to choose another
+root. Relative paths resolve from the working project.
 
-Or, run a range of days:
+You can list several retrieval names. Omitting them uses `[prediction].retrievals`
+in `site.toml`. Reprocessing replaces the selected day's zenith or scan file,
+including its model selection. Zenith measurements are averaged to one minute.
+Zenith predictions receive a centred five-sample running mean. Scan predictions
+are not smoothed.
 
-    ./cron_job.py [site] [start_year] [start_month] [start_day] [end_year] [end_month] [end_day]
+Missing or invalid measurement inputs are reported per day and group. Other
+requested days and groups still run, but the command exits with status 1 if any
+failed. Files from previous runs remain for failed groups. Check the log before
+using them as current results.
 
-Note that the end date is inclusive.
+For regular prediction, put this command in a cron job or another scheduler.
+Use the environment's full `openMWR` path and set `--project-dir` to the working
+project. Rerun recent days to include late-arriving measurements. Plotting can
+follow in a Python script, as shown in [Run and Plot a Retrieval](run_retrieval.ipynb).
 
-The `cron_job.py` script needs to be personalized. Site name, plot titles, and retrieval names are set in the script itself.
+## Update datasets
 
-## Update Radiosonde and ERA5 Data
+Use the same `data` command for initial creation and later updates:
 
-There is also an `update.py` script in the `bin` directory that can be run like this:
+```bash
+openMWR data my_site analysis_radiosonde --with-dependencies
+```
 
-    .venv/bin/python bin/update.py
+This updates the measurement comparison and its prerequisites, including source
+checks. Source recipes with `end_year = "current_year"` or `end_date = "today"`
+continue into new years or days. Explicit end dates stay fixed.
 
-This script updates all the datasets created in [Create a Retrieval](#create_retrieval) or with `bin/main.py` with the latest available data.
+To update only the selected dataset using existing inputs, omit
+`--with-dependencies`. Use `--dry-run` to check the processing order first.
+If processing settings changed, rebuild the affected datasets using the command
+reported by openMWR. See [Create a Retrieval](create_retrieval.md#build-or-update-the-whole-chain).
 
-Run from the working-project root. In the list below, `PROJECT_DIR` refers to
-that directory, containing both `data/` and `sites/` and passed to openMWR as
-`project_dir`. Site settings live in `sites/{site}/site.toml`, trained models in
-`sites/{site}/retrieval/{name}/model.pth`, and optimization history in
-`sites/{site}/optimization_studies.db`.
-
-Specifically, the script updates the following datasets:
-- The raw, unchanged radiosonde data:<br>
- `{PROJECT_DIR}/data/radiosondes/station_{station}/raw_data_{year}.nc`.
-- The filtered and interpolated radiosonde data:<br>
-`{PROJECT_DIR}/data/sites/{site}/radiosonde/radiosonde_data_{station}.nc`.
-- The radiosonde data with forward-calculated brightness temperatures:<br>
-`{PROJECT_DIR}/data/sites/{site}/radiosonde/radiosonde_data_with_RT_{station}.nc`.
-- The Hatpro dataset with all the measurements:<br>
-`{PROJECT_DIR}/data/sites/{site}/hatpro/hatpro_data.nc`.
-- The radiosonde analysis dataset:<br>
-`{PROJECT_DIR}/data/sites/{site}/analysis/analysis_data_radiosonde.nc`.
-- The raw, unchanged ERA5 data:<br>
-`{PROJECT_DIR}/data/era5/era5_{lat}_{lon}.nc`.
-- The interpolated ERA5 data with forward calculation:<br>
-`{PROJECT_DIR}/data/sites/{site}/era5/forward_calc_era5.nc`.
-- The ERA5 analysis dataset:<br>
-`{PROJECT_DIR}/data/sites/{site}/analysis/analysis_data_era5.nc`.
-
-The `update.py` script also needs to be personalized. Site names and radiosonde station IDs are set in the script itself.
+Dataset updates do not retrain saved models. Retraining and changing the models
+used for prediction remain separate decisions.

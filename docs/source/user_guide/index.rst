@@ -10,6 +10,7 @@ User Guide
    run_retrieval.ipynb
    retrieval_analysis
    run_operational
+   python_usage
    torchMWRT_demo
    omb_analysis
    spc_retrieval

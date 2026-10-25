@@ -8,12 +8,13 @@ algorithms to measurements operationally.
 
 ## Usage
 
-For a full user guide, please refer to the [Documentation](https://dschlebruegge.github.io/openMWR/).
+Start with [Installation](https://dschlebruegge.github.io/openMWR/user_guide/installation.html)
+and [Create a Retrieval](https://dschlebruegge.github.io/openMWR/user_guide/create_retrieval.html).
+The tutorial uses TOML recipes and commands; [Using Python](https://dschlebruegge.github.io/openMWR/user_guide/python_usage.html)
+shows how to customize the same workflows in scripts.
 
 Working projects contain `data/` for datasets and `sites/` for site TOML settings
 and named retrievals. Affected Python APIs take this root as `project_dir`.
-The scripts under `bin/` are Munich-specific examples: run them with your working
-project as the current directory and adapt their site/model choices as needed.
 
 Installing the package provides the `openMWR` command. With your environment
 activated, use `openMWR --help` or, for example,
@@ -274,8 +275,8 @@ day, leaving historical gaps and earlier sampling unchanged. Radiosondes
 download missing historical years and refresh the recent years. Profiles and RT
 append missing timestamps. Corrected values at already processed timestamps
 require explicitly rebuilding the affected derived datasets. Split updates keep
-all existing membership and assign new samples to maintain the requested overall
-fractions; updates never reshuffle old samples. Analysis regenerates when its
+existing membership and assign new samples using the configured day-of-month
+ranges; updates never reshuffle old samples. Analysis regenerates when its
 inputs change. Unchanged inputs skip derived processing.
 
 Narrowing date coverage requires rebuilding the affected derived datasets.
@@ -700,7 +701,7 @@ workflow = TrainingWorkflow.from_recipe(
     project_dir=".", site="munich_G5", retrieval="NN_example", device="cuda"
 )
 # Inspect/change workflow.training_data or workflow.validation_data here.
-# Resolve the example's learning-rate search to a fixed value for one model.
+# Change fixed training settings for this run.
 workflow.change_hyper_params(epochs=1000, lr_height=0.002)
 model = workflow.train()
 ```
@@ -725,20 +726,21 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/DSchlebruegge/openMWR.git
+mkdir my_project
+cd my_project
 ```
 
 Create and activate a virtual environment:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
 Install the openMWR package as editable:
 
 ```bash
-cd openMWR
-pip install -e .
+python -m pip install --editable ../openMWR
 ```
 
 For more details on installation, please refer to the [Installation Guide](https://dschlebruegge.github.io/openMWR/user_guide/installation.html).
