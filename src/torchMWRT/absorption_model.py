@@ -1153,7 +1153,7 @@ class O2AbsModel(AbsModel):
             dnu1_l = _line_param(self.o2ll.dnu1)
 
             wnr = self.o2ll.wb300 * pe1
-            sumy = frq.new_tensor(1.584e-17 * self.o2ll.wb300)
+            sumy = 1.584e-17 * self.o2ll.wb300
             adjy = .99  # adjustment following update of line intensities
 
             a = s300_l * torch.exp(-be_l * th1_exp) * th_exp / (f_l ** 2)

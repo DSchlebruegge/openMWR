@@ -26,6 +26,7 @@ def test_reference_inputs_are_unchanged():
 
 
 @pytest.mark.parametrize('case', REFERENCE['cases'], ids=case_name)
+@pytest.mark.filterwarnings('error:To copy construct from a tensor:UserWarning')
 def test_brightness_temperature_matches_independent_reference(case):
     result = torch_brightness(case)
     assert result.dims == ('frq', 'ang')
