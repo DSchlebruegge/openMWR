@@ -19,6 +19,7 @@ they do not establish infrared numerical accuracy.
 | Area | Owns the detailed proof |
 | --- | --- |
 | `workflows/test_setup.py` | Creating a usable starter and preserving user files |
+| `workflows/test_background.py` | Detachment, completed commands, preserved logs and startup failures |
 | `workflows/test_datasets.py` | Build/update/rebuild, dependency sharing, calendar membership, readiness and recovery |
 | `workflows/test_training.py` | Fixed training, Python/command equivalence, held-out fit, reproducibility and saved settings |
 | `workflows/test_optimization.py` | Searches, scoring, continuation, reproducibility and safe replacement |

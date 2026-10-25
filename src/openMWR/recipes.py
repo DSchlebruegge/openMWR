@@ -58,6 +58,13 @@ class RetrievalRecipe:
     def section(self, name):
         return self.values.get(name, {})
 
+    @property
+    def requires_optimization(self):
+        """Whether the recipe defines searches in its training or input noise."""
+        return any(isinstance(value, dict)
+                   for section in ('training', 'input_noise')
+                   for key, value in self.section(section).items() if key != 'days_of_month')
+
     def _validate(self):
         check_keys(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization", "evaluation"), "recipe")
         if type(self.values.get("schema_version")) is not int or self.values["schema_version"] != 1:
@@ -170,7 +177,7 @@ class RetrievalRecipe:
                 check_coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
         optimization = self.section("optimization")
         check_keys(optimization, ("n_trials", "data_source", "dataset", "seed", "score_weights", *TIME_SELECTION_KEYS), "optimization")
-        if any(isinstance(value, dict) for key, value in (*self.section('training').items(), *noise.items()) if key != 'days_of_month'):
+        if self.requires_optimization:
             require_keys(optimization, ('n_trials', 'data_source', 'dataset', 'seed', 'score_weights'), 'optimization')
         if "n_trials" in optimization:
             check_number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)

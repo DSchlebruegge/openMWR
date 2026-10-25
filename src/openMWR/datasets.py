@@ -25,6 +25,7 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
                             require_keys, load_grid, check_cloud, check_profile_quality,
                             check_analysis, check_infrared, check_time_selection, check_split_days, TIME_SELECTION_KEYS)
+from openMWR.background import task_log_handler
 
 logger = logging.getLogger(__name__)
 
@@ -616,9 +617,14 @@ class DatasetWorkflow:
                     self._check_state(input_name, targets=names)
                 self._check_state(name, rebuilding=rebuilding, targets=names)
                 if rebuilding and recipe.directory.exists():
-                    shutil.rmtree(recipe.directory)
+                    for path in recipe.directory.iterdir():
+                        if path.name != 'build.log':
+                            if path.is_dir() and not path.is_symlink():
+                                shutil.rmtree(path)
+                            else:
+                                path.unlink()
                 recipe.directory.mkdir(parents=True, exist_ok=True)
-                handler = logging.FileHandler(recipe.directory / 'build.log')
+                handler = task_log_handler(recipe.directory / 'build.log')
                 handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
                 logging.getLogger().addHandler(handler)
                 try:

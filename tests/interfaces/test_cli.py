@@ -1,6 +1,8 @@
 """Only parser, dispatch and error presentation live here; algorithms have other owners."""
 
 from datetime import date
+import logging
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +13,7 @@ import pytest
 
 from tests.fixtures.cli import run_cli
 from tests.fixtures.datasets import dataset_project
+from tests.fixtures.retrievals import retrieval_project
 
 
 def test_installed_console_and_module_entry_points():
@@ -111,3 +114,62 @@ def test_data_dry_run_and_diagnostic_are_read_only(dataset_project):
     missing = run_cli('train', 'test', 'missing', '-p', str(dataset_project))
     assert missing.returncode == 1 and 'Train failed:' in missing.stderr
     assert 'Traceback' not in missing.stderr
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Detached commands use POSIX sessions.')
+@pytest.mark.parametrize(('command', 'search', 'extra', 'log'), [
+    ('train', False, [], 'sites/test/retrieval/example/training.log'),
+    ('train', True, [], 'sites/test/retrieval/example/optimization.log'),
+    ('evaluate', False, [], 'sites/test/retrieval/example/evaluation.log'),
+    ('predict', False, ['-d', '2024-01-01', '-o', 'output with spaces'], 'output with spaces/prediction.log'),
+])
+def test_background_launch_uses_current_environment_and_existing_task_logs(tmp_path, monkeypatch, command, search, extra, log):
+    from openMWR.background import LOG_ENV
+
+    retrieval_project(tmp_path, search=search)
+    launch = Mock(return_value=SimpleNamespace(pid=12345))
+    monkeypatch.setattr('openMWR.background.subprocess.Popen', launch)
+    args = [command, 'test', 'example', '-p', str(tmp_path), '-b', *extra]
+    result = run_cli(*args)
+    assert result.returncode == 0, result.stderr
+    assert 'PID 12345' in result.stdout and str(tmp_path / log) in result.stdout
+    positional, options = launch.call_args
+    assert positional[0] == [sys.executable, '-u', '-m', 'openMWR', *args]
+    assert options['start_new_session'] is True
+    assert options['stdin'] == subprocess.DEVNULL and options['stderr'] == subprocess.STDOUT
+    assert options['env'][LOG_ENV] == str(tmp_path / log)
+    assert not (tmp_path / 'sites/test/retrieval/example/model.pth').exists()
+
+
+def test_background_dry_run_is_rejected_without_writes(tmp_path):
+    result = run_cli('data', 'test', 'training', '-p', str(tmp_path), '-bn')
+    assert result.returncode == 2 and '--background cannot be combined with --dry-run' in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
+def test_background_console_and_library_messages_are_recorded_once(tmp_path, monkeypatch, caplog):
+    from openMWR import background
+
+    path = tmp_path / 'build.log'
+    root = logging.getLogger()
+    client = logging.getLogger('background_test.external_client')
+    monkeypatch.setattr(background, '_console_path', None)
+    with path.open('a') as output, caplog.at_level(logging.INFO):
+        monkeypatch.setattr(sys, 'stderr', output)
+        monkeypatch.setattr(root, 'handlers', [logging.StreamHandler(output)])
+        # Like the CDS client, this library also propagates to the root logger.
+        monkeypatch.setattr(client, 'handlers', [logging.StreamHandler(output)])
+        monkeypatch.setattr(client, 'propagate', True)
+        background.capture_console(path)
+        handler = background.task_log_handler(path)
+        root.addHandler(handler)
+        try:
+            root.info('Task progress')
+            client.info('Download progress')
+            print('Startup error', file=sys.stderr)
+        finally:
+            root.removeHandler(handler)
+            handler.close()
+    text = path.read_text()
+    for message in ('Task progress', 'Download progress', 'Startup error'):
+        assert text.count(message) == 1

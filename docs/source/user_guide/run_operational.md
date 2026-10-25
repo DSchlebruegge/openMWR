@@ -39,6 +39,28 @@ Use the environment's full `openMWR` path and set `--project-dir` to the working
 project. Rerun recent days to include late-arriving measurements. Plotting can
 follow in a Python script, as shown in [Run and Plot a Retrieval](run_retrieval.ipynb).
 
+## Run a command in the background
+
+On Linux and macOS, add `--background` or `-b` to `data`, `train`, `evaluate` or
+`predict` to keep it running after the terminal closes:
+
+```bash
+openMWR data my_site training --with-dependencies --background
+```
+
+The command prints a process ID and console log path, then returns the prompt.
+It uses the same Python environment. Check the log for completion or errors.
+Successful launching does not mean that processing has finished.
+
+Data commands append console output to the first selected dataset's `build.log`.
+Other datasets keep their own build logs. Rebuilds preserve `build.log` while
+replacing the generated data. Training uses `training.log` or `optimization.log`
+beside the retrieval, and evaluation uses `evaluation.log`. Prediction appends
+to `prediction.log` in the prediction output directory.
+
+Use `--dry-run` before launching a background data build. The two options cannot
+be combined.
+
 ## Update datasets
 
 Use the same `data` command for initial creation and later updates:
@@ -50,6 +72,10 @@ openMWR data my_site analysis_radiosonde --with-dependencies
 This updates the measurement comparison and its prerequisites, including source
 checks. Source recipes with `end_year = "current_year"` or `end_date = "today"`
 continue into new years or days. Explicit end dates stay fixed.
+
+ERA5 saves each completed day. If an update is interrupted, repeat the same
+command to continue after the last saved day. A failed download or file write
+leaves the previously saved cache intact.
 
 To update only the selected dataset using existing inputs, omit
 `--with-dependencies`. Use `--dry-run` to check the processing order first.

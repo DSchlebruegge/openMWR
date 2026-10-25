@@ -118,6 +118,15 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
     logger.info(f"Created site config for {site} with: {config}")
     return directory
 
+def prediction_output_dir(project_dir, site, output_dir=None):
+    """Resolve the shared directory for daily prediction files and their log."""
+    if output_dir is None:
+        output_dir = get_config_parameter(site, 'retrieval_output_dir', project_dir)
+    if output_dir is None:
+        return site_data_dir(project_dir, site, 'predictions')
+    return project_root(project_dir) / Path(output_dir).expanduser()
+
+
 def get_config_parameter(site: str, parameter: Union[str, list[str]], project_dir: str) -> Any:
     """Retrieve one or multiple configuration parameters for a given site.
 

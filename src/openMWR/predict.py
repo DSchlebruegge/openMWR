@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from datetime import date as calendar_date, datetime, timezone
-from pathlib import Path
 from typing import Sequence
 
 import torch
@@ -10,8 +9,8 @@ import xarray as xr
 import numpy as np
 import logging
 from openMWR.models import BaseModel, load_model
-from openMWR.paths import project_root, site_data_dir
-from openMWR.site import get_config_parameter
+from openMWR.paths import project_root
+from openMWR.site import get_config_parameter, prediction_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -395,14 +394,6 @@ def _day(value):
     return datetime(value.year, value.month, value.day)
 
 
-def _output_directory(project_dir, site, output_dir):
-    if output_dir is None:
-        output_dir = get_config_parameter(site, 'retrieval_output_dir', project_dir)
-    if output_dir is None:
-        return site_data_dir(project_dir, site, 'predictions')
-    return project_root(project_dir) / Path(output_dir).expanduser()
-
-
 def _daily_file(directory, date, bls=False):
     suffix = '_bls' if bls else ''
     return directory / date.strftime('%Y/%m') / f'{date:%Y%m%d}_retrieval{suffix}.nc'
@@ -458,7 +449,7 @@ class PredictionWorkflow:
         self.models = tuple(load_model(name, site, self.project_dir) for name in retrievals)
         self._zenith_models = tuple(model for model in self.models if not model.is_bls_model)
         self._bls_models = tuple(model for model in self.models if model.is_bls_model)
-        self.output_dir = _output_directory(self.project_dir, site, output_dir)
+        self.output_dir = prediction_output_dir(self.project_dir, site, output_dir)
         self.smooth = smooth
         self.import_retrieval_data = import_retrieval_data
         logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), device)
@@ -557,7 +548,7 @@ def load_predictions(project_dir, site, date, *, output_dir=None):
     their local RPG inputs separately. Missing groups remain None.
     """
     date = _day(date)
-    directory = _output_directory(project_dir, site, output_dir)
+    directory = prediction_output_dir(project_dir, site, output_dir)
     result = PredictionResult(site, date,
         zenith=_load_prediction_file(_daily_file(directory, date)),
         bls=_load_prediction_file(_daily_file(directory, date, bls=True)))

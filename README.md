@@ -27,6 +27,7 @@ Common options also have short aliases, shown by `openMWR COMMAND -h`:
 | Option | Alias |
 | --- | --- |
 | `--project-dir` | `-p` |
+| `--background` | `-b` |
 | `--device` | `-D` |
 | `--with-dependencies` | `-w` |
 | `--dry-run` | `-n` |
@@ -44,6 +45,11 @@ For example:
 openMWR data munich_G5 analysis_era5 -w -n
 openMWR train munich_G5 NN_opt -c -t 100
 ```
+
+On Linux and macOS, `data`, `train`, `evaluate` and `predict` support
+`--background` to keep running after the terminal closes. The command prints its
+process ID and console log path. See
+[background commands](https://dschlebruegge.github.io/openMWR/user_guide/run_operational.html#run-a-command-in-the-background).
 
 ### Create a site
 

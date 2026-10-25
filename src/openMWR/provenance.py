@@ -12,6 +12,7 @@ import subprocess
 import numpy as np
 
 from openMWR.paths import retrieval_dir
+from openMWR.background import task_log_handler
 
 
 def plain_value(value):
@@ -70,7 +71,7 @@ def retrieval_log(project_dir, site, name, action):
     directory = retrieval_dir(project_dir, site, name)
     directory.mkdir(parents=True, exist_ok=True)
     filename = {"train": "training", "optimize": "optimization", "evaluate": "evaluation"}[action]
-    handler = logging.FileHandler(directory / f"{filename}.log", encoding="utf-8")
+    handler = task_log_handler(directory / f"{filename}.log", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     root = logging.getLogger()
     previous_level = root.level

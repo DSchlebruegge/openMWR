@@ -4,6 +4,7 @@ import xarray as xr
 import pandas as pd
 import cdsapi
 import tempfile
+from pathlib import Path
 
 from openMWR.site import get_config_parameter
 from openMWR.run_RT import run_RT
@@ -111,11 +112,10 @@ class ERA5Processor:
                 "area": [self.lat_round, self.lon_round, self.lat_round, self.lon_round],
             }
 
-            tmpfile = tempfile.mktemp(suffix=".nc")
-            client.retrieve("reanalysis-era5-pressure-levels", request).download(tmpfile)
-
-            ds_date = xr.load_dataset(tmpfile)
-            os.remove(tmpfile)
+            with tempfile.TemporaryDirectory() as directory:
+                tmpfile = Path(directory) / "download.nc"
+                client.retrieve("reanalysis-era5-pressure-levels", request).download(str(tmpfile))
+                ds_date = xr.load_dataset(tmpfile)
 
             ds_date = ds_date.rename({"valid_time": "time"})
             ds_list.append(ds_date)
@@ -133,6 +133,8 @@ class ERA5Processor:
 
         A source rebuild refreshes its requested coverage and preserves cached
         dates outside that coverage for other recipes sharing the same cache.
+        Each completed day replaces the cache atomically, so interrupted updates
+        resume after the last saved day.
         """
         self.raw_data_file.parent.mkdir(parents=True, exist_ok=True)
         old = xr.load_dataset(self.raw_data_file) if self.raw_data_file.is_file() else None
@@ -143,14 +145,20 @@ class ERA5Processor:
         if start_date > self.end_date:
             self.logger.info('ERA5 source is up to date.')
             return old
-        new = self.download_era5(start_date, self.end_date, h_freq=self.hour_interval)
-        if old is not None:
-            if not self.update_only:
-                # An explicit rebuild refreshes only its requested coverage.
-                old = old.sel(time=(old.time < start_date) | (old.time >= self.end_date + pd.Timedelta(days=1)))
-            new = xr.concat([old, new], dim='time').sortby('time').drop_duplicates('time')
-        new.to_netcdf(self.raw_data_file)
-        return new
+        for day in pd.date_range(start_date, self.end_date, freq='1D'):
+            new = self.download_era5(day, day, h_freq=self.hour_interval)
+            if old is not None:
+                if not self.update_only:
+                    # Keep unrefreshed days until their replacements are ready.
+                    old = old.sel(time=(old.time < day) | (old.time >= day + pd.Timedelta(days=1)))
+                new = xr.concat([old, new], dim='time').sortby('time').drop_duplicates('time')
+            with tempfile.TemporaryDirectory(dir=self.raw_data_file.parent, prefix='.era5-') as directory:
+                temporary = Path(directory) / self.raw_data_file.name
+                new.to_netcdf(temporary)
+                temporary.replace(self.raw_data_file)
+            old = new
+            self.logger.info('Saved ERA5 data through %s to %s', day.date(), self.raw_data_file)
+        return old
 
     def create_profile_dataset(self, new_heights, num_of_processes=1):
         """Prepare only missing ERA5 profiles, independently of RT settings."""

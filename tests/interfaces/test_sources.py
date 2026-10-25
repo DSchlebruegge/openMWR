@@ -1,8 +1,11 @@
 """External acquisition boundaries preserve and extend local caches."""
 
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 
 from openMWR.datasets import DatasetWorkflow
@@ -22,7 +25,8 @@ def test_shared_era5_cache_appends_after_last_day_and_preserves_other_coverage(d
     cache = era5_cache_file(dataset_project, 48.148, 11.573, 2)
     processor = ERA5Processor('test', dataset_project, start_date='2020-01-01', end_date='2020-01-03', hour_interval=2)
     created = processor.create_original_dataset()
-    assert requested == [(pd.Timestamp('2020-01-01'), pd.Timestamp('2020-01-03'), 2)]
+    assert requested == [(pd.Timestamp(day), pd.Timestamp(day), 2)
+                         for day in ('2020-01-01', '2020-01-02', '2020-01-03')]
     assert created.time.size == 36
     requested.clear()
     # Historical six-hour samples and an incomplete last day must not trigger
@@ -32,24 +36,71 @@ def test_shared_era5_cache_appends_after_last_day_and_preserves_other_coverage(d
     old.to_netcdf(cache)
     processor.end_date = pd.Timestamp('2020-01-07')
     updated = processor.create_original_dataset()
-    assert requested == [(pd.Timestamp('2020-01-06'), pd.Timestamp('2020-01-07'), 2)]
+    assert requested == [(pd.Timestamp(day), pd.Timestamp(day), 2)
+                         for day in ('2020-01-06', '2020-01-07')]
     assert updated.time.size == 29
     xr.testing.assert_identical(updated.sel(time=old_times), old)
     original = cache.read_bytes()
     processor.create_original_dataset()
-    assert len(requested) == 1
+    assert len(requested) == 2
     assert cache.read_bytes() == original
     processor.end_date = pd.Timestamp('2020-01-03')
     processor.create_original_dataset()
-    assert len(requested) == 1  # An older requested window also leaves gaps alone.
+    assert len(requested) == 2  # An older requested window also leaves gaps alone.
     assert cache.read_bytes() == original
     processor.update_only = False
     rebuilt = processor.create_original_dataset()
-    assert requested[-1] == (pd.Timestamp('2020-01-01'), pd.Timestamp('2020-01-03'), 2)
+    assert requested[-3:] == [(pd.Timestamp(day), pd.Timestamp(day), 2)
+                             for day in ('2020-01-01', '2020-01-02', '2020-01-03')]
     assert rebuilt.time.size == 61
     assert rebuilt.T.sel(time='2020-01-02T00:00').item() == 280
     assert rebuilt.T.sel(time='2020-01-05').item() == 270
     assert era5_cache_file(dataset_project, 48.148, 11.573, 6) != cache
+
+
+@pytest.mark.parametrize('failure', ['download', 'write'])
+def test_interrupted_era5_update_keeps_completed_days_and_resumes(dataset_project, monkeypatch, failure):
+    requested = []
+    interrupted = False
+    failed_day = pd.Timestamp('2020-01-03')
+
+    def retrieve(product, request):
+        nonlocal interrupted
+        day = pd.Timestamp('-'.join(request[key][0] for key in ('year', 'month', 'day')))
+        requested.append(day)
+        if failure == 'download' and day == failed_day and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        return SimpleNamespace(download=lambda path: _era5_response(day).to_netcdf(path))
+
+    monkeypatch.setattr('openMWR.era5.cdsapi.Client', lambda: SimpleNamespace(retrieve=retrieve))
+    write = xr.Dataset.to_netcdf
+
+    def interrupted_write(data, path, *args, **kwargs):
+        nonlocal interrupted
+        if (failure == 'write' and 'T' in data
+                and pd.Timestamp(data.time.max().values).normalize() == failed_day and not interrupted):
+            interrupted = True
+            Path(path).write_bytes(b'Interrupted NetCDF write')
+            raise KeyboardInterrupt
+        return write(data, path, *args, **kwargs)
+
+    monkeypatch.setattr(xr.Dataset, 'to_netcdf', interrupted_write)
+    processor = ERA5Processor('test', dataset_project, start_date='2020-01-01',
+                              end_date='2020-01-01', hour_interval=12)
+    original = processor.create_original_dataset()
+    processor.end_date = pd.Timestamp('2020-01-04')
+    with pytest.raises(KeyboardInterrupt):
+        processor.create_original_dataset()
+
+    saved = xr.load_dataset(processor.raw_data_file)
+    np.testing.assert_array_equal(saved.time, pd.date_range('2020-01-01', periods=4, freq='12h'))
+    xr.testing.assert_identical(saved.sel(time=original.time), original)
+    requested.clear()
+    resumed = processor.create_original_dataset()
+    assert requested == [pd.Timestamp('2020-01-03'), pd.Timestamp('2020-01-04')]
+    np.testing.assert_array_equal(resumed.time, pd.date_range('2020-01-01', periods=8, freq='12h'))
+    xr.testing.assert_identical(resumed.sel(time=saved.time), saved)
 
 
 def test_source_creation_remembers_unavailable_historical_years(dataset_project, monkeypatch):
@@ -128,8 +179,6 @@ def test_dwd_archive_decoding_units_quality_and_missing_year_preserves_cache(tmp
 
 def test_cds_request_and_netcdf_decoding_keep_site_time_and_units(dataset_project, monkeypatch):
     """Exercise the real ERA5 decoder; replace only the CDS client transport."""
-    from types import SimpleNamespace
-
     requested = []
 
     def retrieve(product, request):
@@ -138,17 +187,7 @@ def test_cds_request_and_netcdf_decoding_keep_site_time_and_units(dataset_projec
 
         def download(path):
             day = pd.Timestamp('-'.join(request[key][0] for key in ('year', 'month', 'day')))
-            # Deliberately reverse the times to check the decoder's ordering.
-            times = (day + pd.to_timedelta([12, 0], unit='h')).values
-            shape = (2, 2, 1, 1)
-            values = {'t': [280., 274.], 'r': [50., 40.], 'clwc': [1e-4, 0.],
-                      'z': np.array([550., 1550.]) * 9.81}
-            data = xr.Dataset({name: (('valid_time', 'pressure_level', 'latitude', 'longitude'),
-                                      np.broadcast_to(np.array(value)[None, :, None, None], shape))
-                               for name, value in values.items()},
-                              coords={'valid_time': times, 'pressure_level': [950., 850.],
-                                      'latitude': [48.25], 'longitude': [11.5], 'expver': 1, 'number': 0})
-            data.to_netcdf(path)
+            _era5_response(day).to_netcdf(path)
         return SimpleNamespace(download=download)
 
     monkeypatch.setattr('openMWR.era5.cdsapi.Client', lambda: SimpleNamespace(retrieve=retrieve))
@@ -163,3 +202,16 @@ def test_cds_request_and_netcdf_decoding_keep_site_time_and_units(dataset_projec
     np.testing.assert_allclose(data.height, [[550., 1550.]] * 4)
     np.testing.assert_array_equal(data.p, [950., 850.])
     np.testing.assert_allclose(data.T, [[280., 274.]] * 4)
+
+
+def _era5_response(day):
+    # Deliberately reverse the times to check the decoder's ordering.
+    times = (day + pd.to_timedelta([12, 0], unit='h')).values
+    shape = (2, 2, 1, 1)
+    values = {'t': [280., 274.], 'r': [50., 40.], 'clwc': [1e-4, 0.],
+              'z': np.array([550., 1550.]) * 9.81}
+    return xr.Dataset({name: (('valid_time', 'pressure_level', 'latitude', 'longitude'),
+                              np.broadcast_to(np.array(value)[None, :, None, None], shape))
+                       for name, value in values.items()},
+                      coords={'valid_time': times, 'pressure_level': [950., 850.],
+                              'latitude': [48.25], 'longitude': [11.5], 'expver': 1, 'number': 0})

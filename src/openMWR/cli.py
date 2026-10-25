@@ -2,12 +2,15 @@
 
 import argparse
 import logging
+import os
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 from shlex import quote
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog='openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
     commands = parser.add_subparsers(dest='command', required=True)
     create = commands.add_parser('create-site', help='Create site settings, radiosonde dataset recipes and an example retrieval.')
@@ -54,7 +57,12 @@ def main(argv=None):
                 sub.add_argument(f'--{kind}-height-range', nargs='+', metavar='HEIGHT', help='Profile height bounds in metres (MIN MAX), or model for the complete model grid.')
             sub.add_argument('--station-id', help='Radiosonde station ID; required when the analysis dataset has multiple stations.')
             sub.add_argument('-o', '--output', type=Path, help='New HTML file (default: dated report in the retrieval evaluation/ directory).')
+    for name in ('data', 'train', 'evaluate', 'predict'):
+        commands.choices[name].add_argument('-b', '--background', action='store_true',
+            help='Run detached from the terminal and append console output to the task log.')
     args = parser.parse_args(argv)
+    if args.command == 'data' and args.background and args.dry_run:
+        parser.error('--background cannot be combined with --dry-run.')
     if args.command in ('train', 'evaluate'):
         selection = {key: getattr(args, key) for key in ('start_date', 'end_date') if getattr(args, key) is not None}
         if args.days_of_month is not None:
@@ -77,6 +85,15 @@ def main(argv=None):
             parser.error('--end-date must be on or after --start-date.')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     try:
+        from openMWR.background import LOG_ENV, capture_console, launch
+
+        background_log = os.environ.pop(LOG_ENV, None)
+        if getattr(args, 'background', False) and background_log is None:
+            launch(args, argv)
+            return
+        if background_log is not None:
+            capture_console(background_log)
+            logging.getLogger(__name__).info('Starting %s in background (PID %s).', args.command, os.getpid())
         if args.command == 'create-site':
             from openMWR.site import create_site
             directory = create_site(args.site, args.project_dir, with_examples=True)
@@ -129,6 +146,8 @@ def main(argv=None):
                     raise ValueError('--n-trials, --data-source, --dataset and observation-selection flags require input-noise optimization or search ranges in the recipe.')
                 logging.getLogger(__name__).info('Training one model: %s.', args.retrieval)
                 workflow.train(run_mode=args.run_mode)
+        if background_log is not None:
+            logging.getLogger(__name__).info('Finished %s command.', args.command)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         parser.exit(1, f'{args.command.capitalize()} failed: {exc}\n')
 
