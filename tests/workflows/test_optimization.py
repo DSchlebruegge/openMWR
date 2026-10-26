@@ -14,6 +14,31 @@ from openMWR.train import TrainingWorkflow
 from tests.fixtures.retrievals import retrieval_project, training_workflow
 
 
+@pytest.mark.parametrize(('heights', 'error'), [
+    ([0.0], None),
+    ([0.0, 2000.0], 'optimization reference.T coordinates do not match the model'),
+    ([2000.0, 3000.0], 'Optimization reference has no heights within the model height range'),
+])
+def test_optimization_validation_respects_reference_height_range(heights, error, tmp_path):
+    recipe, _ = retrieval_project(tmp_path, kind='nn')
+    path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
+    analysis = xr.load_dataset(path).isel(height=slice(0, len(heights))).assign_coords(height=heights)
+    analysis.to_netcdf(path)
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+
+    if error:
+        with pytest.raises(ValueError, match=error):
+            workflow.validate_optimization()
+    else:
+        assert workflow.validate_optimization() is workflow
+
+    # Reference selection must not shorten the model or its fitting data.
+    np.testing.assert_array_equal(workflow.model.output.height, [0.0, 1000.0])
+    np.testing.assert_array_equal(workflow.training_data.height, [0.0, 1000.0])
+    assert not (recipe.parent / 'model.pth').exists()
+    assert not (recipe.parent / 'optimization.db').exists()
+
+
 def test_optimization_continues_only_matching_experiments(tmp_path):
     recipe, data = retrieval_project(tmp_path)
     workflow = training_workflow(tmp_path)

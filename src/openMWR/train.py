@@ -285,7 +285,7 @@ class TrainingWorkflow:
         if optimization is not None:
             score = f"sum of variable weights {optimization['score_weights']} times mean RMSE"
             if hasattr(self.model, 'loss_weights'):
-                score += ', with model height weights on the full height grid'
+                score += ', with model height weights on matching reference heights'
             setup['optimization'] = {**optimization, 'score': score}
             self.logger.info('Optimization reference: %s; time selection: %s; all stations in the analysis dataset.', optimization['data_source'], {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization})
             self.logger.info('Optimization score (separate from fitting loss): %s.', score)
@@ -325,7 +325,14 @@ class TrainingWorkflow:
             data = data.sel(ang=90, drop=True)
         validate_model_data(self.model.input, data.sel(data_source='hatpro', drop=True), 'optimization observations')
         variables = [key for key, weight in settings['score_weights'].items() if weight > 0]
-        validate_model_data(self.model.output[variables], data.sel(data_source=source, drop=True), 'optimization reference')
+        output = self.model.output[variables]
+        if 'height' in output.dims and data.sizes.get('height', 0):
+            # Scoring aligns model/reference heights. Require the model levels
+            # inside the reference range without demanding unobserved levels.
+            output = output.sel(height=slice(data.height.min().item(), data.height.max().item()))
+            if not output.sizes['height']:
+                raise ValueError('Optimization reference has no heights within the model height range.')
+        validate_model_data(output, data.sel(data_source=source, drop=True), 'optimization reference')
         return settings, data
 
     def load_training_data(self, sources: List[str] = None, dataset: str = 'training'):
