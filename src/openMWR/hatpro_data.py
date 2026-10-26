@@ -14,8 +14,9 @@ from openMWR.utils import (
 from openMWR.parallel import run_pool_date_range
 from openMWR.xr_utils import change_coord_of_ds, swap_dims_and_rename, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
-from openMWR.site import get_config_parameter
+from openMWR.site import get_config_parameter, get_invalid_measurements
 from openMWR.paths import dataset_dir, dataset_file
+from openMWR.observations import mask_invalid_measurements
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,8 @@ def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
     -----
     - The dataset is modified in place and returned for convenience.
     - Relative humidity values below 0.1% are clipped to 0.1% before calculations.
-    - Pressure is derived from hydrostatic equilibrium using the surface
-      pressure and temperature profile.
+    - Pressure is derived from hydrostatic equilibrium when a finite surface
+      pressure is available. Other derived products do not require pressure.
     """
     # Compute absolute humidity
     rh = ds['rh'].where(ds['rh'] > 0.1, 0.1)
@@ -85,8 +86,9 @@ def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
     ds['T_grad'].attrs["units"] = "K/km"
 
     # Compute pressure from hydrostatic equilibrium
-    ds['p'] = calc_pressure(ds.surface_p, ds.T, ds.height)
-    ds['p'].attrs["units"] = "hPa"
+    if 'surface_p' in ds and bool(np.isfinite(ds.surface_p).any()):
+        ds['p'] = calc_pressure(ds.surface_p, ds.T, ds.height)
+        ds['p'].attrs["units"] = "hPa"
 
     # Compute LWP from LWC
     ds['lwp_from_lwc'] = integrate(ds.lwc, 'height')
@@ -172,6 +174,32 @@ def _get_naming_convention(ds_BRT: xr.Dataset) -> tuple[dict[str, str], dict[str
         }
     return var_names, dim_names
 
+
+
+def _load_daily_files(files, *, decode_timedelta):
+    """Retain usable observations when an auxiliary sensor file is unavailable."""
+    datasets = {}
+    for suffix, path in files.items():
+        optional = suffix in ('MET', 'IRT')
+        if optional and not os.path.exists(path):
+            logger.warning('Optional HATPRO input is missing: %s', path)
+            continue
+        try:
+            datasets[suffix] = xr.load_dataset(path, decode_timedelta=decode_timedelta).drop_duplicates('time')
+        except (OSError, ValueError) as exc:
+            if not optional:
+                raise
+            logger.warning('Optional HATPRO input is unreadable: %s: %s', path, exc)
+    return datasets
+
+
+def _surface_meteorology(data, names, periods):
+    """Normalize and mask available surface observations before time matching."""
+    variables = {names[key]: key for key in ('surface_p', 'surface_T', 'surface_rh')
+                 if names[key] in data}
+    return mask_invalid_measurements(data[list(variables)].rename(variables), periods)
+
+
 def import_hatpro_data(
     date: Union[datetime, pd.Timestamp],
     site: str,
@@ -210,7 +238,8 @@ def import_hatpro_data(
     Raises
     ------
     FileNotFoundError
-        If any expected RPG netCDF file is missing.
+        If a required microwave or requested RPG retrieval file is missing.
+        MET and IRT are optional. Consumers validate their required variables.
     ValueError
         If no valid times remain after filtering.
 
@@ -222,6 +251,7 @@ def import_hatpro_data(
     - A standard frequency grid is enforced if unexpected values are found.
     """
     hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
+    periods = get_invalid_measurements(site, project_dir)
 
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
@@ -232,16 +262,7 @@ def import_hatpro_data(
     # Build file paths
     files = {suffix: f"{file_base}.{suffix}.NC" for suffix in file_suffixes}
 
-    # Check existence
-    for suffix, file in files.items():
-        if not os.path.exists(file):
-            raise FileNotFoundError(f"Hatpro measurement file not found: '{file}'")
-
-    # Load all files as datasets
-    datasets = {
-        suffix: xr.load_dataset(file, decode_timedelta=True).drop_duplicates('time').dropna(dim='time')
-        for suffix, file in files.items()
-    }
+    datasets = _load_daily_files(files, decode_timedelta=True)
 
     ds_BRT = datasets["BRT"]
 
@@ -257,14 +278,14 @@ def import_hatpro_data(
         logger.error(f'Frequency variable has unexpected values: {ds_BRT["frq"].values}. Using standard frequencies.')
         ds_BRT["frq"] = frq
 
-    ds_MET = datasets["MET"]
-    ds_MET = ds_MET[[var_names['surface_p'], var_names['surface_T'], var_names['surface_rh']]]
+    ds_MET = _surface_meteorology(datasets["MET"], var_names, periods) if "MET" in datasets else None
 
-    ds_IRT = datasets["IRT"]
-    ds_IRT = ds_IRT[var_names['TB_IR']]
-    ds_IRT = ds_IRT.isel(number_wavelength=0)
-    ds_IRT += 273.15
-    ds_IRT.attrs["units"] = "K"
+    extra = []
+    if "IRT" in datasets:
+        ds_IRT = datasets["IRT"][var_names['TB_IR']].isel(number_wavelength=0)
+        ds_IRT = ds_IRT + 273.15
+        ds_IRT.attrs["units"] = "K"
+        extra.append(ds_IRT)
 
     if import_retrieval_data:
         ds_LWP = datasets["LWP"]
@@ -287,15 +308,17 @@ def import_hatpro_data(
         ds_HPC = ds_HPC[[var_names['ah'], var_names['rh']]]
 
         # Merge datasets into a single dataset
-        ds_hatpro = xr.merge([ds_BRT, ds_IRT, ds_LWP, ds_LPR, ds_TPC, ds_HPC, ds_IWV], join='outer')
+        ds_hatpro = xr.merge([ds_BRT, *extra, ds_LWP, ds_LPR, ds_TPC, ds_HPC, ds_IWV], join='outer')
     else:
-        ds_hatpro = xr.merge([ds_BRT, ds_IRT], join='outer')
+        ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
 
     # Add the nearest surface met data in time
-    ds_hatpro = add_variables_at_closest_time(ds_hatpro, ds_MET, max_diff=2)
+    if ds_MET is not None and ds_MET.sizes.get('time', 0):
+        ds_hatpro = add_variables_at_closest_time(ds_hatpro, ds_MET, max_diff=2)
 
     # Rename variables
     ds_hatpro = ds_hatpro.rename({v: k for k, v in var_names.items() if v in ds_hatpro})
+    ds_hatpro = mask_invalid_measurements(ds_hatpro, periods)
 
     # Filter
     #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True)
@@ -306,7 +329,8 @@ def import_hatpro_data(
 
     if import_retrieval_data:
         # Compute pressure from hydrostatic equilibrium
-        ds_hatpro['p'] = calc_pressure(ds_hatpro.surface_p, ds_hatpro.T, ds_hatpro.height)
+        if 'surface_p' in ds_hatpro and bool(np.isfinite(ds_hatpro.surface_p).any()):
+            ds_hatpro['p'] = calc_pressure(ds_hatpro.surface_p, ds_hatpro.T, ds_hatpro.height)
 
         # Compute dew point temperature
         ds_hatpro['TD'] = dewpoint_from_absolute_humidity(ds_hatpro.T, ds_hatpro.ah / 1000)
@@ -362,7 +386,8 @@ def import_hatpro_data_bls(
     Raises
     ------
     FileNotFoundError
-        If any expected RPG netCDF file is missing.
+        If a required scan or requested RPG retrieval file is missing.
+        MET is optional. Consumers validate their required variables.
     ValueError
         If the elevation angle dimension does not match the expected length.
 
@@ -374,6 +399,7 @@ def import_hatpro_data_bls(
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
     hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
+    periods = get_invalid_measurements(site, project_dir)
 
     file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
 
@@ -384,29 +410,19 @@ def import_hatpro_data_bls(
     # Build file paths
     files = {suffix: f"{file_base}.{suffix}.NC" for suffix in file_suffixes}
 
-    # Check existence
-    for suffix, file in files.items():
-        if not os.path.exists(file):
-            raise FileNotFoundError(f"Hatpro measurement file not found: '{file}'")
+    datasets = _load_daily_files(files, decode_timedelta=None)
 
-    # Load all files as datasets
-    datasets = {
-        suffix: xr.load_dataset(file).drop_duplicates('time').dropna(dim='time')
-        for suffix, file in files.items()
-    }
-
-    ds_MET = datasets["MET"]
+    ds_MET = datasets.get("MET")
     ds_BLB = datasets["BLB"]
 
     if import_retrieval_data:
         ds_TPB = datasets["TPB"]
 
-    if mean_one_min:
-        ds_MET = mean_n_min(ds_MET, 1)
-
     var_names, dim_names = _get_naming_convention(ds_BLB)
-
-    ds_MET = ds_MET[[var_names['surface_p'], var_names['surface_T'], var_names['surface_rh']]]
+    if ds_MET is not None:
+        ds_MET = _surface_meteorology(ds_MET, var_names, periods)
+        if mean_one_min:
+            ds_MET = mean_n_min(ds_MET, 1)
 
     ds_BLB = swap_dims_and_rename(ds_BLB, old_dim=dim_names['frequencie_dim'], old_var=dim_names['frequencie_var'], new_dim="frq")
     ds_BLB = swap_dims_and_rename(ds_BLB, old_dim=dim_names['scan_angles_dim'], old_var=dim_names['scan_angles_var'], new_dim='ang')
@@ -444,16 +460,18 @@ def import_hatpro_data_bls(
         ds_hatpro_bls = ds_BLB
 
     # Add the nearest surface met data in time
-    ds_hatpro_bls = add_variables_at_closest_time(ds_hatpro_bls, ds_MET, max_diff=2)
+    if ds_MET is not None and ds_MET.sizes.get('time', 0):
+        ds_hatpro_bls = add_variables_at_closest_time(ds_hatpro_bls, ds_MET, max_diff=2)
 
     # Rename variables
     ds_hatpro_bls = ds_hatpro_bls.rename({v: k for k, v in var_names.items() if v in ds_hatpro_bls})
+    ds_hatpro_bls = mask_invalid_measurements(ds_hatpro_bls, periods)
 
     # Filter
     #ds_hatpro_bls = ds_hatpro_bls.where(ds_hatpro_bls['azimuth_angle'].round(0) == 0., drop=True)
 
 
-    if import_retrieval_data:
+    if import_retrieval_data and 'surface_p' in ds_hatpro_bls and bool(np.isfinite(ds_hatpro_bls.surface_p).any()):
         # Compute pressure from hydrostatic equilibrium
         ds_hatpro_bls['p'] = calc_pressure(ds_hatpro_bls.surface_p, ds_hatpro_bls.T, ds_hatpro_bls.height)
 

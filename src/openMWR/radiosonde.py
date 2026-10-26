@@ -9,7 +9,7 @@ from openMWR.cloud import CloudColumn, CloudModelConfig
 from openMWR.config import check_cloud, check_profile_quality
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity
 from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, match_analysis_data
-from openMWR.site import get_config_parameter
+from openMWR.site import get_config_parameter, get_invalid_measurements
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.paths import dataset_file, radiosonde_station_dir
@@ -538,7 +538,7 @@ def create_analysis_dataset(
     observations_dataset: str = 'hatpro',
     reference_dataset: str = 'simulation_r20',
     dataset: str = 'analysis_radiosonde',
-    *, max_time_difference_minutes, exclude_rain, height_range,
+    *, max_time_difference_minutes, exclude_rain, height_range, required_observations,
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """
     Create analysis datasets pairing Hatpro measurements with radiosonde data.
@@ -586,8 +586,8 @@ def create_analysis_dataset(
     logger.info(f'Creating analysis dataset for site {site} from radiosonde and hatpro data')
 
     # Hatpro data
-    ds_hatpro = xr.load_dataset(dataset_file(project_dir, site, observations_dataset)).dropna(dim='time')
-    ds_hatpro_bls = xr.load_dataset(dataset_file(project_dir, site, observations_dataset, bls=True)).dropna(dim='time')
+    ds_hatpro = xr.load_dataset(dataset_file(project_dir, site, observations_dataset))
+    ds_hatpro_bls = xr.load_dataset(dataset_file(project_dir, site, observations_dataset, bls=True))
 
     an_data_raso_list = []
     an_data_hatpro_list = []
@@ -617,8 +617,8 @@ def create_analysis_dataset(
         raso_data = raso_data.rename({'starttime': 'time'})   
 
         # Select matching times
-        ds_hatpro_sel, raso_data_sel = match_analysis_data(ds_hatpro, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
-        ds_hatpro_bls_sel, raso_data_bls_sel = match_analysis_data(ds_hatpro_bls, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
+        ds_hatpro_sel, raso_data_sel = match_analysis_data(ds_hatpro, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(site, project_dir))
+        ds_hatpro_bls_sel, raso_data_bls_sel = match_analysis_data(ds_hatpro_bls, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(site, project_dir))
 
         if from_forward_calc:
             raso_data_sel = raso_data_sel.sel(ang=90.0, drop=True)

@@ -51,14 +51,15 @@ def raw_day(prediction_project, date, *, bls=True):
         data.to_netcdf(directory / f'{date:%y%m%d}.{suffix}.NC')
 
 
-def checkpoint(prediction_project, name, *, bls=False, spectral=False):
+def checkpoint(prediction_project, name, *, bls=False, spectral=False, weather=True):
     torch.manual_seed(2)
     if spectral:
         model = SpectralConsistencyModel(name, FREQUENCIES[:2], hidden_layer_size=3)
     else:
         model = Model(name, np.array([0., 1000., 2000.]), FREQUENCIES[:2],
             is_bls_model=bls, is_MLR=True, angles=[90., 30.] if bls else None,
-            additional_input_vars=['surface_T', 'surface_rh', 'surface_p', 'doy_cos', 'doy_sin'])
+            additional_input_vars=(['surface_T', 'surface_rh', 'surface_p', 'doy_cos', 'doy_sin']
+                                   if weather else ['TB_IR', 'doy_cos', 'doy_sin']))
         with torch.no_grad():
             model.stack.weight.zero_()
             model.stack.weight[0, 0] = 0.1

@@ -6,7 +6,7 @@ import cdsapi
 import tempfile
 from pathlib import Path
 
-from openMWR.site import get_config_parameter
+from openMWR.site import get_config_parameter, get_invalid_measurements
 from openMWR.run_RT import run_RT
 from openMWR.xr_utils import change_coord_of_ds, add_time_data, match_analysis_data
 from openMWR.parallel import run_pool
@@ -209,7 +209,7 @@ class ERA5Processor:
         return new
 
     def create_analysis_dataset_from_forward_calc(self, save=True, observations_dataset='hatpro', dataset='analysis_era5',
-                                                  *, max_time_difference_minutes, exclude_rain, height_range):
+                                                  *, max_time_difference_minutes, exclude_rain, height_range, required_observations):
         """
         Create an analysis dataset by matching HATPRO measurements with
         forward-calculated ERA5 brightness temperatures and profiles.
@@ -238,8 +238,8 @@ class ERA5Processor:
         self.logger.info(f'Creating analysis dataset for site {self.site} from era5 data and hatpro data')
 
         #Hatpro Data
-        ds_hatpro = xr.load_dataset(dataset_file(self.project_dir, self.site, observations_dataset)).dropna(dim='time')
-        ds_hatpro_bls = xr.load_dataset(dataset_file(self.project_dir, self.site, observations_dataset, bls=True)).dropna(dim='time')
+        ds_hatpro = xr.load_dataset(dataset_file(self.project_dir, self.site, observations_dataset))
+        ds_hatpro_bls = xr.load_dataset(dataset_file(self.project_dir, self.site, observations_dataset, bls=True))
 
         # Era5 Data
         if not os.path.exists(self.forward_calc_file):
@@ -247,8 +247,8 @@ class ERA5Processor:
         ds_era5 = xr.load_dataset(self.forward_calc_file).dropna(dim='time')
 
         # Select closest times
-        ds_hatpro_sel, ds_era5_sel = match_analysis_data(ds_hatpro, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
-        ds_hatpro_bls_sel, ds_era5_bls_sel = match_analysis_data(ds_hatpro_bls, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range)
+        ds_hatpro_sel, ds_era5_sel = match_analysis_data(ds_hatpro, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir))
+        ds_hatpro_bls_sel, ds_era5_bls_sel = match_analysis_data(ds_hatpro_bls, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir))
 
         # Select only 90 degree angle
         ds_era5_sel = ds_era5_sel.sel(ang=90.0, drop=True)

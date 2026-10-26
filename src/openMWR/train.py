@@ -1,3 +1,4 @@
+from openMWR.observations import load_analysis_dataset
 import torch
 from torch import nn
 import numpy as np
@@ -316,7 +317,7 @@ class TrainingWorkflow:
         path = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         if not path.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
-        data = xr.load_dataset(path)
+        data = load_analysis_dataset(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         if not self.model.is_bls_model and 'ang' in data.dims:
             data = data.sel(ang=90, drop=True)

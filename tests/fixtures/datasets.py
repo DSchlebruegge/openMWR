@@ -23,7 +23,7 @@ def recipe(dataset_project, name, **values):
         'simulation': {'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
                                               'frequencies': 'hatpro', 'angles': 'hatpro_bls',
                                               'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
-        'analysis': {'analysis': {'max_time_difference_minutes': 10, 'exclude_rain': True, 'height_range': [0, 10000]}},
+        'analysis': {'analysis': {'max_time_difference_minutes': 10, 'exclude_rain': True, 'height_range': [0, 10000], 'required_observations': ['TB']}},
         'split': {'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},
     }.get(values['kind'], {})
     if values['kind'] == 'profiles':

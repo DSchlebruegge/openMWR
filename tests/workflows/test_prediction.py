@@ -15,8 +15,11 @@ from tests.fixtures.cli import run_cli
 def command(prediction_project, *args):
     return run_cli("predict", "test", *args, "-p", str(prediction_project))
 
-def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project):
+def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project, monkeypatch):
     workflow = PredictionWorkflow(prediction_project, 'test')
+    assert workflow.device == 'cpu'
+    # A later availability change must not make an existing workflow switch GPUs.
+    monkeypatch.setattr('torch.cuda.is_available', lambda: True)
     result = workflow.predict('2024-01-01')
     assert not (prediction_project / 'published').exists()  # Python prediction has no writes.
     assert not result.errors
@@ -40,6 +43,13 @@ def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project):
         xr.testing.assert_identical(getattr(loaded, name), expected)
     assert loaded.observations is None
     assert not list((prediction_project / 'data/sites/test').iterdir())  # No prepared dataset generation.
+
+    # Missing data in one station must not discard a valid sample at another.
+    stations = xr.concat([result.observations, result.observations], dim='station').assign_coords(station=['a', 'b'])
+    stations['TB'][0, :3] = np.nan
+    stations['TB'][1, 3:] = np.nan
+    partial = run_model_list([workflow.models[0]], stations, 'cpu')
+    assert int(partial.T.sel(height=0).notnull().sum()) == 6
 
 
 def test_range_continues_after_missing_day_and_reports_partial_bls(prediction_project):
@@ -139,3 +149,54 @@ def test_default_output_and_missing_saved_predictions(prediction_project):
     assert path == prediction_project / 'data/sites/test/predictions/2024/01/20240101_retrieval.nc'
     with pytest.raises(FileNotFoundError, match='No saved predictions'):
         load_predictions(prediction_project, 'test', '2024-01-02')
+
+
+@pytest.mark.parametrize('weather', ['declared-outage', 'missing-met', 'unreadable-met'])
+def test_prediction_without_weather_keeps_other_products_and_reuses_loaded_observations(prediction_project, weather):
+    from openMWR.hatpro_data import import_hatpro_data
+
+    checkpoint(prediction_project, 'without_weather', weather=False)
+    raw = prediction_project / 'raw/Y2024/M01/D01'
+    before = (raw / '240101.BRT.NC').read_bytes()
+    if weather == 'missing-met':
+        (raw / '240101.MET.NC').unlink()
+    elif weather == 'unreadable-met':
+        (raw / '240101.MET.NC').write_bytes(b'Broken auxiliary sensor file')
+    else:
+        config = prediction_project / 'sites/test/site.toml'
+        config.write_text(config.read_text() + '''
+[[invalid_measurements]]
+variables = ["surface_T", "surface_p", "surface_rh"]
+start_date = "2024-01-01"
+end_date = "2024-01-01"
+reason = "Station unavailable"
+''')
+    observations = import_hatpro_data(datetime(2024, 1, 1), 'test', prediction_project,
+                                     mean_one_min=True, import_retrieval_data=False)
+    assert observations.time.size == 6 and np.isfinite(observations.TB).all()
+    workflow = PredictionWorkflow(prediction_project, 'test', ['without_weather'])
+    loaded = workflow.predict('2024-01-01', observations=observations)
+    direct = workflow.predict('2024-01-01')
+    assert not loaded.errors and loaded.zenith is not None
+    xr.testing.assert_identical(loaded.zenith, direct.zenith)
+    assert {'ah', 'TD', 'T_grad', 'lwp', 'iwv', 'lwp_from_lwc', 'iwv_from_ah'} <= set(loaded.zenith)
+    assert 'p' not in loaded.zenith
+    assert 'surface_p' not in loaded.zenith or not np.isfinite(loaded.zenith.surface_p).any()
+    path, = workflow.save(loaded)
+    assert xr.load_dataset(path).model.values.tolist() == ['without_weather']
+    normal = PredictionWorkflow(prediction_project, 'test', ['primary']).predict('2024-01-01')
+    assert normal.zenith is None and 'zenith' in normal.errors
+    wrong_day = workflow.predict('2024-01-02', observations=observations)
+    assert 'requested UTC day' in wrong_day.errors['zenith']
+    assert (raw / '240101.BRT.NC').read_bytes() == before
+    if weather == 'declared-outage':
+        import tomllib
+        import tomli_w
+
+        values = tomllib.loads(config.read_text())
+        values['invalid_measurements'] = {}
+        config.write_text(tomli_w.dumps(values))
+        with pytest.raises(ValueError, match='array of tables'):
+            import_hatpro_data(datetime(2024, 1, 1), 'test', prediction_project)
+        with pytest.raises(ValueError, match='array of tables'):
+            workflow.predict('2024-01-01', observations=observations)

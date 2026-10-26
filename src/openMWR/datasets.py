@@ -23,7 +23,7 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            era5_cache_file, project_root, radiosonde_station_dir,
                            radiosonde_year_file, site_config_file)
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
-                            require_keys, load_grid, check_cloud, check_profile_quality,
+                            require_keys, load_grid, check_cloud, check_profile_quality, check_invalid_measurements,
                             check_analysis, check_infrared, check_time_selection, check_split_days, TIME_SELECTION_KEYS)
 from openMWR.background import task_log_handler
 
@@ -338,6 +338,10 @@ class DatasetWorkflow:
             else:
                 settings.update(import_retrieval_data=values.get('observations', {}).get('import_retrieval_data', self.site_settings.get('rpg_retrieval_exists', False)),
                                 hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'))
+                periods = self.site_settings.get('invalid_measurements', [])
+                check_invalid_measurements(periods)
+                if periods:
+                    settings['invalid_measurements'] = periods
         elif kind == 'profiles':
             preparation = values.get('preparation', {})
             settings['heights'] = preparation['heights']
@@ -386,6 +390,10 @@ class DatasetWorkflow:
         settings = self.settings(name)
         if settings['kind'] in ('radiosonde', 'era5', 'hatpro'):
             settings = {k: v for k, v in settings.items() if k not in ('start_year', 'end_year', 'refresh_years', 'start_date', 'end_date')}
+        if 'invalid_measurements' in settings:
+            settings = {**settings, 'invalid_measurements': [
+                {key: value for key, value in period.items() if key != 'reason'}
+                for period in settings['invalid_measurements']]}
         return {'settings': settings, 'inputs': {role: self._definition(input_name)
                 for role, input_name in self.recipe(name).inputs.items()}}
 
@@ -714,9 +722,9 @@ class DatasetWorkflow:
                 from openMWR.radiosonde import create_analysis_dataset
                 create_analysis_dataset(self.site, self.sources(name), self.project_dir,
                     observations_dataset=observations, reference_dataset=reference, dataset=name,
-                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range')})
+                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations')})
             else:
                 from openMWR.era5 import ERA5Processor
                 processor = ERA5Processor(self.site, self.project_dir, simulation_dataset=reference)
                 processor.create_analysis_dataset_from_forward_calc(observations_dataset=observations, dataset=name,
-                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range')})
+                    **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations')})

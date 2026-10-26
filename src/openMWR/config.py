@@ -158,12 +158,33 @@ def select_height_range(data, height_range):
 
 
 def check_analysis(settings):
-    check_keys(settings, ('max_time_difference_minutes', 'exclude_rain', 'height_range'), 'analysis')
-    require_keys(settings, ('max_time_difference_minutes', 'exclude_rain', 'height_range'), 'analysis')
+    check_keys(settings, ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations'), 'analysis')
+    require_keys(settings, ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations'), 'analysis')
     check_number(settings['max_time_difference_minutes'], 'analysis.max_time_difference_minutes', 0, integer=True)
     if type(settings['exclude_rain']) is not bool:
         raise ValueError('analysis.exclude_rain must be true or false.')
     check_height_range(settings['height_range'], 'analysis.height_range')
+    check_strings(settings['required_observations'], 'analysis.required_observations')
+    if not settings['required_observations']:
+        raise ValueError('analysis.required_observations must not be empty.')
+
+
+def check_invalid_measurements(periods):
+    """Validate optional site-wide invalid measurement periods in UTC."""
+    if not isinstance(periods, list):
+        raise ValueError('invalid_measurements must be an array of tables.')
+    for period in periods:
+        label = 'invalid_measurements'
+        check_keys(period, ('variables', 'start_date', 'end_date', 'reason'), label)
+        require_keys(period, ('variables', 'start_date'), label)
+        if any(period[key] is None for key in ('start_date', 'end_date') if key in period):
+            raise ValueError(f'{label}: date bounds must be quoted ISO dates.')
+        check_time_selection(period, label)
+        check_strings(period['variables'], f'{label}.variables')
+        if not period['variables']:
+            raise ValueError(f'{label}.variables must not be empty.')
+        if 'reason' in period and not isinstance(period['reason'], str):
+            raise ValueError(f'{label}.reason must be text.')
 
 
 def check_infrared(settings):

@@ -400,18 +400,26 @@ def add_variables_at_closest_time(ds1: xr.Dataset, ds2: xr.Dataset, max_diff: in
     return ds1
 
 
-def match_analysis_data(observations, reference, *, max_time_difference_minutes, exclude_rain, height_range):
+def match_analysis_data(observations, reference, *, max_time_difference_minutes, exclude_rain, height_range,
+                        required_observations, invalid_measurements=None):
     """Pair observations/reference using the explicit analysis sample choices."""
     from openMWR.config import check_analysis, select_height_range
+    from openMWR.observations import mask_invalid_measurements, valid_observation_times
 
+    periods = [] if invalid_measurements is None else invalid_measurements
     check_analysis({'max_time_difference_minutes': max_time_difference_minutes,
-                    'exclude_rain': exclude_rain, 'height_range': height_range})
+                    'exclude_rain': exclude_rain, 'height_range': height_range,
+                    'required_observations': required_observations})
+    observations = mask_invalid_measurements(observations, periods)
     reference = select_height_range(reference, height_range)
     observations, reference = select_closest_times(observations, reference, diff_min=max_time_difference_minutes)
+    # A match must be valid at both its measured time and its reference time.
+    observations = mask_invalid_measurements(observations, periods)
+    valid = valid_observation_times(observations, required_observations)
     if exclude_rain:
         dry = observations.rain_flag == 0.0
-        observations, reference = observations.where(dry, drop=True), reference.where(dry, drop=True)
-    return observations, reference
+        valid = valid & dry.all([dim for dim in dry.dims if dim != 'time'])
+    return observations.isel(time=valid), reference.isel(time=valid)
 
 
 def select_closest_times(

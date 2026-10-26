@@ -24,6 +24,7 @@ openMWR
     hatpro_data
     libRadtran
     models
+    observations
     omb
     parallel
     paths

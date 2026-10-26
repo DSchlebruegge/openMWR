@@ -5,7 +5,7 @@ from pathlib import Path
 import tomllib
 import tomli_w
 from typing import Any, Union
-from openMWR.config import check_name
+from openMWR.config import check_name, check_invalid_measurements
 from openMWR.paths import project_root, site_root, site_data_dir, site_config_file
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,14 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
 
     logger.info(f"Created site config for {site} with: {config}")
     return directory
+
+def get_invalid_measurements(site, project_dir):
+    """Read and validate the site's optional measurement validity declarations."""
+    periods = get_config_parameter(site, 'invalid_measurements', project_dir)
+    periods = [] if periods is None else periods
+    check_invalid_measurements(periods)
+    return periods
+
 
 def prediction_output_dir(project_dir, site, output_dir=None):
     """Resolve the shared directory for daily prediction files and their log."""

@@ -1,7 +1,7 @@
+from openMWR.observations import load_analysis_dataset
 import xarray as xr
 import numpy as np
 from typing import Optional, Sequence, Dict, Tuple, TYPE_CHECKING
-from openMWR.paths import dataset_file
 
 if TYPE_CHECKING:
     from openMWR.models import BaseModel
@@ -62,7 +62,7 @@ class Omb_Analysis:
         if not load_existing_analysis_dataset:
             from openMWR.datasets import DatasetWorkflow
             DatasetWorkflow(project_dir, site).build(self.dataset)
-        self.an_data = xr.load_dataset(dataset_file(project_dir, site, self.dataset))
+        self.an_data = load_analysis_dataset(project_dir, site, self.dataset)
         if data_source == 'radiosonde':
             self.an_data = self.an_data.sel(station=self.station_id_for_analysis, drop=True)
 

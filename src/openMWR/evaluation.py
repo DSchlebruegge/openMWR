@@ -16,6 +16,7 @@ import xarray as xr
 from matplotlib.figure import Figure
 from matplotlib import colormaps
 
+from openMWR.observations import load_analysis_dataset
 from openMWR.config import check_time_selection, select_time, TIME_SELECTION_KEYS, check_height_range, select_height_range
 from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.hatpro_data import calc_derived_quantities
@@ -174,7 +175,7 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_m
         analysis_path = dataset_file(root, site, settings.get('dataset', f'analysis_{source}'), bls=model.is_bls_model)
         if not analysis_path.is_file():
             raise FileNotFoundError(f'Missing evaluation analysis dataset: {analysis_path}. Prepare it before evaluation.')
-        data = xr.load_dataset(analysis_path)
+        data = load_analysis_dataset(root, site, settings.get('dataset', f'analysis_{source}'), bls=model.is_bls_model)
         data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         stations = []
         if source == 'radiosonde':
@@ -277,8 +278,10 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
                                 'checkpoint_sha256': checkpoint_id(checkpoint_file(root, site, retrieval)),
                                 'training_metadata': model.training_metadata}]}
         return Analysis(metadata, evaluations)
-def _load_observations(path, source, settings):
-    ds = xr.load_dataset(path)
+def _load_observations(root, site, source, settings, *, bls=False):
+    dataset = settings.analysis_dataset or f'analysis_{source}'
+    path = dataset_file(root, site, dataset, bls=bls)
+    ds = load_analysis_dataset(root, site, dataset, bls=bls)
     stations = []
     ds = select_height_range(select_time(ds, start_date=settings.start_date, end_date=settings.end_date,
                                         days_of_month=settings.days_of_month), settings.observation_height_range)
@@ -382,7 +385,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     test_variables = ["T", "rh", "lwc", "lwp"]
 
     logger.info("Evaluating zenith retrievals on %s observations", data_source)
-    hatpro, reference = _load_observations(paths[0], data_source, settings)
+    hatpro, reference = _load_observations(project_dir, site, data_source, settings)
     if data_source == 'radiosonde':
         metadata['filters']['radiosonde_station_id'] = reference.attrs['analysis_stations'][0]
     logger.info('Evaluation reference: %s; radiosonde station: %s; %s', data_source, metadata['filters']['radiosonde_station_id'], _observation_note(settings.days_of_month, settings.start_date, settings.end_date))
@@ -435,7 +438,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
     del pred_test
 
     logger.info("Evaluating boundary layer scans on %s observations", data_source)
-    hatpro, reference = _load_observations(paths[1], data_source, settings)
+    hatpro, reference = _load_observations(project_dir, site, data_source, settings, bls=True)
     pred = _predict(bls_models, hatpro, device, settings.observation_height_range)
     if settings.include_rpg:
         rpg = hatpro[["T", "p"]].expand_dims(model=["RPG_BLS"])

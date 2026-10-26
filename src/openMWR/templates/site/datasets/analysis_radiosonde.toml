@@ -9,3 +9,6 @@ max_time_difference_minutes = 10
 exclude_rain = true
 # Profile heights in metres above the instrument.
 height_range = [0, 10000]
+
+# Variables that must be finite in every matched observation.
+required_observations = ["TB", "surface_T", "surface_p", "surface_rh"]

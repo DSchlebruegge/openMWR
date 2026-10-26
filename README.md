@@ -194,7 +194,7 @@ Supported recipe kinds and input roles are:
 | `profiles` | `source`: radiosonde or ERA5 | `[preparation] heights`; radiosondes also require `incomplete_profiles`, `cloud` and `quality`, with optional cutoff |
 | `simulation` | `profiles` | `[radiative_transfer] backend`, `absorption_model`, `frequencies`, `angles`, required `infrared` microphysics, optional `frequency_shift` |
 | `split` | `simulation` | Required `[split] test_days_of_month`, `validation_days_of_month`; optional `start_date`, `end_date`, `days_of_month` |
-| `analysis` | `observations`: HATPRO; `reference`: simulation | Required `[analysis] max_time_difference_minutes`, `exclude_rain`, `height_range`; optional `stations` |
+| `analysis` | `observations`: HATPRO, `reference`: simulation | Required `[analysis] max_time_difference_minutes`, `exclude_rain`, `height_range`, `required_observations`. Optional `stations` |
 
 Derived recipes inherit their input stations unless selecting a subset.
 Split recipes select their profile pool, then assign whole days to test and
@@ -302,6 +302,7 @@ Analysis recipes explicitly select matching, rain filtering and their profile ra
 max_time_difference_minutes = 10
 exclude_rain = true
 height_range = [0, 10000]  # metres above the instrument
+required_observations = ["TB", "surface_T", "surface_p", "surface_rh"]
 ```
 
 These settings apply to both radiosonde and ERA5 analysis, for zenith and scan

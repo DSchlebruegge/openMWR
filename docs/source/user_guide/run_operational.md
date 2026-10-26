@@ -84,3 +84,30 @@ reported by openMWR. See [Create a Retrieval](create_retrieval.md#build-or-updat
 
 Dataset updates do not retrain saved models. Retraining and changing the models
 used for prediction remain separate decisions.
+
+## Invalid measurements
+
+Record known sensor failures in `site.toml`, using openMWR variable names:
+
+```toml
+[[invalid_measurements]]
+variables = ["surface_T", "surface_p", "surface_rh"]
+start_date = "2025-01-12"
+end_date = "2025-01-14"
+reason = "Weather station unavailable"
+```
+
+Dates are inclusive UTC days. Omit `end_date` for an ongoing failure. Loading
+masks these variables before averaging and retains other measurements. Original
+files are preserved.
+
+Analysis recipes list `required_observations`. Matched samples need finite values
+in each listed variable. Optimization, evaluation and OMB analysis also apply
+current validity declarations when reading existing comparison files. Changed
+declarations require rebuilding affected prepared datasets before updating them.
+
+Prediction requires the inputs recorded in the selected checkpoint. MET and IRT
+files can be absent when their variables are not required. Profile and column
+predictions can still be saved without surface pressure. Pressure profiles and
+pressure-based plots then remain unavailable. Choosing a different retrieval
+based on input availability belongs in the project's Python workflow.

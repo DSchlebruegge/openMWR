@@ -25,6 +25,7 @@ they do not establish infrared numerical accuracy.
 | `workflows/test_optimization.py` | Searches, scoring, continuation, reproducibility and safe replacement |
 | `workflows/test_evaluation.py` | Observation selection, OMB preparation and portable reports |
 | `workflows/test_prediction.py` | Applying saved models, smoothing, grouped daily outputs and missing observations |
+| `science/test_observations.py` | Variable validity, UTC period bounds, independent station samples and matching across outages |
 | `science/` | Numerical values, units, coordinates, cloud/profile rules, loss weights and derivatives |
 | `interfaces/` | Parser/dispatch, invalid recipes, editable grids, recommendations, storage, acquisition, plotting and external binaries |
 

@@ -359,6 +359,7 @@ section to:
 max_time_difference_minutes = 10
 exclude_rain = true
 height_range = [0, 30000]
+required_observations = ["TB", "surface_T", "surface_p", "surface_rh"]
 ```
 
 This range must cover the model's output heights for profile optimization.

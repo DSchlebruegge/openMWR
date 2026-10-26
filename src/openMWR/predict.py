@@ -1,7 +1,7 @@
 """Inference on xarray datasets and daily prediction from local measurements."""
 
 from dataclasses import dataclass, field
-from datetime import date as calendar_date, datetime, timezone
+from datetime import date as calendar_date, datetime, timezone, timedelta
 from typing import Sequence
 
 import torch
@@ -10,7 +10,7 @@ import numpy as np
 import logging
 from openMWR.models import BaseModel, load_model
 from openMWR.paths import project_root
-from openMWR.site import get_config_parameter, prediction_output_dir
+from openMWR.site import get_config_parameter, prediction_output_dir, get_invalid_measurements
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +299,8 @@ def run_model(
     # Normalize only the channels/angles expected by this checkpoint. Extra
     # measured channels otherwise acquire NaNs or fail xarray alignment.
     ds_sel = ds_sel.sel({name: values for name, values in model.input.coords.items()
-                         if name in ds_sel.dims}).dropna(dim='time')
+                         if name in ds_sel.dims})
+    ds_sel = ds_sel.where(np.isfinite(ds_sel))
 
     if ds_sel["time"].size == 0:
         raise ValueError("No Data with all not Nan input values.")
@@ -312,6 +313,8 @@ def run_model(
     # If multiple stations are present, stack station and time dimensions
     dims_to_stack = tuple(dim for dim in ("station", "time") if dim in ds.dims)
     ds_stacked = ds_nor.stack(station_time=dims_to_stack).dropna(dim='station_time', subset=model.input_vars)
+    if not ds_stacked.sizes['station_time']:
+        raise ValueError('No Data with all finite input values.')
     #x = create_x_tensor(model, ds_stacked, device)
     x = create_tensor_from_ds(model.input, ds_stacked, device)
 
@@ -454,40 +457,49 @@ class PredictionWorkflow:
         self.import_retrieval_data = import_retrieval_data
         logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), device)
 
-    def predict(self, date):
+    def predict(self, date, *, observations=None, observations_bls=None):
         """Return predictions without writing or downloading; retain partial groups.
 
-        Missing/invalid input is always reported in ``result.errors``, including
+        Optional standardized observation datasets bypass daily file loading.
+        They must belong to the requested UTC day. Site validity periods still
+        apply. Missing/invalid input is always reported in ``result.errors``, including
         days when neither group succeeds. Configuration and computation errors
         still raise exceptions.
         """
         date = _day(date)
         result = PredictionResult(self.site, date)
         result.zenith, result.observations, zenith_error = self._predict_group(
-            date, self._zenith_models, bls=False)
+            date, self._zenith_models, bls=False, observations=observations)
         result.bls, result.observations_bls, bls_error = self._predict_group(
-            date, self._bls_models, bls=True)
+            date, self._bls_models, bls=True, observations=observations_bls)
         if zenith_error is not None:
             result.errors['zenith'] = zenith_error
         if bls_error is not None:
             result.errors['bls'] = bls_error
         return result
 
-    def _predict_group(self, date, models, *, bls):
+    def _predict_group(self, date, models, *, bls, observations=None):
         from openMWR.hatpro_data import import_hatpro_data, import_hatpro_data_bls
+        from openMWR.observations import mask_invalid_measurements
 
         if not models:
             return None, None, None
+        periods = get_invalid_measurements(self.site, self.project_dir)
         group = 'bls' if bls else 'zenith'
         logger.info('Predict %s %s %s: %s', self.site, date.date(), group,
                     ', '.join(model.name for model in models))
         try:
-            if bls:
+            if observations is not None:
+                if bool(((observations.time < np.datetime64(date)) |
+                         (observations.time >= np.datetime64(date + timedelta(days=1)))).any()):
+                    raise ValueError('Observations must belong to the requested UTC day.')
+            elif bls:
                 observations = import_hatpro_data_bls(date, self.site, self.project_dir,
                     import_retrieval_data=self.import_retrieval_data)
             else:
                 observations = import_hatpro_data(date, self.site, self.project_dir,
                     import_retrieval_data=self.import_retrieval_data, mean_one_min=True)
+            observations = mask_invalid_measurements(observations, periods)
             for model in models:
                 validate_model_data(model.input, observations, f'{group} observations for {model.name}')
         except (OSError, ValueError) as exc:
@@ -505,8 +517,7 @@ class PredictionWorkflow:
         if {'T', 'rh', 'lwc'} <= set(predicted):
             if 'surface_p' not in predicted and 'surface_p' in observations:
                 predicted['surface_p'] = observations.surface_p.sel(time=predicted.time)
-            if 'surface_p' in predicted:
-                predicted = calc_derived_quantities(predicted)
+            predicted = calc_derived_quantities(predicted)
         if 'rain_flag' in observations:
             predicted['rain_flag'] = observations.rain_flag.sel(time=predicted.time)
         if self.smooth and not bls:

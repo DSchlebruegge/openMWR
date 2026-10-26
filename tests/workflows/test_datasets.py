@@ -384,7 +384,8 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_
     recipe(dataset_project, 'observations', kind='hatpro')
     recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r17'})
     measured_times = times - np.timedelta64(75, 'm')
-    measured = xr.Dataset({'TB': (('time', 'frq'), np.full((3, 1), 100.)), 'rain_flag': ('time', [0., 0., 0.])},
+    measured = xr.Dataset({'TB': (('time', 'frq'), np.full((3, 1), 100.)),
+                          'surface_p': ('time', [740.] * 3), 'rain_flag': ('time', [0., 0., 0.])},
                           coords={'time': measured_times, 'frq': [22.24]})
     for bls in (False, True):
         path = dataset_file(dataset_project, 'test', 'observations', bls=bls)
@@ -421,3 +422,24 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_
     pairs = xr.load_dataset(output)
     np.testing.assert_array_equal(pairs.time, measured_times[[0, 2]])
     assert pairs.height.max() == 2000
+
+    # Existing paired files must also respect newly declared measurement issues.
+    from openMWR.observations import load_analysis_dataset
+
+    site = dataset_project / 'sites/test/site.toml'
+    site.write_text(site.read_text() + '''
+[[invalid_measurements]]
+variables = ["surface_p"]
+start_date = "2020-01-01"
+end_date = "2020-01-01"
+''')
+    recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r17'},
+           analysis={'required_observations': ['TB', 'surface_p']})
+    before = output.read_bytes()
+    filtered = load_analysis_dataset(dataset_project, 'test', 'comparison')
+    np.testing.assert_array_equal(filtered.time, measured_times[:1])
+    xr.testing.assert_identical(filtered.sel(data_source='radiosonde').TB,
+                                pairs.sel(data_source='radiosonde').TB.isel(time=[0]))
+    assert output.read_bytes() == before
+    with pytest.raises(ValueError, match='invalid_measurements'):
+        DatasetWorkflow(dataset_project, 'test').build('comparison')

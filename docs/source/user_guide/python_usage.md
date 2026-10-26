@@ -125,6 +125,13 @@ days to avoid reloading the models. Results expose `zenith`, `bls`, `observation
 and `observations_bls`. Unavailable groups are `None`. `result.errors` reports
 missing or invalid measurement inputs.
 
+To select a retrieval after inspecting its inputs, load observations with
+`openMWR.hatpro_data.import_hatpro_data` and check variables with
+`openMWR.observations.valid_observation_times`. Pass the same standardized dataset
+to `workflow.predict(day, observations=observations)`. For scans, use
+`observations_bls`. Supplied observations must belong to the requested UTC day.
+Site validity declarations apply to both supplied and internally loaded data.
+
 To read files already written by `openMWR predict`:
 
 ```python
