@@ -17,7 +17,8 @@ from typing import Union, List
 
 from openMWR.utils import progress_bar, is_called_from_notebook, progress_log
 from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
-from openMWR.predict import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data, validate_device
+from openMWR.predict import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data
+from openMWR.devices import resolve_device, device_name
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, SpectralConsistencyModel, load_model
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
@@ -37,7 +38,9 @@ def _logged_run(action):
         def run(self, *args, **kwargs):
             with retrieval_log(self.project_dir, self.site, self.model.name, action):
                 self._run_record = {'action': action, 'started_utc': utc_now(),
-                                    'software': software_identity(), 'device': self.device}
+                                    'software': software_identity(), 'device': self.device,
+                                    'device_name': device_name(self.device)}
+                self.logger.info('Training device: %s (%s).', self.device, self._run_record['device_name'])
                 try:
                     return method(self, *args, **kwargs)
                 finally:
@@ -62,8 +65,8 @@ class TrainingWorkflow:
         Model instance derived from `BaseModel` used for the retrieval.
     site : str
         Site identifier for which the model is trained.
-    device : str
-        Device identifier (e.g., "cpu" or "cuda") used for training.
+    device : str, default='auto'
+        Device identifier. Auto selects CUDA, then MPS, then CPU.
     project_dir : str
         Working-project root containing data/ and sites/.
 
@@ -148,10 +151,10 @@ class TrainingWorkflow:
         workflow.train()
 
     """
-    def __init__(self, model: BaseModel, site: str, device: str, project_dir: str):
+    def __init__(self, model: BaseModel, site: str, device: str = 'auto', project_dir: str = '.'):
         self.model = model
         self.site = site
-        self.device = device
+        self.device = resolve_device(device)
         self.project_dir = project_dir
 
         self.hyper_params = {}
@@ -164,7 +167,7 @@ class TrainingWorkflow:
         self.suggest_categorical = namedtuple('suggest_categorical', ['choices'])
 
     @classmethod
-    def from_recipe(cls, project_dir, site, retrieval, device='cpu'):
+    def from_recipe(cls, project_dir, site, retrieval, device='auto'):
         """Load a recipe and configure a workflow; no training or download runs.
 
         The returned datasets and settings remain available for custom Python
@@ -175,7 +178,6 @@ class TrainingWorkflow:
         recipe = RetrievalRecipe.load(project_dir, site, retrieval)
         workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
         workflow.recipe = recipe
-        validate_device(workflow.device)
         workflow.change_hyper_params(**recipe.training_params(workflow))
         noise_settings = recipe.section('input_noise')
         method = noise_settings['method']
@@ -208,7 +210,7 @@ class TrainingWorkflow:
 
     def validate(self):
         """Check current Python settings and prepared datasets before computation."""
-        validate_device(self.device)
+        self.device = resolve_device(self.device, log=False)
         require_keys(self.hyper_params, training_parameters(self.model.is_MLR, self.hyper_params.get('loss_fn')), 'training')
         searches = {key: value for key, value in self.hyper_params.items()
                     if isinstance(value, (self.suggest_int, self.suggest_float, self.suggest_categorical))}

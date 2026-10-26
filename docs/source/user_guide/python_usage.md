@@ -36,7 +36,7 @@ cp sites/my_site/retrieval/NN_example/retrieval.toml sites/my_site/retrieval/NN_
 from openMWR.train import TrainingWorkflow
 
 workflow = TrainingWorkflow.from_recipe(
-    project_dir=".", site="my_site", retrieval="NN_python", device="cpu"
+    project_dir=".", site="my_site", retrieval="NN_python"
 )
 
 # Inspect or modify workflow.training_data and workflow.validation_data here.
@@ -45,7 +45,9 @@ model = workflow.train()
 ```
 
 `from_recipe` loads the prepared training and validation data. It does not build
-them. Changes to the workflow do not edit the TOML file. The checkpoint records
+them. The default `device="auto"` selects CUDA, then MPS, then CPU. Pass an
+explicit device to override it. Changes to the workflow do not edit the TOML
+file. The checkpoint records
 the effective settings. Use another retrieval name to keep experiments separate,
 or `train(run_mode="fresh")` to replace an existing result.
 
@@ -80,7 +82,7 @@ model = Model(
     freqs=load_grid(".", "frequencies", "hatpro"),
     is_MLR=True,
 )
-workflow = TrainingWorkflow(model, "my_site", "cpu", project_dir=".")
+workflow = TrainingWorkflow(model, "my_site", project_dir=".")
 workflow.load_training_data(dataset="training")
 workflow.add_standard_training_hyper_params(seed=42)
 workflow.add_input_noise_params()

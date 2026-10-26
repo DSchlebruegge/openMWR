@@ -11,15 +11,9 @@ import logging
 from openMWR.models import BaseModel, load_model
 from openMWR.paths import project_root
 from openMWR.site import get_config_parameter, prediction_output_dir, get_invalid_measurements
+from openMWR.devices import resolve_device
 
 logger = logging.getLogger(__name__)
-
-
-def validate_device(device):
-    """Validate a PyTorch device without allocating tensors."""
-    selected = torch.device(device)
-    if selected.type == 'cuda' and (not torch.cuda.is_available() or (selected.index is not None and selected.index >= torch.cuda.device_count())):
-        raise ValueError(f'Requested device {device!r} is unavailable.')
 
 
 def validate_model_data(specification, data, label='data'):
@@ -264,7 +258,7 @@ def create_stats(model: BaseModel, ds: xr.Dataset) -> xr.Dataset:
 def run_model(
     model: BaseModel,
     ds: xr.Dataset,
-    device: str,
+    device: str = 'auto',
     include_input_vars: bool = True,
 ) -> xr.Dataset:
     """
@@ -277,7 +271,7 @@ def run_model(
     ds : xr.Dataset
         Input dataset containing the model input variables.
     device : str
-        Torch device name (e.g., ``"cpu"``, ``"cuda"``).
+        Torch device name. ``"auto"`` selects CUDA, then MPS, then CPU.
     include_input_vars : bool, optional
         Whether to merge input variables into the output dataset.
 
@@ -291,6 +285,8 @@ def run_model(
     ValueError
         If no valid input samples remain after dropping NaNs.
     """
+    if device == 'auto':
+        device = resolve_device(device)
     model.to(device)
 
     ds_sel = ds[model.input_vars]
@@ -339,7 +335,7 @@ def run_model(
 def run_model_list(
     model_list: Sequence[BaseModel],
     ds: xr.Dataset,
-    device: str,
+    device: str = 'auto',
     add_not_predicted_vars: bool = False,
     include_input_vars: bool = True,
 ) -> xr.Dataset:
@@ -353,7 +349,7 @@ def run_model_list(
     ds : xr.Dataset
         Input dataset.
     device : str
-        Torch device name.
+        Torch device name. ``"auto"`` selects CUDA, then MPS, then CPU.
     add_not_predicted_vars : bool, optional
         If True, merge variables not predicted by any model from `ds`.
     include_input_vars : bool, optional
@@ -364,6 +360,8 @@ def run_model_list(
     xr.Dataset
         Concatenated predictions with a ``model`` dimension.
     """
+    if device == 'auto':
+        device = resolve_device(device)
     pred_list = []
 
     for model in model_list:
@@ -429,12 +427,11 @@ class PredictionWorkflow:
     include RPG products in the returned observations for comparison plots.
     """
 
-    def __init__(self, project_dir, site, retrievals=None, device='cpu', *,
+    def __init__(self, project_dir, site, retrievals=None, device='auto', *,
                  output_dir=None, smooth=True, import_retrieval_data=False):
         self.project_dir = project_root(project_dir)
         self.site = site
-        validate_device(device)
-        self.device = device
+        self.device = resolve_device(device)
         if retrievals is None:
             settings = get_config_parameter(site, 'prediction', self.project_dir) or {}
             if not isinstance(settings, dict) or set(settings) - {'retrievals'}:
@@ -455,7 +452,7 @@ class PredictionWorkflow:
         self.output_dir = prediction_output_dir(self.project_dir, site, output_dir)
         self.smooth = smooth
         self.import_retrieval_data = import_retrieval_data
-        logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), device)
+        logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), self.device)
 
     def predict(self, date, *, observations=None, observations_bls=None):
         """Return predictions without writing or downloading; retain partial groups.

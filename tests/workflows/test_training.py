@@ -21,6 +21,25 @@ def command(retrieval_project, action, *extra, check=True):
     return result
 
 
+def test_auto_device_is_saved_with_fixed_model_without_fitting(tmp_path, monkeypatch, caplog):
+    recipe, _ = retrieval_project(tmp_path, search=False)
+    with caplog.at_level('INFO'):
+        workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert workflow.device == 'cpu'
+    assert 'Using device cpu (CPU), requested auto.' in caplog.text
+    assert TrainingWorkflow(workflow.model, 'test', project_dir=tmp_path).device == 'cpu'
+    # Exercise the run/checkpoint metadata with a fixed model, without fitting.
+    monkeypatch.setattr(workflow, '_calc_linear_regression', lambda model, *args: model)
+    workflow.train()
+    metadata = load_model('example', 'test', tmp_path).training_metadata
+    assert metadata['device'] == 'cpu'
+    assert metadata['device_name'] == 'CPU'
+    assert 'Training device: cpu (CPU).' in (recipe.parent / 'training.log').read_text()
+    analysis = evaluate_retrieval(tmp_path, 'test', 'example')
+    assert analysis.metadata['device'] == 'cpu'
+    assert analysis.metadata['device_name'] == 'CPU'
+
+
 def test_python_and_command_training_agree_fit_heldout_data_and_save_settings(tmp_path):
     recipe, data = retrieval_project(tmp_path, search=False)
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')

@@ -22,7 +22,8 @@ from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.hatpro_data import calc_derived_quantities
 from openMWR.models import Model, load_model
 from openMWR.plot import plot_err, plot_scatter_lwp
-from openMWR.predict import run_model_list, validate_model_data, validate_device
+from openMWR.predict import run_model_list, validate_model_data
+from openMWR.devices import resolve_device, device_name
 from openMWR.xr_utils import load_combined_dataset
 from openMWR.paths import project_root, site_root, dataset_file, checkpoint_file, retrieval_dir
 from openMWR.provenance import checkpoint_id, git_identity, software_identity, retrieval_log, utc_now
@@ -218,14 +219,14 @@ def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_m
     return root, model, settings, prepared, paths
 
 
-def validate_evaluation(project_dir, site, retrieval, device='cpu', **options):
+def validate_evaluation(project_dir, site, retrieval, device='auto', **options):
     """Check saved-model evaluation inputs without prediction or writing artifacts."""
-    validate_device(device)
+    resolve_device(device)
     root, model, settings, inputs, paths = _evaluation_inputs(project_dir, site, retrieval, **options)
     return [str(path) for path in paths]
 
 
-def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
+def evaluate_retrieval(project_dir, site, retrieval, device='auto', **options):
     """Evaluate one saved retrieval, returning numerical results for Python users.
 
     Recipe evaluation options can be overridden by data_source, start_date,
@@ -233,7 +234,7 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
     the test split already owns its period. Saving a report is a separate operation.
     """
     with retrieval_log(project_dir, site, retrieval, 'evaluate'):
-        validate_device(device)
+        device = resolve_device(device)
         started = utc_now()
         root, model, settings, inputs, paths = _evaluation_inputs(project_dir, site, retrieval, **options)
         logger.info('Evaluation reference: %s; radiosonde station: %s.', settings.get('data_source', 'radiosonde'), settings.get('station_id', 'not applicable'))
@@ -265,6 +266,7 @@ def evaluate_retrieval(project_dir, site, retrieval, device='cpu', **options):
         metadata = {'site': site, 'retrieval': retrieval, 'project_dir': str(root),
                     'data_source': settings.get('data_source', 'radiosonde'),
                     'started_utc': started, 'finished_utc': utc_now(), 'device': device,
+                    'device_name': device_name(device),
                     'filters': {'observation_days_of_month': settings.get('days_of_month'),
                                 'observation_start_date': settings.get('start_date'),
                                 'observation_end_date': settings.get('end_date'),
@@ -320,8 +322,9 @@ def _add_comparators(evaluation, zenith, models):
         )
 
 
-def analyze_models(site, settings, data_source="radiosonde", project_dir=".", device="cpu"):
+def analyze_models(site, settings, data_source="radiosonde", project_dir=".", device="auto"):
     """Run the four notebook evaluations without displaying or writing output."""
+    device = resolve_device(device)
     if data_source not in ("radiosonde", "era5"):
         raise ValueError("data_source must be 'radiosonde' or 'era5'.")
     check_height_range(settings.observation_height_range, allow_model=True)
@@ -354,6 +357,7 @@ def analyze_models(site, settings, data_source="radiosonde", project_dir=".", de
         "project_dir": str(project_dir),
         "started_utc": started,
         "device": device,
+        "device_name": device_name(device),
         "main_model": settings.main_model,
         "filters": {
             "observation_days_of_month": settings.days_of_month,

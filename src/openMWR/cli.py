@@ -27,7 +27,7 @@ def main(argv=None):
     predict.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     predict.add_argument('site', metavar='SITE', help='Site name under sites/.')
     predict.add_argument('retrieval', metavar='RETRIEVAL', nargs='*', help='Saved retrieval name(s); defaults to [prediction].retrievals in site.toml.')
-    predict.add_argument('-D', '--device', default='cpu', help='PyTorch device (default: cpu).')
+    predict.add_argument('-D', '--device', default='auto', help='PyTorch device: auto selects CUDA, then MPS, then CPU (default: auto).')
     dates = predict.add_mutually_exclusive_group(required=True)
     dates.add_argument('-d', '--date', type=date.fromisoformat, help='One UTC day, YYYY-MM-DD.')
     dates.add_argument('-s', '--start-date', type=date.fromisoformat, help='First UTC day of an inclusive range, YYYY-MM-DD.')
@@ -41,7 +41,7 @@ def main(argv=None):
         sub.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
         sub.add_argument('site', metavar='SITE', help='Site name under sites/.')
         sub.add_argument('retrieval', metavar='RETRIEVAL', help='Directory name under sites/<site>/retrieval/.')
-        sub.add_argument('-D', '--device', default='cpu', help='PyTorch device, e.g. cpu or cuda (default: cpu).')
+        sub.add_argument('-D', '--device', default='auto', help='PyTorch device: auto selects CUDA, then MPS, then CPU (default: auto).')
         if command == 'train':
             sub.add_argument('-t', '--n-trials', type=int, help='Override the trial count when the recipe defines a parameter search.')
             mode = sub.add_mutually_exclusive_group()

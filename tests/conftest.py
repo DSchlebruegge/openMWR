@@ -13,6 +13,13 @@ import torch
 
 
 @pytest.fixture(autouse=True)
+def cpu_backend(monkeypatch):
+    """Keep numerical workflows on CPU. Selection tests override availability."""
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
+    monkeypatch.setattr(torch.backends.mps, 'is_available', lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def offline(monkeypatch):
     connect = socket.socket.connect
 

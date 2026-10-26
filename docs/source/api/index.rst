@@ -18,6 +18,7 @@ openMWR
     config
     consts
     datasets
+    devices
     dwd_opendata
     era5
     evaluation

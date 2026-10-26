@@ -38,15 +38,15 @@ def test_train_selects_action_and_passes_overrides(tmp_path, monkeypatch, optimi
     workflow = Mock(requires_optimization=optimize)
     factory = Mock(return_value=workflow)
     monkeypatch.setattr('openMWR.train.TrainingWorkflow.from_recipe', factory)
-    args = ['train', 'site', 'model', '-p', str(tmp_path), '-D', 'cpu']
+    args = ['train', 'site', 'model', '-p', str(tmp_path)]
     if optimize:
-        args += ['-c', '-t', '7', '--data-source', 'era5', '--dataset', 'analysis',
+        args += ['-D', 'cpu', '-c', '-t', '7', '--data-source', 'era5', '--dataset', 'analysis',
                  '-s', '2024-01-01', '-e', '2024-03-31', '--days-of-month', '4', '14']
     else:
         args += ['-f']
     result = run_cli(*args)
     assert result.returncode == 0, result.stderr
-    factory.assert_called_once_with(tmp_path, 'site', 'model', 'cpu')
+    factory.assert_called_once_with(tmp_path, 'site', 'model', 'cpu' if optimize else 'auto')
     if optimize:
         workflow.train.assert_not_called()
         workflow.optimize.assert_called_once_with(n_trials=7, data_source='era5', dataset='analysis',
@@ -71,7 +71,7 @@ def test_evaluation_forwards_selections_and_protects_report(tmp_path, monkeypatc
             '-o', str(tmp_path / 'report.html')]
     result = run_cli(*args)
     assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / 'report.html')
-    evaluate.assert_called_once_with(tmp_path, 'site', 'model', device='cpu', data_source='radiosonde',
+    evaluate.assert_called_once_with(tmp_path, 'site', 'model', device='auto', data_source='radiosonde',
         station_id='03715', dataset='analysis', observation_height_range=[0., 500.], test_height_range='model',
         start_date='2024-01-01', end_date='2024-01-31', days_of_month={'first': 21, 'last': 31})
     write.assert_called_once_with(evaluate.return_value, tmp_path / 'report.html')
@@ -88,10 +88,10 @@ def test_prediction_range_reuses_workflow_and_reports_partial_success(tmp_path, 
     factory = Mock(return_value=workflow)
     monkeypatch.setattr('openMWR.predict.PredictionWorkflow', factory)
     result = run_cli('predict', 'site', 'first', 'second', '-p', str(tmp_path),
-                     '-s', '2024-01-01', '-e', '2024-01-02', '-o', 'output', '-D', 'cpu')
+                     '-s', '2024-01-01', '-e', '2024-01-02', '-o', 'output')
     assert result.returncode == 1 and 'Prediction incomplete' in result.stderr
     assert result.stdout.splitlines() == [str(tmp_path / 'day1.nc'), str(tmp_path / 'day2.nc')]
-    factory.assert_called_once_with(tmp_path, 'site', ['first', 'second'], 'cpu', output_dir=Path('output'))
+    factory.assert_called_once_with(tmp_path, 'site', ['first', 'second'], 'auto', output_dir=Path('output'))
     assert [call.args[0] for call in workflow.predict.call_args_list] == [date(2024, 1, 1), date(2024, 1, 2)]
 
 

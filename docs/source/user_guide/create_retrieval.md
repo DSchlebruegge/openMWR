@@ -318,7 +318,9 @@ These values describe the training perturbations, not measured instrument errors
 openMWR train my_site NN_example
 ```
 
-The command uses the CPU. Add `--device cuda` to use a compatible GPU.
+The default `--device auto` selects CUDA, then MPS, then CPU according to
+availability. The selected hardware is logged at startup. Use `--device cpu`
+to select the CPU explicitly.
 The trained model and `training.log` are saved beside `retrieval.toml` as
 `sites/my_site/retrieval/NN_example/model.pth` and `training.log`.
 

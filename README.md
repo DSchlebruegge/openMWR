@@ -359,7 +359,10 @@ openMWR evaluate munich_G5 NN_example
 Site and retrieval names are required positional arguments. Each command
 performs only the selected action using prepared datasets. Pass
 `--project-dir /path/to/project` to work from another directory. The default
-device is `cpu`. Each task checks its required settings and inputs before starting
+device is `auto`, selecting CUDA, then MPS, then CPU according to availability.
+Use `--device cpu`, `--device cuda:1` or `--device mps` to select explicitly.
+The selected device and hardware name are logged at startup and recorded in
+training metadata. Each task checks its required settings and inputs before starting
 the expensive computation. `train` runs optimization when any resolved training
 or noise parameter contains a search definition; otherwise it trains one model.
 It announces the selected mode, optimization trial budget, and resolved search
@@ -651,7 +654,7 @@ Explicit names replace this selection. Models determine whether zenith or BLS
 input is needed; training recipes and prepared training datasets are not read.
 Dates are UTC and ranges include both endpoints. Prediction does not download
 data or build dataset dependencies. `--project-dir` defaults to the current
-directory and `--device` to cpu.
+directory and `--device` to `auto` (CUDA, then MPS, then CPU).
 
 The output root is `retrieval_output_dir` from site.toml, or
 `data/sites/<site>/predictions/` when omitted. `--output-dir` overrides it;
