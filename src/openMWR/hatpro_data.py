@@ -21,6 +21,11 @@ from openMWR.hatpro_io import load_hatpro_day
 
 logger = logging.getLogger(__name__)
 
+
+class _NoUsableObservations(ValueError):
+    """A daily source has no observations supported by the importer."""
+
+
 def _set_time_encoding_to_seconds(ds: xr.Dataset, time_dim: str = "time") -> None:
     """
     Encode datetime coordinates as integer seconds to avoid minute-unit warnings.
@@ -126,7 +131,8 @@ def import_hatpro_data(
     mean_one_min : bool, optional
         If True, average all variables to 1-minute resolution.
     import_retrieval_data : bool, optional
-        If True, include RPG retrieval products (LWP, LPR, TPC, HPC, IWV).
+        If True, include available RPG retrieval products (LWP, LPR, TPC, HPC,
+        IWV). Missing or unreadable products are logged and omitted.
     out_file : str or os.PathLike, optional
         If provided, save the resulting daily dataset to this NetCDF file.
 
@@ -141,8 +147,8 @@ def import_hatpro_data(
     Raises
     ------
     FileNotFoundError
-        If a required microwave or requested RPG retrieval file is missing.
-        MET and IRT are optional. Consumers validate their required variables.
+        If the required microwave file is missing. MET, IRT and RPG retrievals
+        are optional. Consumers validate their required variables.
     ValueError
         If no valid times remain after filtering.
 
@@ -171,7 +177,7 @@ def import_hatpro_data(
     if 'IRT' in datasets:
         extra.append(datasets['IRT'].TB_IR.isel(wavelength=0, drop=True))
     if import_retrieval_data:
-        extra.extend(datasets[key] for key in ('LWP', 'LPR', 'TPC', 'HPC', 'IWV'))
+        extra.extend(datasets[key] for key in ('LWP', 'LPR', 'TPC', 'HPC', 'IWV') if key in datasets)
     ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro = add_variables_at_closest_time(ds_hatpro, ds_MET, max_diff=2)
@@ -181,20 +187,20 @@ def import_hatpro_data(
     #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True)
     ds_hatpro = ds_hatpro.where(ds_hatpro['elevation_angle'].round(0) == 90., drop=True)
 
+    if not ds_hatpro.sizes['time']:
+        raise _NoUsableObservations('No zenith observations remain after selecting elevation 90 degrees.')
+
     if mean_one_min:
         ds_hatpro = mean_n_min(ds_hatpro, 1)  # Useful to avoid many NaNs from mismatched time coords
 
-    if import_retrieval_data:
+    if 'T' in ds_hatpro:
         # Compute pressure from hydrostatic equilibrium
         if 'surface_p' in ds_hatpro and bool(np.isfinite(ds_hatpro.surface_p).any()):
             ds_hatpro['p'] = calc_pressure(ds_hatpro.surface_p, ds_hatpro.T, ds_hatpro.height)
 
         # Compute dew point temperature
-        ds_hatpro['TD'] = dewpoint_from_absolute_humidity(ds_hatpro.T, ds_hatpro.ah / 1000)
-
-    # Check if any values remain in the dataset
-    if ds_hatpro["time"].size == 0:
-        raise ValueError("The dataset has an empty 'time' coordinate.")
+        if 'ah' in ds_hatpro:
+            ds_hatpro['TD'] = dewpoint_from_absolute_humidity(ds_hatpro.T, ds_hatpro.ah / 1000)
 
     ds_hatpro = add_time_data(ds_hatpro)
 
@@ -231,7 +237,8 @@ def import_hatpro_data_bls(
     mean_one_min : bool, optional
         If True, average surface meteorology to 1-minute resolution.
     import_retrieval_data : bool, optional
-        If True, include RPG retrieval temperature profiles (TPB).
+        If True, include available RPG retrieval temperature profiles (TPB).
+        Missing or unreadable products are logged and omitted.
     out_file : str or os.PathLike, optional
         If provided, save the resulting daily dataset to this NetCDF file.
 
@@ -245,15 +252,16 @@ def import_hatpro_data_bls(
     Raises
     ------
     FileNotFoundError
-        If a required scan or requested RPG retrieval file is missing.
-        MET is optional. Consumers validate their required variables.
+        If the required scan file is missing. MET and RPG retrievals are
+        optional. Consumers validate their required variables.
     ValueError
-        If the elevation angle dimension does not match the expected length.
+        If required scan angles or time samples are missing.
 
     Notes
     -----
-    - A standard elevation angle grid and frequency grid are enforced if
-      unexpected values are found.
+    - Scans must contain all standard HATPRO BLS angles. Extra angles are
+      retained. Measured angle labels are preserved and sorted.
+    - A standard frequency grid is enforced if unexpected values are found.
     - The reader excludes the NetCDF surface-temperature channel from scan angles.
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
@@ -266,11 +274,11 @@ def import_hatpro_data_bls(
     ds_BLB = datasets['BLB']
     ds_BLB['ang'] = ds_BLB.ang.astype('float64').round(2)
     ang = np.array([90.0, 30.0, 19.2, 14.4, 11.4, 8.4, 6.6, 5.4, 4.8, 4.2])
-    if ds_BLB.sizes['ang'] != len(ang):
-        raise ValueError(f"Elevation angle variable for BLS has unexpected length: {ds_BLB.sizes['ang']}. Expected: {len(ang)} scan angles.")
-    if not np.array_equal(ds_BLB.ang.values, ang):
-        logger.error('Elevation angle variable for BLS has unexpected values: %s. Using standard angles.', ds_BLB.ang.values)
-        ds_BLB['ang'] = ang
+    missing_angles = np.setdiff1d(ang, ds_BLB.ang.values)
+    if missing_angles.size:
+        raise _NoUsableObservations(
+            f'Incompatible BLS scan angles: missing required angles {missing_angles.tolist()}. '
+            f'Measured angles: {ds_BLB.ang.values.tolist()}.')
     ds_BLB['frq'] = ds_BLB.frq.astype('float64').round(2)
     frq = np.array([22.24,23.04,23.84,25.44,26.24,27.84,31.40,51.26,52.28,53.86,54.94,56.66,57.30,58.00])
     if not np.array_equal(ds_BLB.frq.values, frq):
@@ -278,12 +286,12 @@ def import_hatpro_data_bls(
         ds_BLB['frq'] = frq
     ds_BLB['rain_flag'] = ds_BLB.rain_flag.astype('float64')
     ds_BLB = ds_BLB.sortby('ang')
-    ds_hatpro_bls = xr.merge([ds_BLB, datasets['TPB']], join='outer') if import_retrieval_data else ds_BLB
+    ds_hatpro_bls = xr.merge([ds_BLB, datasets['TPB']], join='outer') if 'TPB' in datasets else ds_BLB
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro_bls = add_variables_at_closest_time(ds_hatpro_bls, ds_MET, max_diff=2)
     ds_hatpro_bls = mask_invalid_measurements(ds_hatpro_bls, periods)
 
-    if import_retrieval_data and 'surface_p' in ds_hatpro_bls and bool(np.isfinite(ds_hatpro_bls.surface_p).any()):
+    if 'T' in ds_hatpro_bls and 'surface_p' in ds_hatpro_bls and bool(np.isfinite(ds_hatpro_bls.surface_p).any()):
         # Compute pressure from hydrostatic equilibrium
         ds_hatpro_bls['p'] = calc_pressure(ds_hatpro_bls.surface_p, ds_hatpro_bls.T, ds_hatpro_bls.height)
 
@@ -291,7 +299,7 @@ def import_hatpro_data_bls(
 
     if out_file is not None:
         if not ds_hatpro_bls["time"].size > 0:
-            raise ValueError("The hatpro dataset has an empty 'time' coordinate before writing.")
+            raise _NoUsableObservations('No BLS time samples remain before writing.')
 
         ds_hatpro_bls.to_netcdf(out_file)
         ds_hatpro_bls.close()
@@ -331,12 +339,9 @@ def _create_hatpro_day_file(
             )
     except FileNotFoundError as e:
         logger.info(f"Date skipped due to missing file: {date} – {e}")
-    except ValueError as e:
-        if "empty 'time' coordinate" in str(e):
-            logger.info(f"Error importing hatpro data for {date} – {e}")
-        else:
-            logger.error(f"Error importing hatpro data for {date}: {e}")
-            logger.info(e, exc_info=True)
+    except _NoUsableObservations as e:
+        logger.info('Skipping HATPRO %s for %s %s: %s',
+                    'BLS' if bls else 'zenith', site, date.strftime('%Y-%m-%d'), e)
     except Exception as e:
         logger.error(f"Error importing hatpro data for {date}: {e}")
         logger.info(e, exc_info=True)
@@ -362,7 +367,8 @@ def create_hatpro_dataset(
         Working-project root containing data/ and sites/.
     import_retrieval_data : bool, optional
         If None, the site config parameter `rpg_retrieval_exists` is used.
-        When True, RPG retrieval products are included in the output.
+        When True, available RPG retrieval products are included in the output.
+        Missing or unreadable products do not prevent observation processing.
     num_of_processes : int, optional
         Number of processes used to create daily files.
     update_only : bool, optional

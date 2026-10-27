@@ -126,8 +126,7 @@ def _binary(path, product, time_offset_hours):
 
     if product not in _BINARY_PRODUCTS:
         raise ValueError(f'{path}: binary {product} is not supported. RPG retrieval '
-                         'products require NetCDF. Disable import_retrieval_data '
-                         'to read only the observations.')
+                         'products require NetCDF.')
     try:
         header, values = getattr(rpg_bin, 'read_' + product.lower())(str(path))
     except (InvalidFileError, ValueError, TypeError, OverflowError) as exc:
@@ -191,7 +190,12 @@ def read_hatpro_file(path, *, time_offset_hours=None):
 
 
 def load_hatpro_day(date, site, project_dir, products):
-    """Select each daily input once and normalize either backend for processing."""
+    """Load daily observations and available auxiliary/comparison products.
+
+    BRT and BLB are required when requested. Missing or unreadable auxiliary
+    sensors and NetCDF RPG retrievals are logged and omitted independently.
+    Retain the first duplicate and sort timestamps for matching and averaging.
+    """
     root, format, offset = get_config_parameter(site,
         ['hatpro_data_dir', 'hatpro_format', 'hatpro_time_offset_hours'], project_dir)
     format = 'auto' if format is None else format
@@ -206,12 +210,9 @@ def load_hatpro_day(date, site, project_dir, products):
         # Manufacturer retrievals are available through the NetCDF backend only.
         use_netcdf = product not in _BINARY_PRODUCTS or format == 'netcdf' or (format == 'auto' and nc.is_file())
         path = nc if use_netcdf else binary
-        optional = product in ('MET', 'IRT')
+        optional = product in _PRODUCT_VARIABLES and product not in ('BRT', 'BLB')
         try:
-            if product not in _BINARY_PRODUCTS and not nc.is_file() and binary.is_file():
-                raise ValueError(f'{nc}: RPG {product} comparison data requires NetCDF. '
-                                 'Disable import_retrieval_data to read only the observations.')
-            datasets[product] = read_hatpro_file(path, time_offset_hours=offset).drop_duplicates('time')
+            datasets[product] = read_hatpro_file(path, time_offset_hours=offset).drop_duplicates('time').sortby('time')
             selected[product] = 'netcdf' if use_netcdf else 'binary'
             logger.debug('Read HATPRO %s from %s', 'NetCDF' if use_netcdf else 'binary', path)
         except (OSError, ValueError) as exc:

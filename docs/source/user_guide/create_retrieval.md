@@ -359,7 +359,9 @@ Binary input supports BRT, BLB, MET and IRT. Files marked as local time also nee
 
 Set `rpg_retrieval_exists = true` if the instrument's own NetCDF retrieval
 products are also present and should be included for comparison. These products
-require NetCDF even when observations use binary.
+require NetCDF even when observations use binary. Missing or unreadable products
+are logged and omitted. Available measurements and other comparison products
+are retained.
 `datasets/hatpro.toml` uses the site start and `end_date = "today"`. Set explicit
 dates there to limit the measurement period.
 

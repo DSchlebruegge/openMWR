@@ -104,7 +104,15 @@ Binary BRT, BLB, MET and IRT are decoded by MWRpy. Masking, time matching and
 averaging use the same code as NetCDF. BLS uses integrated BLB scans. Binary BLB
 has no explicit azimuth field. The NetCDF reader removes its extra 0-degree
 surface-temperature channel. RPG retrieval products require NetCDF in every
-mode when `import_retrieval_data` is enabled.
+mode when `import_retrieval_data` is enabled. Missing or unreadable comparison
+products are logged and omitted independently. Their absence does not discard
+observations or other available products. After daily files are combined,
+unavailable comparison values remain missing, without interpolation.
+
+Daily import skips empty zenith selections and BLS scans missing standard HATPRO
+angles. `build.log` reports the reason, including missing and measured scan
+angles. Measured angle labels are preserved, and extra angles are retained.
+Zenith and BLS are processed independently.
 
 Binary files marked as local time require `hatpro_time_offset_hours`, a fixed
 local time minus UTC offset. For example, `1` converts UTC+01:00 to UTC. UTC files
