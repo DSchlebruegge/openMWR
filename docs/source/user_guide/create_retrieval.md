@@ -485,6 +485,8 @@ Next, [run and plot a retrieval](run_retrieval.ipynb), set up
 [regular prediction and updates](run_operational.md), or use the same workflows
 [from Python](python_usage.md).
 
+See [Recipe Settings](recipe_settings.md) for further configuration choices.
+
 ## Using ERA5
 
 ERA5 can provide profiles for training or measurement comparison. It requires
