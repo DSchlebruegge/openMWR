@@ -34,7 +34,8 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
     with_examples : bool, default=False
         Include commented site settings, a radiosonde dataset chain, HATPRO and
         radiosonde-analysis recipes, and fixed/optimization examples for zenith
-        NN/MLR, BLS NN and spectral-consistency retrievals.
+        NN/MLR, BLS NN and spectral-consistency retrievals. Named profile and
+        spectral evaluation examples select comparison data separately.
         Site details and radiosonde station IDs must be filled in before processing data.
 
     **config : dict
@@ -84,6 +85,7 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
             site.toml
             datasets/
             retrieval/
+            evaluations/
         data/sites/{site}/
         grids.toml                  shared across sites; existing file is kept
 

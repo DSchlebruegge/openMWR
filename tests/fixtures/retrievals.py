@@ -64,21 +64,22 @@ dataset = "analysis_radiosonde"
             settings = settings.replace('TB = 0.0', 'TB = { low = 0.001, high = 0.002 }')
         else:
             settings = settings.replace('lr_height = 0.002', 'lr_height = { low = 0.001, high = 0.002 }')
-    settings += '''
-[evaluation]
-observation_height_range = [0, 10000]
-test_height_range = "model"
-observations = true
-test_data = true
-data_source = "radiosonde"
-dataset = "analysis_radiosonde"
-days_of_month = { first = 21, last = 31 }
-station_id = "03715"
-'''
     recipe = directory / 'retrieval.toml'
     recipe.write_text(settings)
     import tomli_w
     dataset_name = f'training_{suffix}' if suffix else 'training'
+    evaluation = {'schema_version': 1, 'retrievals': ['example'],
+                  'observations': {'dataset': 'analysis_radiosonde', 'data_source': 'radiosonde',
+                                   'station_id': '03715', 'variables': ['TB'] if kind == 'spectral' else ['T', 'rh'],
+                                   'days_of_month': {'first': 21, 'last': 31}},
+                  'test': {'dataset': dataset_name, 'sources': ['03715'],
+                           'variables': ['TB'] if kind == 'spectral' else ['T', 'rh', 'lwc', 'lwp']}}
+    if kind != 'spectral':
+        evaluation['observations']['height_range'] = [0, 10000]
+        evaluation['test']['height_range'] = 'model'
+    evaluation_dir = tmp_path / 'sites/test/evaluations'
+    evaluation_dir.mkdir(exist_ok=True)
+    (evaluation_dir / 'example.toml').write_text(tomli_w.dumps(evaluation))
     for name, definition in {
         'radiosondes': {'kind': 'radiosonde', 'stations': ['03715'], 'start_year': 1990, 'end_year': 'current_year'},
         'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0], 'incomplete_profiles': 'monthly_mean', 'cloud': {'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3}, 'quality': {'min_top_height': 15000, 'min_levels': 500}}},

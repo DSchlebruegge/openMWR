@@ -1,0 +1,18 @@
+schema_version = 1
+retrievals = ["NN_example"]
+# Add other trained profile retrieval names to compare them on common samples.
+
+[observations]
+dataset = "analysis_radiosonde"
+data_source = "radiosonde"
+# Set the radiosonde station ID used for this comparison.
+station_id = "03715"
+variables = ["T", "rh"]
+height_range = [0, 10000]
+days_of_month = { first = 21, last = 31 }
+
+[test]
+dataset = "training"
+sources = ["03715"]
+variables = ["T", "rh", "lwc", "lwp"]
+height_range = [0, 30000]

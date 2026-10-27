@@ -40,6 +40,9 @@ sites/my_site/
     retrieval/
         NN_example/retrieval.toml
         ...
+    evaluations/
+        radiosonde.toml
+        spectral.toml
 data/sites/my_site/
 ```
 
@@ -318,8 +321,9 @@ These values describe the training perturbations, not measured instrument errors
 openMWR train my_site NN_example
 ```
 
-The default `--device auto` selects CUDA, then MPS, then CPU according to
-availability. The selected hardware is logged at startup. Use `--device cpu`
+The default `--device auto` selects a usable CUDA GPU, then MPS, then CPU.
+CUDA devices unsupported by the installed PyTorch build are skipped.
+The selected hardware is logged at startup. Use `--device cpu`
 to select the CPU explicitly.
 The trained model and `training.log` are saved beside `retrieval.toml` as
 `sites/my_site/retrieval/NN_example/model.pth` and `training.log`.
@@ -377,27 +381,45 @@ The reference profiles must cover the selected observation period.
 
 ### Evaluate the model
 
-The retrieval recipe's `[evaluation]` section enables comparison with both the
-simulated test data and real observations. It selects observation days 21–31
-and profile heights up to 10 km. Test-data evaluation uses the whole model grid.
-Add the observation start date to this section:
+Open `sites/my_site/evaluations/radiosonde.toml`. This comparison recipe selects
+the saved models and reference data independently of their training recipes.
+Set `station_id` and `test.sources` to your radiosonde station IDs. Add the
+observation start date under `[observations]`:
 
 ```toml
 start_date = "2024-11-01"
 ```
 
-```bash
-openMWR evaluate my_site NN_example
+The example compares `NN_example` with observations on days 21–31 up to 10 km,
+and with simulated test data up to 30 km. To compare more trained models, edit
+the list at the top of the file:
+
+```toml
+retrievals = ["NN_example", "MLR_example"]
 ```
 
-The command prints the path of an HTML report under the retrieval's `evaluation/`
-directory. Open it in a browser. Measurement comparison and simulated test
-performance answer different questions. The latter does not measure performance
-on the instrument's observations.
+```bash
+openMWR evaluate my_site radiosonde
+```
 
-Without local observations, set `observations = false` in `[evaluation]` and
-leave `test_data = true` to evaluate only the simulated test group.
-See [Retrieval Analysis](retrieval_analysis.ipynb) for custom comparisons and plots.
+The command prints a new directory under `sites/my_site/evaluations/radiosonde/`.
+Open its `report.html` in a browser. `metrics.nc` contains the same numerical
+results for [Python analysis](python_usage.md#evaluate-retrievals).
+
+All selected models use the explicitly chosen test dataset. Scores compare
+common finite samples for each variable and height. Coverage tables show how
+many profiles each model could process and how many remain for scoring.
+The selected model grids must agree within the evaluation height range.
+
+Measurement comparison and simulated test performance answer different questions.
+The latter does not measure performance on the instrument's observations.
+Changing the test dataset does not make it independent of training or tuning.
+Keep evaluation data outside those choices. The report shows recorded training
+settings and flags overlap with recorded optimization dates.
+
+Without local observations, remove `[observations]` and its settings to evaluate
+only `[test]`. Add `--retrieval NN_example` to evaluate one selected model.
+See [Retrieval Analysis](retrieval_analysis.ipynb) for custom plots.
 
 ## Optimize hyperparameters and input noise
 
@@ -416,13 +438,14 @@ The example score weights temperature RMSE by 1.0 and relative-humidity RMSE by
 Here that includes monthly-completed upper levels. Review this objective and
 the output grid for your use.
 
-Add `start_date = "2024-11-01"` to both `[optimization]` and `[evaluation]`
-in this recipe. It uses observation days 1–20 for optimization and 21–31 for
-final evaluation. Keep the final evaluation selection out of parameter tuning.
+Add `start_date = "2024-11-01"` under `[optimization]` in the retrieval recipe.
+The example uses observation days 1–20 for optimization. The separate
+`evaluations/radiosonde.toml` selects days 21–31 for evaluation.
+Keep this selection out of parameter tuning.
 
 ```bash
 openMWR train my_site NN_opt_example
-openMWR evaluate my_site NN_opt_example
+openMWR evaluate my_site radiosonde --retrieval NN_opt_example
 ```
 
 `train` starts an Optuna study whenever the recipe contains a search. It saves
@@ -489,6 +512,8 @@ openMWR data my_site training_era5 --with-dependencies
 Copy a retrieval recipe into a new retrieval folder and set its `[data].dataset`
 to `"training_era5"`. For measurement comparison, copy
 `analysis_radiosonde.toml` to `analysis_era5.toml`, set `[inputs].reference` to
-`"simulation_era5"`, and build it with dependencies. In the retrieval's evaluation
-or optimization section, select `data_source = "era5"` and
-`dataset = "analysis_era5"`. ERA5 comparisons are comparisons with a reanalysis.
+`"simulation_era5"`, and build it with dependencies. Copy the evaluation recipe
+to `evaluations/era5.toml`. Under `[observations]`, remove `station_id` and select
+`data_source = "era5"` and `dataset = "analysis_era5"`. Optimization selects these
+same settings in the retrieval's `[optimization]` section. ERA5 comparisons are
+comparisons with a reanalysis.

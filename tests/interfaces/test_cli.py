@@ -60,25 +60,21 @@ def test_train_selects_action_and_passes_overrides(tmp_path, monkeypatch, optimi
         assert workflow.train.call_count == 1
 
 
-def test_evaluation_forwards_selections_and_protects_report(tmp_path, monkeypatch):
-    evaluate, write = Mock(), Mock(return_value=tmp_path / 'report.html')
-    monkeypatch.setattr('openMWR.evaluation.evaluate_retrieval', evaluate)
-    monkeypatch.setattr('openMWR.evaluation.write_report', write)
-    args = ['evaluate', 'site', 'model', '-p', str(tmp_path), '--data-source', 'radiosonde',
-            '--dataset', 'analysis', '--station-id', '03715', '-s', '2024-01-01',
-            '-e', '2024-01-31', '--days-of-month', '21', '31',
-            '--observation-height-range', '0', '500', '--test-height-range', 'model',
-            '-o', str(tmp_path / 'report.html')]
+def test_evaluation_selects_recipe_and_protects_existing_results(tmp_path, monkeypatch):
+    evaluate, save, load = Mock(), Mock(return_value=tmp_path / 'result'), Mock()
+    monkeypatch.setattr('openMWR.evaluation.evaluate', evaluate)
+    monkeypatch.setattr('openMWR.evaluation.save_evaluation', save)
+    monkeypatch.setattr('openMWR.evaluation.EvaluationRecipe.load', load)
+    args = ['evaluate', 'site', 'comparison', '-p', str(tmp_path),
+            '-r', 'first', 'second', '-o', str(tmp_path / 'result')]
     result = run_cli(*args)
-    assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / 'report.html')
-    evaluate.assert_called_once_with(tmp_path, 'site', 'model', device='auto', data_source='radiosonde',
-        station_id='03715', dataset='analysis', observation_height_range=[0., 500.], test_height_range='model',
-        start_date='2024-01-01', end_date='2024-01-31', days_of_month={'first': 21, 'last': 31})
-    write.assert_called_once_with(evaluate.return_value, tmp_path / 'report.html')
-    (tmp_path / 'report.html').write_text('keep this report')
+    assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / 'result')
+    load.assert_called_once_with(tmp_path, 'site', 'comparison')
+    evaluate.assert_called_once_with(load.return_value, retrievals=['first', 'second'], device='auto')
+    save.assert_called_once_with(evaluate.return_value, tmp_path / 'result')
+    (tmp_path / 'result').mkdir()
     assert run_cli(*args).returncode == 1
-    assert evaluate.call_count == write.call_count == 1
-    assert (tmp_path / 'report.html').read_text() == 'keep this report'
+    assert evaluate.call_count == save.call_count == 1
 
 
 def test_prediction_range_reuses_workflow_and_reports_partial_success(tmp_path, monkeypatch):
@@ -120,7 +116,7 @@ def test_data_dry_run_and_diagnostic_are_read_only(dataset_project):
 @pytest.mark.parametrize(('command', 'search', 'extra', 'log'), [
     ('train', False, [], 'sites/test/retrieval/example/training.log'),
     ('train', True, [], 'sites/test/retrieval/example/optimization.log'),
-    ('evaluate', False, [], 'sites/test/retrieval/example/evaluation.log'),
+    ('evaluate', False, [], 'sites/test/evaluations/example/evaluation.log'),
     ('predict', False, ['-d', '2024-01-01', '-o', 'output with spaces'], 'output with spaces/prediction.log'),
 ])
 def test_background_launch_uses_current_environment_and_existing_task_logs(tmp_path, monkeypatch, command, search, extra, log):

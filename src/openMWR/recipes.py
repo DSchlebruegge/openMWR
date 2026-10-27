@@ -9,7 +9,7 @@ from openMWR.config import (TRAINING_PARAMETERS, check_keys,
                             check_number, check_name, check_strings, check_coordinates,
                             validate_parameter_usage, resolve_parameter, input_noise_parameters,
                             require_keys, load_grid, apply_seed, check_seed, check_time_selection, TIME_SELECTION_KEYS,
-                            check_score_weights, check_height_range)
+                            check_score_weights)
 from openMWR.paths import project_root, retrieval_dir, site_config_file
 
 
@@ -66,10 +66,10 @@ class RetrievalRecipe:
                    for key, value in self.section(section).items() if key != 'days_of_month')
 
     def _validate(self):
-        check_keys(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization", "evaluation"), "recipe")
+        check_keys(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization"), "recipe")
         if type(self.values.get("schema_version")) is not int or self.values["schema_version"] != 1:
             raise ValueError("Recipe schema_version must be 1.")
-        for section in ("model", "data", "bias_correction", "optimization", "evaluation"):
+        for section in ("model", "data", "bias_correction", "optimization"):
             table = self.section(section)
             if isinstance(table, dict):
                 for key, value in table.items():
@@ -187,26 +187,6 @@ class RetrievalRecipe:
         check_time_selection(optimization, 'optimization')
         if 'score_weights' in optimization:
             check_score_weights(optimization['score_weights'], ('TB',) if model['kind'] == 'spectral' else ('T', 'rh', 'lwc', 'lwp', 'iwv'))
-        evaluation = self.section("evaluation")
-        check_keys(evaluation, ("data_source", "dataset", *TIME_SELECTION_KEYS, "station_id", "observations", "test_data", "observation_height_range", "test_height_range"), "evaluation")
-        if 'evaluation' in self.values:
-            require_keys(evaluation, ('observations', 'test_data'), 'evaluation')
-            if evaluation['observations']:
-                require_keys(evaluation, ('data_source', 'dataset'), 'evaluation')
-                if model['kind'] != 'spectral':
-                    require_keys(evaluation, ('observation_height_range',), 'evaluation')
-            if evaluation['test_data'] and model['kind'] != 'spectral':
-                require_keys(evaluation, ('test_height_range',), 'evaluation')
-        for key in ('observation_height_range', 'test_height_range'):
-            if key in evaluation:
-                check_height_range(evaluation[key], f'evaluation.{key}', allow_model=True)
-        _check_reference(evaluation, 'evaluation')
-        check_time_selection(evaluation, 'evaluation')
-        for key in ("observations", "test_data"):
-            if key in evaluation and type(evaluation[key]) is not bool:
-                raise ValueError(f"evaluation.{key} must be true or false.")
-        if "station_id" in evaluation:
-            check_name(evaluation["station_id"], "evaluation.station_id")
         return settings
 
     def create_model(self):

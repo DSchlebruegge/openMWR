@@ -49,7 +49,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-openMWR = ["evaluation.html", "templates/*.toml", "templates/site/*.toml", "templates/site/datasets/*.toml", "templates/site/retrieval/*/*.toml"]
+openMWR = ["evaluation.html", "templates/*.toml", "templates/site/*.toml", "templates/site/datasets/*.toml", "templates/site/retrieval/*/*.toml", "templates/site/evaluations/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

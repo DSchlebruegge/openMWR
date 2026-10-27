@@ -55,7 +55,7 @@ Successful launching does not mean that processing has finished.
 Data commands append console output to the first selected dataset's `build.log`.
 Other datasets keep their own build logs. Rebuilds preserve `build.log` while
 replacing the generated data. Training uses `training.log` or `optimization.log`
-beside the retrieval, and evaluation uses `evaluation.log`. Prediction appends
+beside the retrieval. Evaluation uses `sites/<site>/evaluations/<name>/evaluation.log`. Prediction appends
 to `prediction.log` in the prediction output directory.
 
 Use `--dry-run` before launching a background data build. The two options cannot

@@ -35,7 +35,8 @@ Common options also have short aliases, shown by `openMWR COMMAND -h`:
 | `--n-trials` | `-t` |
 | `--fresh` | `-f` |
 | `--continue` | `-c` |
-| `--output` / `--output-dir` | `-o` |
+| `--output-dir` | `-o` |
+| `--retrieval` (evaluation) | `-r` |
 | `--date` | `-d` |
 | `--start-date` / `--end-date` | `-s` / `-e` |
 
@@ -63,7 +64,8 @@ This writes `sites/my_site/site.toml`, six dataset recipes for a radiosonde
 training chain and HATPRO/radiosonde comparisons, and eight retrieval recipes under
 `sites/my_site/retrieval/`: `NN_example` (zenith NN), `MLR_example` (zenith MLR),
 `NN_BLS_example` (boundary-layer-scan NN), and `SPC_example` (spectral consistency),
-each with a matching `_opt_example` recipe for optimization. It creates empty data
+each with a matching `_opt_example` recipe for optimization. Named comparison
+recipes live in `sites/my_site/evaluations/`. It creates empty data
 directories and leaves existing sites untouched by refusing to overwrite them.
 It also creates a shared `grids.toml` in the project directory if missing,
 containing the initial height, frequency and elevation-angle grids. Existing
@@ -353,13 +355,15 @@ where openMWR is installed. pip, editable installations, and uv all work:
 
 ```bash
 openMWR train munich_G5 NN_example --device cuda
-openMWR evaluate munich_G5 NN_example
+openMWR evaluate munich_G5 radiosonde
 ```
 
-Site and retrieval names are required positional arguments. Each command
+Training takes a site and retrieval name. Evaluation takes a site and comparison
+recipe name. Each command
 performs only the selected action using prepared datasets. Pass
 `--project-dir /path/to/project` to work from another directory. The default
 device is `auto`, selecting CUDA, then MPS, then CPU according to availability.
+Auto skips CUDA devices that cannot execute the installed PyTorch build.
 Use `--device cpu`, `--device cuda:1` or `--device mps` to select explicitly.
 The selected device and hardware name are logged at startup and recorded in
 training metadata. Each task checks its required settings and inputs before starting
@@ -367,7 +371,7 @@ the expensive computation. `train` runs optimization when any resolved training
 or noise parameter contains a search definition; otherwise it trains one model.
 It announces the selected mode, optimization trial budget, and resolved search
 ranges. `--n-trials`, `--data-source` and `--dataset` can override optimization
-settings; evaluation also accepts `--data-source` and `--dataset`.
+settings.
 An `optimization` section containing only a budget or reference data does not
 trigger optimization.
 
@@ -445,15 +449,6 @@ n_trials = 100
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
 
-[evaluation]
-observation_height_range = [0, 10000]  # profile bounds in metres
-test_height_range = "model"           # full model grid, or explicit bounds
-observations = true
-test_data = true
-data_source = "radiosonde"
-dataset = "analysis_radiosonde"
-days_of_month = { first = 21, last = 31 }  # inclusive; 1 to 31 selects all days
-station_id = "03715"        # explicit radiosonde station identifier
 ```
 
 The retrieval folder supplies the model name. `data.dataset` selects a named
@@ -461,7 +456,7 @@ split dataset, which owns the fitting and test period; omit `data.sources` to
 use all its sources. There is no separate retrieval training cutoff. For example,
 `training_r17.toml` can use `kind = "split"` and
 `[inputs] simulation = "simulation_r17"` to prepare inputs for an R17 retrieval.
-Optimization/evaluation/OMB/bias sections explicitly select their reference
+Optimization/OMB/bias sections explicitly select their reference
 `data_source` and named analysis `dataset`.
 
 Replace the example's `lr_height` range with a number to train one model.
@@ -586,40 +581,57 @@ The saved best checkpoint must also remain present. Study compatibility covers t
 contents. Studies without recorded experiment settings require a fresh run or a
 new retrieval name before optimization can continue; their histories remain readable.
 
-Evaluation writes dated portable HTML files under the retrieval's `evaluation/`
-directory. Set `evaluation.observations = false` or `evaluation.test_data = false`
-to select its inputs. Optimization, OMB noise, bias correction and evaluation
-all accept the same optional `start_date`, `end_date` and
-`days_of_month = { first = 1, last = 20 }` settings in their respective sections.
-Filters intersect: date bounds include the entire start/end day, and the monthly
-range is inclusive and repeats in every selected month. Omitted bounds impose
-no restriction; omit `days_of_month` or set first/last to 1/31 for all days.
-For example, optimize on one year and evaluate on the next:
+Evaluation uses a separate recipe, for example
+`sites/munich_G5/evaluations/radiosonde.toml`:
 
 ```toml
-[optimization]
-# Other optimization settings remain as configured.
-start_date = "2024-01-01"
-end_date = "2024-12-31"
+schema_version = 1
+retrievals = ["NN_example", "MLR_example"]
 
-[evaluation]
-# Other evaluation settings remain as configured.
+[observations]
+dataset = "analysis_radiosonde"
+data_source = "radiosonde"
+station_id = "03715"
+variables = ["T", "rh"]
+height_range = [0, 10000]
 start_date = "2025-01-01"
 end_date = "2025-12-31"
+days_of_month = { first = 21, last = 31 }
+
+[test]
+dataset = "training"
+sources = ["03715"]
+variables = ["T", "rh", "lwc", "lwp"]
+height_range = [0, 30000]
 ```
 
-Analysis datasets retain all matched dates; these selections apply when using
-them. `train` (for optimization) and `evaluate` can override the recipe selection
-with `--start-date` / `-s`, `--end-date` / `-e`, and `--days-of-month FIRST LAST`.
-These flags do not change the fitting or simulated test period. Python
-`optimize()`, `make_omb_analysis()` and `evaluate_retrieval()` take the same
-selection keywords. Profile evaluations require explicit
-`observation_height_range` and `test_height_range` for their enabled inputs.
-Each accepts `[minimum, maximum]` in metres or `"model"` for the whole model grid.
-CLI overrides are `--observation-height-range MIN MAX` and
-`--test-height-range MIN MAX`; either also accepts `model`. Checkpoints without
-recipes need their day selection and both enabled profile ranges supplied
-explicitly. Spectral evaluations have no profile height range.
+Run `openMWR evaluate munich_G5 radiosonde`. Add `--retrieval NN_example` to
+select one model without editing the comparison. Omit `[observations]` or `[test]`
+when only one comparison is needed. Each section explicitly selects reference
+data and variables. Profile `height_range` uses metres above the instrument,
+or `"model"` for the whole model grid. All selected models must share that grid,
+which the reference data must cover. Spectral comparisons use `variables = ["TB"]`
+without a height range.
+
+Scores use common finite reference/prediction pairs across selected retrievals,
+separately for each variable and level. Adding a model can therefore change the
+scored samples. Coverage tables show availability before and after this selection.
+No common pairs gives an unavailable score. RPG products can be included with
+`observations.include_rpg = true`. The scan product contributes temperature only.
+
+The command prints a new run directory under `sites/<site>/evaluations/<name>/`.
+It contains a portable `report.html` and grouped numerical results in `metrics.nc`,
+including effective settings, input/checkpoint hashes and code versions. The log
+is `evaluation.log` beside the run directories. `--output-dir` selects another new
+directory. Existing results are never overwritten.
+
+Observation date bounds and monthly day ranges intersect and include the whole
+end day. Omitted bounds impose no restriction. These settings are shared with
+optimization, OMB noise and bias correction. Analysis datasets retain all matched
+dates. Keep evaluation dates outside parameter tuning. The report flags recorded
+optimization overlap. Explicit test selection allows comparisons on the same
+simulation dataset, but does not establish independence from training. Older
+checkpoints without a recorded calendar split are flagged.
 
 Optimization requires explicit `score_weights`, separate from fitting loss
 weights: the score sums each selected variable's weight times its mean RMSE
@@ -725,9 +737,10 @@ the current parameters still contain searches. All workflows use
 `optimize(run_mode="continue")` when results already exist. A first run needs no
 run mode. Optimization requires a search definition and applies the same study
 and saved-model checks to both setup paths. Direct model/workflow construction and the existing preparation
-functions remain available. `openMWR.evaluation.evaluate_retrieval` returns numerical results;
-`write_report` saves them separately. Shared comparison/report functionality is
-also available through `analyze_models` with explicit `SiteSettings`.
+functions remain available. `openMWR.evaluation.EvaluationRecipe.load()` reads a
+named comparison. `evaluate(recipe)` returns numerical results, `save_evaluation()`
+saves HTML and NetCDF together, and `load_evaluation()` reloads saved results for
+custom Python analysis.
 
 
 ## Installation

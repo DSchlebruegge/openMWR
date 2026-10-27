@@ -39,12 +39,3 @@ score_weights = { TB = 1.0 }
 n_trials = 200
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
-
-[evaluation]
-# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
-# Both date bounds include the entire day.
-observations = true
-test_data = true
-data_source = "radiosonde"
-dataset = "analysis_radiosonde"
-days_of_month = { first = 21, last = 31 }

@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from openMWR.config import check_name
-from openMWR.paths import dataset_dir, retrieval_dir
+from openMWR.paths import dataset_dir, retrieval_dir, evaluation_dir
 
 
 LOG_ENV = '_OPENMWR_BACKGROUND_LOG'
@@ -29,14 +29,17 @@ def launch(args, argv):
         for name in args.retrieval:
             check_name(name, 'retrieval')
         path = prediction_output_dir(args.project_dir, args.site, args.output_dir) / 'prediction.log'
+    elif args.command == 'evaluate':
+        from openMWR.evaluation import EvaluationRecipe
+
+        EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
+        path = evaluation_dir(args.project_dir, args.site, args.evaluation) / 'evaluation.log'
     else:
         check_name(args.retrieval, 'retrieval')
-        action = 'evaluation'
-        if args.command == 'train':
-            from openMWR.recipes import RetrievalRecipe
+        from openMWR.recipes import RetrievalRecipe
 
-            recipe = RetrievalRecipe.load(args.project_dir, args.site, args.retrieval)
-            action = 'optimization' if recipe.requires_optimization else 'training'
+        recipe = RetrievalRecipe.load(args.project_dir, args.site, args.retrieval)
+        action = 'optimization' if recipe.requires_optimization else 'training'
         path = retrieval_dir(args.project_dir, args.site, args.retrieval) / f'{action}.log'
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)

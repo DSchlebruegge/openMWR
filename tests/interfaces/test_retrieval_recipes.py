@@ -109,3 +109,26 @@ def test_model_can_explicitly_inherit_dataset_grids_and_omit_dropout(tmp_path):
     np.testing.assert_array_equal(workflow.model.heights, data.height)
     np.testing.assert_array_equal(workflow.model.angles, data.ang)
     assert workflow.model.dropout_rate == 0.0
+
+
+@pytest.mark.parametrize(('section', 'setting', 'value', 'message'), [
+    (None, 'retrievals', ['example', 'example'], 'duplicates'),
+    (None, 'schema_version', 2, 'schema_version'),
+    ('observations', 'data_source', 'other', 'radiosonde or era5'),
+    ('observations', 'height_range', None, 'Missing observations settings'),
+    ('observations', 'variables', ['TB', 'T'], 'TB separately'),
+    ('observations', 'start_date', 'yesterday', 'quoted ISO date'),
+    ('test', 'sources', [], 'at least one test source'),
+    ('test', 'dataset', '../training', 'without directory separators'),
+])
+def test_named_evaluation_rejects_ambiguous_or_invalid_choices(tmp_path, section, setting, value, message):
+    from openMWR.evaluation import EvaluationRecipe
+    retrieval_project(tmp_path, search=False)
+    recipe = EvaluationRecipe.load(tmp_path, 'test', 'example')
+    settings = recipe.values if section is None else recipe.values[section]
+    if value is None:
+        settings.pop(setting)
+    else:
+        settings[setting] = value
+    with pytest.raises(ValueError, match=message):
+        recipe.validate()

@@ -1,14 +1,17 @@
-"""Reusable retrieval evaluation and portable HTML reports."""
+"""Named evaluation recipes, common-sample comparisons and portable results."""
 
 import base64
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from html import escape
 from io import BytesIO
 import json
 import logging
 from pathlib import Path
+import shutil
 from string import Template
+import tempfile
+import tomllib
 
 import numpy as np
 import pandas as pd
@@ -16,42 +19,101 @@ import xarray as xr
 from matplotlib.figure import Figure
 from matplotlib import colormaps
 
-from openMWR.observations import load_analysis_dataset
-from openMWR.config import check_time_selection, select_time, TIME_SELECTION_KEYS, check_height_range, select_height_range
+from openMWR.config import (check_keys, check_name, check_strings, require_keys,
+                            check_time_selection, select_time, TIME_SELECTION_KEYS,
+                            check_height_range, select_height_range)
 from openMWR.calc_errors import cal_RMSE, calculate_errors
-from openMWR.hatpro_data import calc_derived_quantities
-from openMWR.models import Model, load_model
-from openMWR.plot import plot_err, plot_scatter_lwp
-from openMWR.predict import run_model_list, validate_model_data
 from openMWR.devices import resolve_device, device_name
+from openMWR.models import load_model
+from openMWR.observations import load_analysis_dataset
+from openMWR.paths import (project_root, site_config_file, dataset_file, checkpoint_file,
+                           dataset_recipe_file, evaluation_dir, evaluation_recipe_file)
+from openMWR.plot import plot_scatter_lwp
+from openMWR.predict import run_model_list, validate_model_data
+from openMWR.provenance import checkpoint_id, plain_value, software_identity, task_log, utc_now
 from openMWR.xr_utils import load_combined_dataset
-from openMWR.paths import project_root, site_root, dataset_file, checkpoint_file, retrieval_dir
-from openMWR.provenance import checkpoint_id, git_identity, software_identity, retrieval_log, utc_now
-
 
 logger = logging.getLogger(__name__)
 VARIABLE_LABELS = {
-    "T": "Temperature [K]",
-    "rh": "Relative humidity [%]",
-    "lwc": "Liquid water content [g/m³]",
-    "lwp": "Liquid water path [g/m²]",
+    'T': 'Temperature [K]', 'rh': 'Relative humidity [%]',
+    'lwc': 'Liquid water content [g/m³]', 'lwp': 'Liquid water path [g/m²]',
+    'iwv': 'Integrated water vapour [kg/m²]', 'TB': 'Brightness temperature [K]',
 }
 
 
-@dataclass(frozen=True)
-class SiteSettings:
-    models: tuple[str, ...]
-    main_model: str
-    bls_models: tuple[str, ...]
-    include_rpg: bool
-    days_of_month: dict[str, int] | None
-    observation_height_range: list[float] | str
-    test_height_range: list[float] | str
-    station_id: str | None = None
-    training_dataset: str = 'training'
-    analysis_dataset: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
+@dataclass
+class EvaluationRecipe:
+    """Editable comparison settings. Both the command and Python use this object."""
+
+    project_dir: Path
+    site: str
+    name: str
+    values: dict
+
+    @classmethod
+    def load(cls, project_dir, site, name):
+        check_name(site, 'site')
+        check_name(name, 'evaluation')
+        root = project_root(project_dir)
+        if not site_config_file(root, site).is_file():
+            raise FileNotFoundError(f'Missing site configuration: {site_config_file(root, site)}')
+        path = evaluation_recipe_file(root, site, name)
+        with path.open('rb') as stream:
+            recipe = cls(root, site, name, tomllib.load(stream))
+        recipe.validate()
+        return recipe
+
+    def validate(self):
+        check_name(self.site, 'site')
+        check_name(self.name, 'evaluation')
+        check_keys(self.values, ('schema_version', 'retrievals', 'observations', 'test'), 'evaluation recipe')
+        if type(self.values.get('schema_version')) is not int or self.values['schema_version'] != 1:
+            raise ValueError('Evaluation schema_version must be 1.')
+        check_strings(self.values.get('retrievals'), 'retrievals')
+        if not self.values['retrievals']:
+            raise ValueError('Select at least one retrieval.')
+        for name in self.values['retrievals']:
+            check_name(name, 'retrieval')
+        if not {'observations', 'test'} & self.values.keys():
+            raise ValueError('Configure [observations], [test], or both.')
+        for section in ('observations', 'test'):
+            if section not in self.values:
+                continue
+            settings = self.values[section]
+            allowed = ('data_source', 'station_id', 'include_rpg', *TIME_SELECTION_KEYS) if section == 'observations' else ('sources',)
+            check_keys(settings, ('dataset', 'variables', 'height_range', *allowed), section)
+            require_keys(settings, ('dataset', 'variables'), section)
+            check_name(settings['dataset'], f'{section}.dataset')
+            check_strings(settings['variables'], f'{section}.variables')
+            if not settings['variables'] or set(settings['variables']) - VARIABLE_LABELS.keys():
+                raise ValueError(f'{section}.variables must select from {list(VARIABLE_LABELS)}.')
+            if 'TB' in settings['variables'] and len(settings['variables']) != 1:
+                raise ValueError('Evaluate TB separately from profile and column variables.')
+            if set(settings['variables']) & {'T', 'rh', 'lwc'}:
+                require_keys(settings, ('height_range',), section)
+                check_height_range(settings['height_range'], f'{section}.height_range', allow_model=True)
+            elif 'height_range' in settings:
+                raise ValueError(f'{section}.height_range applies only to profile variables.')
+            if section == 'observations':
+                require_keys(settings, ('data_source',), section)
+                if settings['data_source'] not in ('radiosonde', 'era5'):
+                    raise ValueError('observations.data_source must be radiosonde or era5.')
+                check_time_selection(settings, section)
+                if 'station_id' in settings:
+                    check_name(settings['station_id'], 'observations.station_id')
+                    if settings['data_source'] != 'radiosonde':
+                        raise ValueError('observations.station_id applies only to radiosondes.')
+                if 'include_rpg' in settings and type(settings['include_rpg']) is not bool:
+                    raise ValueError('observations.include_rpg must be true or false.')
+                if settings.get('include_rpg') and 'TB' in settings['variables']:
+                    raise ValueError('RPG comparison applies to profile retrievals.')
+            else:
+                check_strings(settings.get('sources'), 'test.sources')
+                if not settings['sources']:
+                    raise ValueError('Select at least one test source.')
+                for source in settings['sources']:
+                    check_name(source, 'test.sources')
+        return self
 
 
 @dataclass
@@ -61,7 +123,7 @@ class Evaluation:
     error_types: tuple[str, ...]
     samples: dict
     metrics: dict[str, xr.Dataset]
-    note: str = ""
+    note: str = ''
 
 
 @dataclass
@@ -73,46 +135,27 @@ class Analysis:
 def _sample_summary(ds):
     variable = 'T' if 'T' in ds else next(iter(ds.data_vars))
     finite = np.isfinite(ds[variable])
-    if "height" in finite.dims:
-        finite = finite.any("height")
-    if 'frq' in finite.dims:
-        finite = finite.any('frq')
-    return {
-        "time_coordinates": ds.sizes["time"],
-        "reference_temperature_profiles": int(finite.sum()),
-        "stations": ds.station.values.tolist()
-        if "station" in ds.coords
-        else ds.attrs.get("analysis_stations", []),
-        "start": str(ds.time.min().values),
-        "end": str(ds.time.max().values),
-    }
+    for dim in ('height', 'frq'):
+        if dim in finite.dims:
+            finite = finite.any(dim)
+    return dict(time_coordinates=ds.sizes['time'], reference_profiles=int(finite.sum()),
+                stations=ds.station.values.tolist() if 'station' in ds.coords else ds.attrs.get('analysis_stations', []),
+                start=str(ds.time.min().values), end=str(ds.time.max().values))
 
 
 def _paired_profiles(pred, reference, variables):
-    """Count paired profiles, rather than padded station/time coordinates."""
     counts = {}
     for var in variables:
-        predicted, truth = xr.align(pred[var], reference[var], join="inner")
-        valid = np.isfinite(predicted) & np.isfinite(truth)
-        if "height" in valid.dims:
-            valid = valid.any("height")
-        counts[var] = valid.sum(
-            [dim for dim in ("time", "station") if dim in valid.dims]
-        )
+        valid = np.isfinite(pred[var]) & np.isfinite(reference[var])
+        for dim in ('height', 'frq'):
+            if dim in valid.dims:
+                valid = valid.any(dim)
+        counts[var] = valid.sum([dim for dim in ('time', 'station') if dim in valid.dims])
+        counts[var].attrs = {'units': '1'}
     return xr.Dataset(counts)
 
 
-def _evaluate(key, title, pred, reference, variables, error_types):
-    errors, profiles = calculate_errors(
-        pred[variables], reference[variables], error_types=list(error_types), variables=variables
-    )
-    return Evaluation(key, title, error_types, _sample_summary(reference[variables]),
-                      {'errors': errors[variables], 'error_profiles': profiles,
-                       'paired_profiles': _paired_profiles(pred, reference, variables)})
-
-
 def _select_station(data, station_id, path):
-    """Select a named station; an unambiguous single station needs no override."""
     if 'station' not in data.dims:
         raise ValueError(f'Missing radiosonde station dimension in {path}.')
     available = [str(value) for value in data.station.values]
@@ -120,373 +163,233 @@ def _select_station(data, station_id, path):
         raise ValueError(f'Duplicate station IDs in {path}.')
     if station_id is None:
         if len(available) != 1:
-            raise ValueError(f'Select evaluation.station_id or --station-id for {path}; available stations: {available}.')
+            raise ValueError(f'Select observations.station_id. Available stations in {path}: {available}.')
         station_id = available[0]
-    if not isinstance(station_id, str) or station_id not in available:
-        raise ValueError(f'Station ID {station_id!r} is unavailable in {path}; available stations: {available}.')
-    return data.assign_coords(station=available).sel(station=station_id, drop=True), station_id
+    if station_id not in available:
+        raise ValueError(f'Station ID {station_id!r} is unavailable in {path}. Available stations: {available}.')
+    selected = data.assign_coords(station=available).sel(station=station_id, drop=True)
+    selected.attrs['analysis_stations'] = [station_id]
+    return selected
 
 
-def _observation_note(days_of_month=None, start_date=None, end_date=None):
-    check_time_selection(dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month))
-    note = (f"Observation days {days_of_month['first']}-{days_of_month['last']} of each month (inclusive)."
-            if days_of_month is not None else 'All observation days.')
-    if start_date is not None or end_date is not None:
-        note += f" Date range: {start_date or 'first available'} through {end_date or 'last available'} (inclusive)."
+def _observation_note(settings):
+    days = settings.get('days_of_month')
+    note = (f"Observation days {days['first']}-{days['last']} of each month (inclusive)."
+            if days else 'All observation days.')
+    if 'start_date' in settings or 'end_date' in settings:
+        note += f" Date range: {settings.get('start_date', 'first available')} through {settings.get('end_date', 'last available')} (inclusive)."
     return note
 
 
-def _evaluation_inputs(project_dir, site, retrieval, data_source=None, days_of_month=None, station_id=None, dataset=None, observation_height_range=None, test_height_range=None, start_date=None, end_date=None):
-    from openMWR.config import check_name
-    from openMWR.recipes import RetrievalRecipe
+def _reference_grid(models, reference, variables, settings):
+    """Select one explicit grid. Different model grids require another height range."""
+    grid = None
+    for model in models:
+        missing = set(variables) - set(model.output)
+        if missing:
+            raise ValueError(f'{model.name} does not predict requested variables {sorted(missing)}.')
+        output = select_height_range(model.output[variables], settings.get('height_range', 'model'))
+        coordinates = {name: value for name, value in output.coords.items() if name in output.dims}
+        if grid is None:
+            grid = coordinates
+        elif grid.keys() != coordinates.keys() or any(not np.array_equal(grid[key], coordinates[key]) for key in grid):
+            raise ValueError('Retrieval output grids differ. Choose a shared height range or evaluate the grids separately.')
+    reference = select_height_range(reference[variables], settings.get('height_range', 'model'))
+    try:
+        reference = reference.sel(grid)
+    except KeyError as exc:
+        raise ValueError('Reference coordinates do not cover the selected model grid. Prepare matching reference data.') from exc
+    return reference.reset_coords(drop=True)
 
-    check_name(site, 'site')
-    check_name(retrieval, 'retrieval')
-    root = project_root(project_dir)
-    path = checkpoint_file(root, site, retrieval)
-    if not path.is_file():
-        raise FileNotFoundError(f'Missing trained checkpoint: {path}. Train this retrieval before evaluation.')
-    model = load_model(retrieval, site, root)
-    recipe_file = retrieval_dir(root, site, retrieval) / 'retrieval.toml'
-    recipe = RetrievalRecipe.load(root, site, retrieval) if recipe_file.is_file() else None
-    settings = dict(recipe.section('evaluation')) if recipe is not None else {}
-    if recipe is not None and not settings:
-        raise ValueError('Configure an explicit [evaluation] section before evaluating this retrieval.')
-    for key, value in (('data_source', data_source), ('days_of_month', days_of_month), ('station_id', station_id), ('dataset', dataset), ('observation_height_range', observation_height_range), ('test_height_range', test_height_range), ('start_date', start_date), ('end_date', end_date)):
-        if value is not None:
-            settings[key] = value
-    source = settings.get('data_source', 'radiosonde')
-    if source not in ('radiosonde', 'era5'):
-        raise ValueError("Evaluation data_source must be 'radiosonde' or 'era5'.")
-    observed = settings.get('observations', True)
-    test = settings.get('test_data', True)
-    if not observed and not test:
-        raise ValueError('Enable evaluation.observations or evaluation.test_data.')
-    if observed:
-        check_time_selection(settings, 'evaluation')
-    if 'height' in model.output.dims:
-        for enabled, key in ((observed, 'observation_height_range'), (test, 'test_height_range')):
-            if enabled:
-                if key not in settings:
-                    raise ValueError(f'Specify evaluation.{key} explicitly ([minimum, maximum] in metres or "model").')
-                check_height_range(settings[key], f'evaluation.{key}', allow_model=True)
-    inputs = []
-    paths = []
-    if observed:
-        analysis_path = dataset_file(root, site, settings.get('dataset', f'analysis_{source}'), bls=model.is_bls_model)
-        if not analysis_path.is_file():
-            raise FileNotFoundError(f'Missing evaluation analysis dataset: {analysis_path}. Prepare it before evaluation.')
-        data = load_analysis_dataset(root, site, settings.get('dataset', f'analysis_{source}'), bls=model.is_bls_model)
-        data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
-        stations = []
-        if source == 'radiosonde':
-            data, selected_station = _select_station(data, settings.get('station_id'), analysis_path)
-            settings['station_id'] = selected_station
-            stations = [selected_station]
+
+def _evaluate_case(recipe, section, settings, models, device, inputs, notes):
+    variables = settings['variables']
+    logger.info('%s: dataset %s, variables %s.', section, settings['dataset'], ', '.join(variables))
+    predictions, references, supported = [], [], {}
+    test_data = None
+    if section == 'test':
+        for source in settings['sources']:
+            path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], source, split='test')
+            inputs[path] = checkpoint_id(path)
+        test_data = load_combined_dataset(recipe.site, recipe.project_dir, 'test', settings['sources'], dataset=settings['dataset'])
+    for bls in (False, True):
+        group = [model for model in models if model.is_bls_model == bls]
+        if not group:
+            continue
+        if section == 'observations':
+            path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], bls=bls)
+            inputs[path] = checkpoint_id(path)
+            data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=bls)
+            data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
+            if settings['data_source'] == 'radiosonde':
+                data = _select_station(data, settings.get('station_id'), path)
+            measured = data.sel(data_source='hatpro', drop=True)
+            reference = data.sel(data_source=settings['data_source'], drop=True)
         else:
-            settings.pop('station_id', None)
-        reference = data.sel(data_source=source, drop=True).assign_attrs(analysis_stations=stations)
-        measurements = data.sel(data_source='hatpro', drop=True)
-        variables = ['T', 'rh'] if 'T' in model.output else ['TB']
-        inputs.append(('observations', measurements, reference, variables))
-        paths.append(analysis_path)
-    if test:
-        # Saved training inputs describe the trained model, even after recipe edits.
-        sources = model.hyper_params.get('sources', model.hyper_params.get('station_ids'))
-        if not sources:
-            raise ValueError('The checkpoint does not record training sources; set evaluation.test_data = false to evaluate observations only.')
-        for source_id in sources:
-            path = dataset_file(root, site, model.training_dataset, source_id, split='test')
-            if not path.is_file():
-                raise FileNotFoundError(f'Missing test dataset: {path}. Prepare it before evaluation.')
-            paths.append(path)
-        data = load_combined_dataset(site, root, 'test', sources, dataset=model.training_dataset)
-        variables = [v for v in ('T', 'rh', 'lwc', 'lwp') if v in model.output] or ['TB']
-        inputs.append(('test', data, data, variables))
-    prepared = []
-    for label, data, reference, variables in inputs:
-        if not model.is_bls_model and 'ang' in data.dims:
-            data = data.sel(ang=90, drop=True)
-        validate_model_data(model.input, data, f'{label} inputs')
-        selected = model.output[variables]
-        height_range = settings.get('observation_height_range' if label == 'observations' else 'test_height_range', 'model')
-        selected = select_height_range(selected, height_range)
-        reference = select_height_range(reference, height_range)
-        if not model.is_bls_model and 'ang' in reference.dims:
+            measured = reference = test_data
+        if not bls and 'ang' in measured.dims:
+            measured = measured.sel(ang=90, drop=True)
+        if not bls and 'ang' in reference.dims:
             reference = reference.sel(ang=90, drop=True)
-        validate_model_data(selected, reference, f'{label} reference')
-        prepared.append((label, data, reference, variables))
-    return root, model, settings, prepared, paths
+        if not reference.sizes.get('time', 0):
+            raise ValueError(f'No {section} samples remain after selection.')
+        reference = _reference_grid(models, reference, variables, settings)
+        references.append(reference)
+        for model in group:
+            logger.info('Predicting %s for %s.', model.name, section)
+            optimization = (model.training_metadata or {}).get('setup', {}).get('optimization')
+            if section == 'observations' and optimization:
+                selection = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
+                if isinstance(selection.get('days_of_month'), list):
+                    selection['days_of_month'] = dict(zip(('first', 'last'), selection['days_of_month']))
+                overlap = bool(select_time(reference, **selection).sizes['time'])
+                notes[model.name].append(
+                    f"Optimized against {optimization.get('data_source', 'an unrecorded reference')}. "
+                    f"Optimization selection: {_observation_note(selection)} "
+                    + ('Selected evaluation dates overlap this selection.' if overlap else 'Selected evaluation dates are outside this selection.'))
+            valid = validate_model_data(model.input, measured, f'{section} inputs for {model.name}', require_samples=False)
+            if bool(valid.any()):
+                pred = run_model_list([model], measured, device, include_input_vars=False)
+                pred = pred[variables].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims})
+            else:
+                pred = xr.full_like(reference, np.nan).expand_dims(model=[model.name])
+            predictions.append(pred.reset_coords(drop=True))
+            supported[model.name] = set(variables)
+        if section == 'observations' and settings.get('include_rpg'):
+            name = 'RPG_BLS' if bls else 'RPG'
+            available = (set(variables) & set(measured)) - ({'rh', 'lwc', 'lwp', 'iwv'} if bls else set())
+            if not available:
+                raise ValueError(f'No requested RPG outputs in {settings["dataset"]}. Disable observations.include_rpg.')
+            pred = measured[sorted(available)].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims}).reset_coords(drop=True)
+            predictions.append(pred.expand_dims(model=[name]))
+            supported[name] = available
+    try:
+        reference = xr.merge(references, join='outer', compat='no_conflicts')
+    except xr.MergeError as exc:
+        raise ValueError('Zenith and scan analysis files disagree on reference values. Prepare consistent analysis datasets.') from exc
+    pred = xr.concat(predictions, dim='model', join='outer')
+    # Retain the full reference cohort, including cases a model could not process.
+    pred = pred.reindex({dim: reference[dim] for dim in ('time', 'station') if dim in reference.dims})
+    available = _paired_profiles(pred, reference, variables)
+    scored = pred.copy()
+    truth = reference.copy()
+    for variable in variables:
+        participating = [name for name, outputs in supported.items() if variable in outputs]
+        common = np.isfinite(reference[variable]) & np.isfinite(pred[variable].sel(model=participating)).all('model')
+        scored[variable] = pred[variable].where(common)
+        truth[variable] = reference[variable].where(common)
+    error_types = ('RMSE', 'MAE', 'ME') if section == 'observations' else ('RMSE', 'ME')
+    errors, profiles = calculate_errors(scored, truth, error_types=error_types, variables=variables)
+    metrics = dict(errors=errors, error_profiles=profiles, available_profiles=available,
+                   paired_profiles=_paired_profiles(scored, truth, variables))
+    if 'T' in variables:
+        metrics['rmse_time'] = cal_RMSE(scored[['T']], truth[['T']], dims_to_mean='height')
+        metrics['monthly_temperature_rmse'] = metrics['rmse_time'].resample(time='1MS').mean()
+    if 'height' in profiles.dims:
+        metrics['mame'] = np.abs(profiles.sel(error='ME', drop=True)).mean('height')
+    if 'lwp' in variables:
+        metrics['lwp_scatter'] = xr.Dataset({'predicted_lwp': scored.lwp, 'reference_lwp': truth.lwp})
+    if section == 'observations' and 'RPG' in pred.model.values and profiles.data_vars:
+        rpg = profiles.sel(model='RPG')
+        relative = ((profiles - rpg) / rpg.where(rpg != 0) * 100).sel(error='RMSE', drop=True)
+        for values in relative.values():
+            values.attrs = {'units': '%'}
+        metrics.update(relative_rmse_profiles=relative, relative_rmse=relative.mean('height'))
+    # Dataset attributes from source files belong in run metadata, not metrics.
+    for values in metrics.values():
+        values.attrs = {}
+    note = (_observation_note(settings) if section == 'observations' else f"Explicit test dataset: {settings['dataset']}. Sources: {', '.join(settings['sources'])}.")
+    note += ' Scores use common finite reference/prediction pairs across participating retrievals, separately for each variable and level. No reference interpolation is performed.'
+    return Evaluation(section, 'Observations' if section == 'observations' else 'Simulated test data', error_types, _sample_summary(reference), metrics, note)
 
 
-def validate_evaluation(project_dir, site, retrieval, device='auto', **options):
-    """Check saved-model evaluation inputs without prediction or writing artifacts."""
-    resolve_device(device)
-    root, model, settings, inputs, paths = _evaluation_inputs(project_dir, site, retrieval, **options)
-    return [str(path) for path in paths]
+def _model_notes(model, recipe):
+    metadata = model.training_metadata or {}
+    setup = metadata.get('setup', {})
+    notes = []
+    if 'test' in recipe.values:
+        notes.append(f"Checkpoint training dataset: {model.training_dataset}. Evaluation test dataset: {recipe.values['test']['dataset']}.")
+        if not setup.get('training_selection', model.hyper_params.get('training_selection')):
+            notes.append('The checkpoint has no recorded calendar training selection. Independence of these test data is not established.')
+    return notes
 
 
-def evaluate_retrieval(project_dir, site, retrieval, device='auto', **options):
-    """Evaluate one saved retrieval, returning numerical results for Python users.
-
-    Recipe evaluation options can be overridden by data_source, start_date,
-    end_date, days_of_month and station_id. Time filters select observations;
-    the test split already owns its period. Saving a report is a separate operation.
-    """
-    with retrieval_log(project_dir, site, retrieval, 'evaluate'):
-        device = resolve_device(device)
+def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
+    """Evaluate a named comparison without training, downloading or saving results."""
+    settings = {**recipe.values, 'retrievals': list(retrievals) if retrievals is not None else recipe.values['retrievals']}
+    recipe = EvaluationRecipe(project_root(recipe.project_dir), recipe.site, recipe.name, settings).validate()
+    with task_log(evaluation_dir(recipe.project_dir, recipe.site, recipe.name) / 'evaluation.log'):
         started = utc_now()
-        root, model, settings, inputs, paths = _evaluation_inputs(project_dir, site, retrieval, **options)
-        logger.info('Evaluation reference: %s; radiosonde station: %s.', settings.get('data_source', 'radiosonde'), settings.get('station_id', 'not applicable'))
-        if any(label == 'observations' for label, *_ in inputs):
-            logger.info('Observation selection: %s', _observation_note(**{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings}))
-        logger.info('Test data sources from checkpoint: %s.', model.hyper_params.get('sources', model.hyper_params.get('station_ids', [])))
-        evaluations = []
-        for label, data, reference, variables in inputs:
-            pred = run_model_list([model], data, device)
-            height_range = settings.get('observation_height_range' if label == 'observations' else 'test_height_range', 'model')
-            pred = select_height_range(pred, height_range)
-            evaluation = _evaluate(label, f'{"Observations" if label == "observations" else "Test data"}', pred, reference, variables,
-                                   ('RMSE', 'MAE', 'ME') if label == 'observations' else ('RMSE', 'ME'))
-            if label == 'observations':
-                evaluation.note = _observation_note(**{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
-                setup = (model.training_metadata or {}).get('setup', {})
-                optimization = setup.get('optimization')
-                if optimization:
-                    selection = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
-                    # Older saved checkpoints recorded the two bounds as a list.
-                    if isinstance(selection.get('days_of_month'), list):
-                        selection['days_of_month'] = dict(zip(('first', 'last'), selection['days_of_month']))
-                    overlap = select_time(data, **selection).time.size > 0
-                    evaluation.note += f" This checkpoint was optimized against {optimization['data_source']}, using {optimization['score']}. Optimization selection: {_observation_note(**selection)}"
-                    evaluation.note += ' The selected evaluation dates overlap the optimization selection.' if overlap else ' The selected evaluation dates are outside the optimization selection.'
-            if 'lwp' in variables:
-                evaluation.metrics['lwp_scatter'] = xr.Dataset({'predicted_lwp': pred.lwp, 'reference_lwp': reference.lwp})
-            evaluations.append(evaluation)
-        metadata = {'site': site, 'retrieval': retrieval, 'project_dir': str(root),
-                    'data_source': settings.get('data_source', 'radiosonde'),
-                    'started_utc': started, 'finished_utc': utc_now(), 'device': device,
-                    'device_name': device_name(device),
-                    'filters': {'observation_days_of_month': settings.get('days_of_month'),
-                                'observation_start_date': settings.get('start_date'),
-                                'observation_end_date': settings.get('end_date'),
-                                'radiosonde_station_id': settings.get('station_id'),
-                                'observation_height_range': settings.get('observation_height_range'),
-                                'test_height_range': settings.get('test_height_range')},
-                    'test_station_ids': model.hyper_params.get('sources', model.hyper_params.get('station_ids', [])),
-                    'inputs': [str(path.relative_to(root)) for path in paths],
-                    'code': software_identity(),
-                    'models': [{'name': model.name, 'mode': 'Boundary layer scan' if model.is_bls_model else 'Zenith',
-                                'checkpoint_sha256': checkpoint_id(checkpoint_file(root, site, retrieval)),
-                                'training_metadata': model.training_metadata}]}
+        device = resolve_device(device)
+        hashes = {name: checkpoint_id(checkpoint_file(recipe.project_dir, recipe.site, name)) for name in settings['retrievals']}
+        models = [load_model(name, recipe.site, recipe.project_dir) for name in settings['retrievals']]
+        if len({'TB' in model.output for model in models}) > 1:
+            raise ValueError('Evaluate spectral and profile retrievals in separate recipes.')
+        configuration = [site_config_file(recipe.project_dir, recipe.site)]
+        configuration += [dataset_recipe_file(recipe.project_dir, recipe.site, settings[key]['dataset'])
+                          for key in ('observations', 'test') if key in settings]
+        inputs = {path: checkpoint_id(path) for path in configuration if path.is_file()}
+        notes = {model.name: _model_notes(model, recipe) for model in models}
+        logger.info('Evaluating %s with retrievals %s.', recipe.name, ', '.join(settings['retrievals']))
+        evaluations = [_evaluate_case(recipe, key, settings[key], models, device, inputs, notes)
+                       for key in ('observations', 'test') if key in settings]
+        metadata = dict(site=recipe.site, evaluation=recipe.name, project_dir=str(recipe.project_dir),
+                        started_utc=started, finished_utc=utc_now(), settings=plain_value(settings),
+                        device=device, device_name=device_name(device), code=software_identity(),
+                        inputs=[dict(path=str(path.relative_to(recipe.project_dir)), sha256=digest) for path, digest in sorted(inputs.items())],
+                        models=[dict(name=model.name, mode='Boundary layer scan' if model.is_bls_model else 'Zenith',
+                                     checkpoint_sha256=hashes[model.name],
+                                     training_metadata=model.training_metadata, notes=notes[model.name]) for model in models])
+        for evaluation in evaluations:
+            for name in evaluation.metrics['errors'].model.values:
+                if name not in {model['name'] for model in metadata['models']}:
+                    metadata['models'].append(dict(name=str(name), mode='RPG product', notes=[]))
+        logger.info('Finished evaluation %s.', recipe.name)
         return Analysis(metadata, evaluations)
-def _load_observations(root, site, source, settings, *, bls=False):
-    dataset = settings.analysis_dataset or f'analysis_{source}'
-    path = dataset_file(root, site, dataset, bls=bls)
-    ds = load_analysis_dataset(root, site, dataset, bls=bls)
-    stations = []
-    ds = select_height_range(select_time(ds, start_date=settings.start_date, end_date=settings.end_date,
-                                        days_of_month=settings.days_of_month), settings.observation_height_range)
-    if source == "radiosonde":
-        ds, station = _select_station(ds, settings.station_id, path)
-        stations = [station]
-    if not ds.sizes.get("time", 0):
-        raise ValueError(f"No observations remain after filtering {path}.")
-    reference = ds.sel(data_source=source, drop=True).assign_attrs(
-        analysis_stations=stations
-    )
-    return ds.sel(data_source="hatpro", drop=True), reference
 
 
-def _predict(models, ds, device, height_range):
-    # The notebook passed the site string as the fourth argument, making this
-    # flag truthy. State the equivalent behavior explicitly.
-    pred = run_model_list(models, ds, device, add_not_predicted_vars=True)
-    return calc_derived_quantities(select_height_range(pred, height_range))
+def save_evaluation(analysis, output_dir=None):
+    """Atomically publish report.html and grouped metrics.nc in a new run directory."""
+    meta = analysis.metadata
+    if output_dir is None:
+        stamp = datetime.fromisoformat(meta['started_utc']).strftime('%Y%m%dT%H%M%S.%fZ')
+        output_dir = evaluation_dir(meta['project_dir'], meta['site'], meta['evaluation']) / stamp
+    output_dir = Path(output_dir).resolve()
+    if output_dir.exists():
+        raise FileExistsError(f'Evaluation output already exists: {output_dir}. Choose a new directory.')
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix='.evaluation-', dir=output_dir.parent))
+    try:
+        sections = [dict(key=e.key, title=e.title, error_types=e.error_types, samples=e.samples,
+                         note=e.note, metrics=list(e.metrics)) for e in analysis.evaluations]
+        xr.Dataset(attrs={'format_version': 1, 'metadata': json.dumps(plain_value(meta)),
+                          'sections': json.dumps(plain_value(sections))}).to_netcdf(temporary / 'metrics.nc')
+        for evaluation in analysis.evaluations:
+            for name, values in evaluation.metrics.items():
+                values.to_netcdf(temporary / 'metrics.nc', mode='a', group=f'{evaluation.key}/{name}')
+        (temporary / 'report.html').write_text(render_report(analysis), encoding='utf-8')
+        temporary.rename(output_dir)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    logger.info('Evaluation saved to %s', output_dir)
+    return output_dir
 
 
-def _add_relative_rmse(evaluation):
-    profiles = evaluation.metrics["error_profiles"]
-    rpg = profiles.sel(model="RPG")
-    relative = ((profiles - rpg) / rpg * 100).sel(error="RMSE", drop=True)
-    evaluation.metrics["relative_rmse_profiles"] = relative
-    evaluation.metrics["relative_rmse"] = relative.mean("height")
-
-
-def _add_comparators(evaluation, zenith, models):
-    for key in ("errors", "error_profiles", "paired_profiles"):
-        evaluation.metrics[key] = xr.concat(
-            [zenith.metrics[key].sel(model=models), evaluation.metrics[key]],
-            dim="model",
-            join="outer",
-        )
-
-
-def analyze_models(site, settings, data_source="radiosonde", project_dir=".", device="auto"):
-    """Run the four notebook evaluations without displaying or writing output."""
-    device = resolve_device(device)
-    if data_source not in ("radiosonde", "era5"):
-        raise ValueError("data_source must be 'radiosonde' or 'era5'.")
-    check_height_range(settings.observation_height_range, allow_model=True)
-    check_height_range(settings.test_height_range, allow_model=True)
-    project_dir = project_root(project_dir)
-    started = datetime.now(timezone.utc).isoformat()
-    models = [Model.load(name, site, str(project_dir)) for name in settings.models]
-    bls_models = [Model.load(name, site, str(project_dir)) for name in settings.bls_models]
-    station_ids = models[0].hyper_params["station_ids"]
-    paths = [
-        dataset_file(project_dir, site, settings.analysis_dataset or f'analysis_{data_source}', bls=bls)
-        for bls in (False, True)
-    ]
-    paths += [
-        dataset_file(project_dir, site, settings.training_dataset, station, split='test') for station in station_ids
-    ]
-    for path in paths:
-        if not path.is_file():
-            if path.parent.name == "training":
-                raise FileNotFoundError(
-                    f"Missing test dataset: {path}. The report needs the existing "
-                    "test-data split for the saved retrievals."
-                )
-            raise FileNotFoundError(
-                f"Missing analysis input: {path}. Run bin/update.py to prepare data."
-            )
-    metadata = {
-        "site": site,
-        "data_source": data_source,
-        "project_dir": str(project_dir),
-        "started_utc": started,
-        "device": device,
-        "device_name": device_name(device),
-        "main_model": settings.main_model,
-        "filters": {
-            "observation_days_of_month": settings.days_of_month,
-            "observation_start_date": settings.start_date,
-            "observation_end_date": settings.end_date,
-            "radiosonde_station_id": settings.station_id if data_source == "radiosonde" else None,
-            "observation_height_range": settings.observation_height_range,
-            "test_height_range": settings.test_height_range,
-        },
-        "test_station_ids": station_ids,
-        "inputs": [str(path.relative_to(project_dir)) for path in paths],
-        "code": {
-            "project": git_identity(project_dir),
-            "software": software_identity(),
-        },
-        "models": [
-            dict(
-                name=model.name,
-                mode=mode,
-                checkpoint_sha256=checkpoint_id(
-                    checkpoint_file(project_dir, site, model.name)
-                ),
-            )
-            for mode, group in (("Zenith", models), ("Boundary layer scan", bls_models))
-            for model in group
-        ],
-    }
-    variables = ["T", "rh"]
-    test_variables = ["T", "rh", "lwc", "lwp"]
-
-    logger.info("Evaluating zenith retrievals on %s observations", data_source)
-    hatpro, reference = _load_observations(project_dir, site, data_source, settings)
-    if data_source == 'radiosonde':
-        metadata['filters']['radiosonde_station_id'] = reference.attrs['analysis_stations'][0]
-    logger.info('Evaluation reference: %s; radiosonde station: %s; %s', data_source, metadata['filters']['radiosonde_station_id'], _observation_note(settings.days_of_month, settings.start_date, settings.end_date))
-    pred = _predict(models, hatpro, device, settings.observation_height_range)
-    if settings.include_rpg:
-        rpg = hatpro[["T", "rh", "ah", "TD", "iwv", "lwc", "lwp", "p"]].expand_dims(
-            model=["RPG"]
-        )
-        pred = xr.concat([rpg, pred], dim="model", data_vars="minimal")
-    observed = _evaluate(
-        "zenith_observations",
-        "Zenith retrieval · observations",
-        pred,
-        reference,
-        variables,
-        ("RMSE", "MAE", "ME"),
-    )
-    observed.note = _observation_note(settings.days_of_month, settings.start_date, settings.end_date)
-    observed.metrics["mean_lwp"] = pred[["lwp"]].mean("time")
-    observed.metrics["mame"] = np.abs(
-        observed.metrics["error_profiles"].sel(error="ME", drop=True)
-    ).mean("height")
-    time_rmse = cal_RMSE(pred[variables], reference[variables], dims_to_mean="height")
-    observed.metrics["rmse_time"] = time_rmse
-    observed.metrics["monthly_temperature_rmse"] = (
-        time_rmse.sel(model=settings.main_model, drop=True)[["T"]]
-        .resample(time="1MS")
-        .mean()
-    )
-    if settings.include_rpg:
-        _add_relative_rmse(observed)
-    del pred, hatpro, reference
-
-    logger.info("Evaluating zenith retrievals on test data")
-    test_data = load_combined_dataset(site, str(project_dir), 'test', station_ids, dataset=settings.training_dataset)
-    if not test_data.sizes.get("time", 0):
-        raise ValueError("The test data contain no time samples.")
-    pred_test = _predict(models, test_data, device, settings.test_height_range)
-    test = _evaluate(
-        "zenith_test",
-        "Zenith retrieval · test data",
-        pred_test,
-        select_height_range(test_data, settings.test_height_range),
-        test_variables,
-        ("RMSE", "ME"),
-    )
-    test.metrics["lwp_scatter"] = xr.Dataset(
-        {"predicted_lwp": pred_test.lwp, "reference_lwp": test_data.lwp}
-    )
-    del pred_test
-
-    logger.info("Evaluating boundary layer scans on %s observations", data_source)
-    hatpro, reference = _load_observations(project_dir, site, data_source, settings, bls=True)
-    pred = _predict(bls_models, hatpro, device, settings.observation_height_range)
-    if settings.include_rpg:
-        rpg = hatpro[["T", "p"]].expand_dims(model=["RPG_BLS"])
-        pred = xr.concat([rpg, pred], dim="model", data_vars="minimal")
-    bls = _evaluate(
-        "bls_observations",
-        "Boundary layer scan · observations",
-        pred,
-        reference,
-        variables,
-        ("RMSE", "ME"),
-    )
-    comparisons = (
-        ["RPG", settings.main_model] if settings.include_rpg else [settings.main_model]
-    )
-    _add_comparators(bls, observed, comparisons)
-    bls.note = (
-        _observation_note(settings.days_of_month, settings.start_date, settings.end_date) + " Zenith comparator metrics come from the zenith observation section. "
-        "The zenith and scan evaluations retain their own observation times; "
-        "they are not restricted to common timestamps."
-    )
-    if settings.include_rpg:
-        _add_relative_rmse(bls)
-    del pred, hatpro, reference
-
-    logger.info("Evaluating boundary layer scans on test data")
-    pred_test = _predict(bls_models, test_data, device, settings.test_height_range)
-    bls_test = _evaluate(
-        "bls_test",
-        "Boundary layer scan · test data",
-        pred_test,
-        select_height_range(test_data, settings.test_height_range),
-        test_variables,
-        ("RMSE", "ME"),
-    )
-    # Keep the notebook's order: scan retrieval, then the main zenith retrieval.
-    for key in ("errors", "error_profiles", "paired_profiles"):
-        bls_test.metrics[key] = xr.concat(
-            [bls_test.metrics[key], test.metrics[key].sel(model=[settings.main_model])],
-            dim="model",
-            join="outer",
-        )
-    metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
-    return Analysis(metadata, [observed, test, bls, bls_test])
+def load_evaluation(directory):
+    """Reload numerical results and metadata for Python analysis or report rendering."""
+    path = Path(directory) / 'metrics.nc'
+    with xr.open_dataset(path) as root:
+        if root.attrs.get('format_version') != 1:
+            raise ValueError(f'Unsupported evaluation result format: {path}.')
+        metadata = json.loads(root.attrs['metadata'])
+        sections = json.loads(root.attrs['sections'])
+    evaluations = []
+    for section in sections:
+        metrics = {name: xr.load_dataset(path, group=f'{section["key"]}/{name}') for name in section.pop('metrics')}
+        section['error_types'] = tuple(section['error_types'])
+        evaluations.append(Evaluation(**section, metrics=metrics))
+    return Analysis(metadata, evaluations)
 
 
 def _table(ds, labels=VARIABLE_LABELS):
@@ -497,26 +400,31 @@ def _table(ds, labels=VARIABLE_LABELS):
 
 
 def _profile_figure(ds, metric, colors):
-    if not {'T', 'rh'} <= set(ds.data_vars):
-        figure = Figure(figsize=(10, 5))
-        ax = figure.subplots()
-        for variable, values in ds.items():
-            for model in values.model.values:
-                selected = values.sel(model=model)
+    variables = [name for name, values in ds.items() if {'height', 'frq'} & set(values.dims)]
+    if not variables:
+        return None
+    figure = Figure(figsize=(6 * len(variables), 5))
+    axes = np.atleast_1d(figure.subplots(1, len(variables)))
+    for ax, variable in zip(axes, variables):
+        values = ds[variable]
+        for model in values.model.values:
+            selected = values.sel(model=model)
+            if 'height' in selected.dims:
+                ax.plot(selected, selected.height / 1000, label=str(model), color=colors[str(model)])
+            else:
                 ax.plot(selected.frq, selected, label=str(model), color=colors[str(model)])
-        ax.set_xlabel('Frequency [GHz]')
-        ax.set_ylabel(f'{metric} of brightness temperature [K]')
+        if 'height' in values.dims:
+            ax.set_xlabel(f'{metric} [%]' if metric == 'Relative RMSE' else f'{metric}: {VARIABLE_LABELS.get(variable, variable)}')
+            ax.set_ylabel('Height above instrument [km]')
+            if metric in ('RMSE', 'MAE'):
+                ax.set_xlim(left=0)
+        else:
+            ax.set_xlabel('Frequency [GHz]')
+            ax.set_ylabel(f'{metric}: {VARIABLE_LABELS.get(variable, variable)}')
+            if metric in ('RMSE', 'MAE'):
+                ax.set_ylim(bottom=0)
         ax.legend()
         ax.grid()
-        return figure
-    figure = Figure(figsize=(12, 8))
-    labels = {}
-    if metric == "Relative RMSE":
-        labels = {
-            "xlabel_T": "Relative RMSE of temperature [%]",
-            "xlabel_RH": "Relative RMSE of relative humidity [%]",
-        }
-    plot_err(ds, err=metric, colors=colors, figure=figure, show=False, **labels)
     return figure
 
 
@@ -524,7 +432,12 @@ def _scatter_figure(ds, model):
     figure = Figure(figsize=(10, 5))
     predicted = ds[["predicted_lwp"]].rename(predicted_lwp="lwp").sel(model=model)
     reference = ds[["reference_lwp"]].rename(reference_lwp="lwp")
+    if 'station' not in ds.dims:
+        predicted = predicted.expand_dims(station=['site'])
+        reference = reference.expand_dims(station=['site'])
     plot_scatter_lwp(predicted, reference, figure=figure, show=False)
+    for ax in figure.axes:
+        ax.set_xlabel('Reference LWP [g/m²]')
     return figure
 
 
@@ -547,8 +460,8 @@ def _samples_html(samples):
     ]
     return (
         f'<p class="samples">Period: {escape(start)} to {escape(end)}. '
-        f"Time coordinates: {samples['time_coordinates']}; profiles with finite reference values: "
-        f"{samples['reference_temperature_profiles']}. Stations: {escape(stations)}.</p>"
+        f"Time coordinates: {samples['time_coordinates']}. Reference profiles with finite values: "
+        f"{samples['reference_profiles']}. Stations: {escape(stations)}.</p>"
     )
 
 
@@ -579,7 +492,7 @@ def render_report(analysis):
         "<p>ME is prediction minus reference. MAME is the mean absolute vertical "
         "mean error. Summary errors for profile variables aggregate over time, stations "
         "(where present) and height; vertical error profiles aggregate over time and "
-        "stations. Missing values are excluded.</p>"
+        "stations. Scores use the same finite pairs for all participating retrievals in each variable and level. No common pairs means an unavailable score.</p>"
     )
     for evaluation in analysis.evaluations:
         parts.append(
@@ -589,9 +502,12 @@ def render_report(analysis):
         if evaluation.note:
             parts.append(f"<p>{escape(evaluation.note)}</p>")
         parts.append(
-            "<details><summary>Paired profiles per retrieval and variable</summary>"
+            "<details><summary>Coverage and common profiles per retrieval and variable</summary>"
             "<p>A profile counts when prediction and reference have at least one finite paired "
             "height. LWP counts finite paired column values. Missing results appear as —.</p>"
+            + "<h4>Available before common-sample selection</h4>"
+            + _table(evaluation.metrics["available_profiles"], labels={})
+            + "<h4>Used for scores</h4>"
             + _table(evaluation.metrics["paired_profiles"], labels={})
             + "</details>"
         )
@@ -608,12 +524,9 @@ def render_report(analysis):
             if not profile_errors.data_vars:
                 profile_errors = evaluation.metrics['errors']
             profiles = profile_errors.sel(error=metric, drop=True)
-            parts.append(
-                _figure_html(
-                    _profile_figure(profiles, metric, colors),
-                    f"{evaluation.title}: {metric}",
-                )
-            )
+            figure = _profile_figure(profiles, metric, colors)
+            if figure is not None:
+                parts.append(_figure_html(figure, f'{evaluation.title}: {metric}'))
             if metric == "ME" and "mame" in evaluation.metrics:
                 parts.append("<h4>MAME</h4>" + _table(evaluation.metrics["mame"]))
         if "relative_rmse" in evaluation.metrics:
@@ -637,10 +550,14 @@ def render_report(analysis):
             monthly = evaluation.metrics["monthly_temperature_rmse"]
             fig = Figure(figsize=(10, 4))
             ax = fig.subplots()
-            ax.plot(
-                monthly.time.values, monthly.T.values, color=colors[meta["main_model"]]
-            )
+            for name in monthly.model.values:
+                values = monthly.T.sel(model=name)
+                if 'station' in values.dims:
+                    values = values.mean('station')
+                ax.plot(values.time.values, values.values, label=str(name), color=colors[str(name)])
+            ax.legend()
             ax.set_ylabel("Temperature RMSE [K]")
+            ax.set_ylim(bottom=0)
             ax.set_xlabel("Month")
             ax.grid()
             fig.autofmt_xdate()
@@ -648,18 +565,20 @@ def render_report(analysis):
                 "<h3>Monthly temperature RMSE</h3>"
                 + _figure_html(
                     fig,
-                    meta["main_model"] + ": mean of per-profile RMSE",
+                    "Mean of per-profile temperature RMSE",
                 )
             )
         parts.append("</section>")
 
     parts.append("<h2>Individual retrievals</h2>")
-    scatter = next((e.metrics['lwp_scatter'] for e in analysis.evaluations if 'lwp_scatter' in e.metrics), None)
+    scatter = next((e for e in analysis.evaluations if 'lwp_scatter' in e.metrics), None)
     for i, model in enumerate(meta["models"]):
         name = model["name"]
         parts.append(
             f'<section id="retrieval-{i}"><h3>{escape(name)}</h3><p>{escape(model["mode"])} retrieval.</p>'
         )
+        for note in model.get('notes', []):
+            parts.append(f'<p>{escape(note)}</p>')
         frames = {}
         for evaluation in analysis.evaluations:
             errors = evaluation.metrics["errors"]
@@ -674,11 +593,11 @@ def render_report(analysis):
                 float_format=lambda value: f"{value:.4g}", na_rep="—", border=0
             )
         )
-        if scatter is not None and name in scatter.model.values:
+        if scatter is not None and name in scatter.metrics['lwp_scatter'].model.values:
             parts.append(
                 _figure_html(
-                    _scatter_figure(scatter, name),
-                    "Test data: full range and LWP zoom",
+                    _scatter_figure(scatter.metrics['lwp_scatter'], name),
+                    f"{scatter.title}: full range and LWP zoom",
                     fmt="png",
                 )
             )
@@ -692,51 +611,21 @@ def render_report(analysis):
         f'<section id="provenance"><h2>Run details</h2><details><summary>Inputs, filters, checkpoints and code versions</summary>'
         f"<pre>{escape(provenance)}</pre></details></section>"
     )
-    filters = meta["filters"]
-    days = filters['observation_days_of_month']
-    filter_text = (_observation_note(days, filters.get('observation_start_date'), filters.get('observation_end_date'))
-                   if any(evaluation.key == 'observations' or evaluation.key == 'zenith_observations' for evaluation in analysis.evaluations)
-                   else 'No observation evaluation')
-    for label, key in (('Observation', 'observation_height_range'), ('Test', 'test_height_range')):
-        heights = filters.get(key)
-        if heights is not None:
+    observations = meta['settings'].get('observations')
+    test = meta['settings'].get('test')
+    filter_text = _observation_note(observations) if observations else 'No observation evaluation.'
+    for label, settings in (('Observation', observations), ('Test', test)):
+        if settings and 'height_range' in settings:
+            heights = settings['height_range']
             selection = 'full model grid' if heights == 'model' else f'{heights[0]}-{heights[1]} m'
             filter_text += f' {label} profile heights: {selection}.'
-    title = f"Retrieval analysis · {meta['site']}"
+    title = f"Retrieval evaluation · {meta['site']} · {meta['evaluation']}"
     template = Template(Path(__file__).with_name("evaluation.html").read_text(encoding="utf-8"))
     return template.substitute(
         title=escape(title),
-        source=escape(meta["data_source"]),
+        source=escape(observations['data_source'] if observations else 'Simulated test data'),
         started=escape(meta["started_utc"]),
         filters=filter_text,
-        stations=escape(", ".join(map(str, meta["test_station_ids"]))),
-        prediction_scope=('Observation profiles: 0–10 km above ground.'
-                          if any('T' in e.metrics['errors'] for e in analysis.evaluations)
-                          else 'Spectral brightness-temperature predictions.'),
+        stations=escape(', '.join(test['sources']) if test else 'No test evaluation'),
         content="".join(parts),
     )
-
-
-def write_report(analysis, output_path=None):
-    """Write one HTML file; never overwrite an earlier report."""
-    meta = analysis.metadata
-    if output_path is None:
-        stamp = datetime.fromisoformat(meta["started_utc"]).strftime(
-            "%Y%m%dT%H%M%S.%fZ"
-        )
-        output_path = (
-            (retrieval_dir(meta['project_dir'], meta['site'], meta['retrieval']) / 'evaluation'
-             if 'retrieval' in meta else site_root(meta["project_dir"], meta["site"]) / "analysis" / "reports")
-            / f"{stamp}_{meta['data_source']}.html"
-        )
-    output_path = Path(output_path).resolve()
-    if output_path.exists():
-        raise FileExistsError(
-            f"Report already exists: {output_path}. Choose a new filename."
-        )
-    html = render_report(analysis)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("x", encoding="utf-8") as stream:
-        stream.write(html)
-    logger.info("Report saved to %s", output_path)
-    return output_path

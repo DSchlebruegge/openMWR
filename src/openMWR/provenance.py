@@ -66,27 +66,35 @@ def utc_now():
 
 
 @contextmanager
-def retrieval_log(project_dir, site, name, action):
+def task_log(path):
     """Attach a run log temporarily, preserving the caller's logging handlers."""
-    directory = retrieval_dir(project_dir, site, name)
-    directory.mkdir(parents=True, exist_ok=True)
-    filename = {"train": "training", "optimize": "optimization", "evaluate": "evaluation"}[action]
-    handler = task_log_handler(directory / f"{filename}.log", encoding="utf-8")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = task_log_handler(path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     root = logging.getLogger()
     previous_level = root.level
     root.addHandler(handler)
     if root.level > logging.INFO:
         root.setLevel(logging.INFO)
-    logger = logging.getLogger(__name__)
     try:
-        logger.info("Starting %s for site %s, retrieval %s", action, site, name)
         yield
-        logger.info("Finished %s for site %s, retrieval %s", action, site, name)
-    except BaseException:
-        logger.exception("%s failed for site %s, retrieval %s", action, site, name)
-        raise
     finally:
         root.removeHandler(handler)
         handler.close()
         root.setLevel(previous_level)
+
+
+@contextmanager
+def retrieval_log(project_dir, site, name, action):
+    """Record one training or optimization run next to its retrieval."""
+    filename = {'train': 'training', 'optimize': 'optimization'}[action]
+    with task_log(retrieval_dir(project_dir, site, name) / f'{filename}.log'):
+        logger = logging.getLogger(__name__)
+        try:
+            logger.info('Starting %s for site %s, retrieval %s', action, site, name)
+            yield
+            logger.info('Finished %s for site %s, retrieval %s', action, site, name)
+        except BaseException:
+            logger.exception('%s failed for site %s, retrieval %s', action, site, name)
+            raise

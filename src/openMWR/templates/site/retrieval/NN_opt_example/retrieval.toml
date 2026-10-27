@@ -67,15 +67,3 @@ score_weights = { T = 1.0, rh = 0.1 }
 n_trials = 200
 data_source = "radiosonde"
 dataset = "analysis_radiosonde"
-
-[evaluation]
-# Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
-# Both date bounds include the entire day.
-# Height bounds in metres; "model" selects the full model grid.
-observation_height_range = [0, 10000]
-test_height_range = "model"
-observations = true
-test_data = true
-data_source = "radiosonde"
-dataset = "analysis_radiosonde"
-days_of_month = { first = 21, last = 31 }

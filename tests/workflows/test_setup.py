@@ -7,6 +7,7 @@ import pytest
 import tomli_w
 
 from openMWR.datasets import DatasetWorkflow
+from openMWR.evaluation import EvaluationRecipe
 from openMWR.recipes import RetrievalRecipe
 from openMWR.site import create_site
 
@@ -39,6 +40,8 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
     assert {path.name for path in (directory / 'retrieval').iterdir()} == {
         f'{family}{suffix}_example' for family in ('NN', 'MLR', 'NN_BLS', 'SPC')
         for suffix in ('', '_opt')}
+    for name in ('radiosonde', 'spectral'):
+        EvaluationRecipe.load(project, 'my_site', name)
     recipe = RetrievalRecipe.load(project, 'my_site', 'NN_example')
     assert recipe.section('model')['freqs'] == 'dataset'
     assert all(not isinstance(value, dict) for value in recipe.section('training').values())

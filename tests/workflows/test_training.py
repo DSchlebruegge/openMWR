@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from openMWR.evaluation import evaluate_retrieval, validate_evaluation
+from openMWR.evaluation import EvaluationRecipe, evaluate
 from openMWR.models import load_model
 from openMWR.train import TrainingWorkflow
 
@@ -35,7 +35,7 @@ def test_auto_device_is_saved_with_fixed_model_without_fitting(tmp_path, monkeyp
     assert metadata['device'] == 'cpu'
     assert metadata['device_name'] == 'CPU'
     assert 'Training device: cpu (CPU).' in (recipe.parent / 'training.log').read_text()
-    analysis = evaluate_retrieval(tmp_path, 'test', 'example')
+    analysis = evaluate(EvaluationRecipe.load(tmp_path, 'test', 'example'))
     assert analysis.metadata['device'] == 'cpu'
     assert analysis.metadata['device_name'] == 'CPU'
 
@@ -61,7 +61,7 @@ def test_python_and_command_training_agree_fit_heldout_data_and_save_settings(tm
     assert cli_model.training_metadata['software']['packages']['openMWR']
     assert (recipe.parent / 'training.log').stat().st_size > 0
     assert not (tmp_path / 'sites/test/retrieval/example/optimization.db').exists()
-    evaluation = evaluate_retrieval(tmp_path, 'test', 'example')
+    evaluation = evaluate(EvaluationRecipe.load(tmp_path, 'test', 'example'))
     errors = evaluation.evaluations[1].metrics['errors']
     assert errors.T.sel(error='RMSE').item() < 1e-4
     assert errors.rh.sel(error='RMSE').item() < 1e-4
@@ -91,7 +91,7 @@ def test_one_epoch_models_train_and_evaluate(kind, mode, tmp_path):
     if kind == 'nn':
         restored = load_model('example', 'test', tmp_path)
         np.testing.assert_array_equal(restored.loss_weights.T, [1., .3])
-    analysis = evaluate_retrieval(tmp_path, 'test', 'example')
+    analysis = evaluate(EvaluationRecipe.load(tmp_path, 'test', 'example'))
     assert len(analysis.evaluations) == 2
     assert analysis.evaluations[0].samples['time_coordinates'] == 3
     assert analysis.evaluations[1].samples['time_coordinates'] == 6
@@ -110,10 +110,8 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
     torch.save(checkpoint, path)
     recipe.unlink()
     assert load_model('example', 'test', tmp_path).training_metadata is None
-    analysis = evaluate_retrieval(tmp_path, 'test', 'example', days_of_month={'first': 21, 'last': 31}, observation_height_range=[0, 10000], test_height_range='model')
+    analysis = evaluate(EvaluationRecipe.load(tmp_path, 'test', 'example'))
     assert len(analysis.evaluations) == 2
-    with pytest.raises(ValueError, match='observation_height_range explicitly'):
-        validate_evaluation(tmp_path, 'test', 'example')
 
 
 def test_manual_python_workflow_still_uses_the_same_training(tmp_path):

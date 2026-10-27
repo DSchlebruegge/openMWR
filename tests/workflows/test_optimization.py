@@ -221,3 +221,111 @@ def test_bias_loss_requires_and_uses_explicit_coefficient(tmp_path, monkeypatch)
     assert workflow.requires_optimization
     study = workflow.optimize(n_trials=1)
     assert 0.1 <= study.best_params['bias_weight'] <= 0.3
+
+
+def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
+    recipe, data = retrieval_project(tmp_path)
+    recipe.write_text(recipe.read_text().replace('sources = ["03715"]', 'sources = ["era5"]')
+                      + '\n[bias_correction]\ndays_of_month = { first = 1, last = 20 }\ndata_source = "era5"\ndataset = "analysis_era5"\nfactor = 0.5\n')
+    (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\nhour_interval = 6\n')
+    profiles_file = tmp_path / 'sites/test/datasets/profiles.toml'
+    profiles_file.write_text('kind = "profiles"\n[inputs]\nsource = "radiosondes"\n[preparation]\nheights = [0.0, 1000.0]\n')
+    site_file = tmp_path / 'sites/test/site.toml'
+    site_file.write_text(site_file.read_text() + '\nlatitude = 48.0\nlongitude = 11.0\n')
+    for split in ('training_data', 'validation_data'):
+        data.to_netcdf(tmp_path / f'data/sites/test/training_variant/{split.removesuffix("_data")}_era5.nc')
+    zenith = data.sel(ang=90, drop=True)
+    observations = xr.concat([zenith, zenith.assign(TB=zenith.TB + 3)], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
+    observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
+    from openMWR.datasets import DatasetWorkflow
+    DatasetWorkflow(tmp_path, 'test').record('training_variant')
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_allclose(workflow.hyper_params['mean_bias'], [1.5, 1.5])
+    np.testing.assert_allclose(workflow.training_data.TB.isel(station=0), zenith.TB - 1.5)
+
+
+def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
+    recipe, data = retrieval_project(tmp_path, search=False)
+    # Use the normal 14-channel grid so the existing neighbor-based OMB method
+    # has channels on both sides of its K/V-band split.
+    from openMWR.config import load_grid
+    import tomli_w
+    import tomllib
+
+    frequencies = load_grid(tmp_path, 'frequencies', 'hatpro')
+    rng = np.random.default_rng(17)
+    data = data.drop_vars('TB').drop_dims('frq')
+    data['TB'] = (('time', 'ang', 'frq'), 100 + rng.normal(size=(6, 2, len(frequencies))))
+    data = data.assign_coords(frq=frequencies)
+    for split in ('training_data', 'validation_data'):
+        data.to_netcdf(tmp_path / f'data/sites/test/training_variant/{split.removesuffix("_data")}_03715.nc')
+    background = data.sel(ang=90, drop=True)
+    measured = background.assign(TB=background.TB + rng.normal(size=(6, len(frequencies))))
+    observations = xr.concat([background, measured], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
+    observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
+    settings = tomllib.loads(recipe.read_text())
+    settings['model']['freqs'] = 'hatpro'
+    settings.pop('optimization')
+    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0,
+                               'start_date': '2024-01-11', 'end_date': '2024-01-21',
+                               'days_of_month': {'first': 1, 'last': 20}}
+    recipe.write_text(tomli_w.dumps(settings))
+    first = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_array_equal(first.omb.diff.time.values, data.time.values[1:3])
+    settings['input_noise']['factor'] = 2.0
+    recipe.write_text(tomli_w.dumps(settings))
+    second = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    for frequency in frequencies:
+        key = f'input_noise_TB_{frequency}'
+        assert np.isfinite(first.hyper_params[key])
+        assert second.hyper_params[key] == pytest.approx(2 * first.hyper_params[key])
+    settings['input_noise'].update({'TB_22.24': 0.25, 'TB_31.4': {'low': 0.1, 'high': 0.4}})
+    settings['optimization'] = {'n_trials': 1, 'data_source': 'era5', 'dataset': 'analysis_era5', 'seed': 42, 'days_of_month': {'first': 1, 'last': 20}, 'score_weights': {'T': 1.0, 'rh': 0.1}}
+    recipe.write_text(tomli_w.dumps(settings))
+    overridden = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert overridden.hyper_params['input_noise_TB_22.24'] == 0.25
+    assert overridden.hyper_params['input_noise_TB_31.4'] == overridden.suggest_float(0.1, 0.4)
+    assert overridden.hyper_params['input_noise_TB_23.04'] == second.hyper_params['input_noise_TB_23.04']
+    assert overridden.requires_optimization
+    assert not (recipe.parent / 'model.pth').exists()
+
+
+def test_observation_periods_are_shared_by_bias_and_optimization(tmp_path):
+    import tomllib
+    import tomli_w
+    from openMWR.predict import run_model_list
+
+    recipe, data = retrieval_project(tmp_path)
+    path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
+    paired = xr.load_dataset(path)
+    times = paired.time.values.copy()
+    times[2] = np.datetime64('2024-01-12T23:59:59.999999999')
+    times[4] = np.datetime64('2024-01-22T23:59:59.999999999')
+    paired = paired.assign_coords(time=times)
+    paired['TB'].loc[{'data_source': 'hatpro'}] += xr.DataArray(np.arange(6), dims='time', coords={'time': times})
+    future = paired.assign(T=paired.T + 50).assign_coords(time=times + np.timedelta64(366, 'D'))
+    # Unrelated years are present in the same reusable analysis dataset.
+    xr.concat([paired, future], dim='time').to_netcdf(path)
+    selection = {'start_date': '2024-01-11', 'end_date': '2024-01-22',
+                 'days_of_month': {'first': 12, 'last': 22}}
+    settings = tomllib.loads(recipe.read_text())
+    settings['bias_correction'] = dict(data_source='radiosonde', dataset='analysis_radiosonde', factor=0.5, **selection)
+    settings['optimization'].update(selection, score_weights={'T': 1.0, 'rh': 0.0})
+    recipe.write_text(tomli_w.dumps(settings))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    np.testing.assert_array_equal(workflow.omb.diff.time.values, times[[2, 3, 4]])
+    np.testing.assert_allclose(workflow.hyper_params['mean_bias'], [1.5, 1.5])
+    study = workflow.optimize(n_trials=1)
+    model = load_model('example', 'test', tmp_path)
+    selected = paired.isel(time=[2, 3, 4])
+    predicted = run_model_list([model], selected.sel(data_source='hatpro', drop=True), 'cpu')
+    residual = predicted.T - selected.sel(data_source='radiosonde', drop=True).T
+    expected = np.sqrt((residual ** 2).mean(('time', 'station'))).mean().item()
+    assert study.best_value == pytest.approx(expected)
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(n_trials=1, run_mode='continue', end_date='2024-01-21')
+    # A year/date selection can be used without any monthly filter.
+    settings['optimization'].pop('days_of_month')
+    recipe.write_text(tomli_w.dumps(settings))
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    workflow.validate_optimization()

@@ -87,6 +87,19 @@ def checkpoint_file(project_dir: PathLike, site: str, name: str) -> Path:
     return retrieval_dir(project_dir, site, name) / "model.pth"
 
 
+def evaluation_dir(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the run/log directory beside a named evaluation recipe."""
+    _dataset_name(site)
+    _dataset_name(name)
+    return site_root(project_dir, site) / 'evaluations' / name
+
+
+def evaluation_recipe_file(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the configuration for one reproducible comparison."""
+    directory = evaluation_dir(project_dir, site, name)
+    return directory.parent / f'{name}.toml'
+
+
 def optimization_file(project_dir: PathLike, site: str, name: str) -> Path:
     """Return the Optuna database owned by one named retrieval."""
     return retrieval_dir(project_dir, site, name) / "optimization.db"

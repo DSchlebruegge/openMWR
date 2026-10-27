@@ -16,8 +16,8 @@ from openMWR.devices import resolve_device
 logger = logging.getLogger(__name__)
 
 
-def validate_model_data(specification, data, label='data'):
-    """Check variables, coordinates and complete samples without building tensors."""
+def validate_model_data(specification, data, label='data', *, require_samples=True):
+    """Check structure and return the finite-sample mask without building tensors."""
     if not data.sizes.get('time', 0):
         raise ValueError(f'{label} contains no time samples after filtering.')
     for coordinate in ('time', 'height', 'frq', 'ang'):
@@ -36,8 +36,9 @@ def validate_model_data(specification, data, label='data'):
             raise ValueError(f'{label}.{name} coordinates do not match the model: {exc}') from exc
         finite = np.isfinite(values).all(list(expected.dims))
         valid = finite if valid is None else valid & finite
-    if valid is None or not bool(valid.any()):
+    if valid is None or (require_samples and not bool(valid.any())):
         raise ValueError(f'{label} contains no complete finite samples for this model.')
+    return valid
 
 def create_tensor_from_ds(model_ds: xr.Dataset, data_ds: xr.Dataset, device: str, dim_0: str = 'station_time') -> torch.Tensor:
     """

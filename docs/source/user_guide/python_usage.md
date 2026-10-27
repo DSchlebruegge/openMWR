@@ -95,19 +95,29 @@ models also require loss weights. See {py:class}`openMWR.models.Model` and
 {py:class}`openMWR.train.TrainingWorkflow` for direct construction and custom
 hyperparameters. Recipe-based construction keeps more choices together in one file.
 
-## Evaluate a retrieval
+## Evaluate retrievals
 
 ```python
-from openMWR.evaluation import evaluate_retrieval, write_report
+from openMWR.evaluation import (
+    EvaluationRecipe, evaluate, save_evaluation, load_evaluation,
+)
 
-analysis = evaluate_retrieval(".", "my_site", "NN_example")
-report_path = write_report(analysis)
+recipe = EvaluationRecipe.load(".", "my_site", "radiosonde")
+recipe.values["observations"]["start_date"] = "2025-01-01"
+analysis = evaluate(recipe, retrievals=["NN_example", "MLR_example"])
+directory = save_evaluation(analysis)
+
+restored = load_evaluation(directory)
+errors = restored.evaluations[0].metrics["errors"]
+temperature_rmse = errors.T.sel(error="RMSE")
 ```
 
-The evaluation uses the recipe's data and selection settings, as the command
-does. The returned object contains numerical comparisons for custom analysis.
-Writing the HTML report is a separate step. See
-[Retrieval Analysis](retrieval_analysis.ipynb) for plotting examples.
+The command uses this same engine and recipe. `evaluate()` returns xarray
+metrics without saving a report. `save_evaluation()` writes `report.html` and
+`metrics.nc` together in a new directory. Reload them to make custom plots
+without running inference again. The metadata records effective settings and
+input identities. See [Retrieval Analysis](retrieval_analysis.ipynb) for plotting
+examples.
 
 ## Predict and plot
 

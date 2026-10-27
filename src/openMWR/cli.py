@@ -13,7 +13,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog='openMWR', description='Build datasets and run retrieval tasks in an openMWR working project.')
     commands = parser.add_subparsers(dest='command', required=True)
-    create = commands.add_parser('create-site', help='Create site settings, radiosonde dataset recipes and an example retrieval.')
+    create = commands.add_parser('create-site', help='Create site settings, dataset, retrieval and evaluation recipes.')
     create.add_argument('site', metavar='SITE', help='New site name under sites/.')
     create.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     data = commands.add_parser('data', help='Create or update named datasets.')
@@ -33,49 +33,37 @@ def main(argv=None):
     dates.add_argument('-s', '--start-date', type=date.fromisoformat, help='First UTC day of an inclusive range, YYYY-MM-DD.')
     predict.add_argument('-e', '--end-date', type=date.fromisoformat, help='Last UTC day; required with --start-date.')
     predict.add_argument('-o', '--output-dir', type=Path, help='Output root, relative to project-dir or absolute; replaces the selected daily files.')
-    for command, help_text in (
-        ('train', 'Train from a named recipe, optimizing when it defines a parameter search.'),
-        ('evaluate', 'Evaluate a saved retrieval and write a portable HTML report.'),
-    ):
-        sub = commands.add_parser(command, help=help_text)
-        sub.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
-        sub.add_argument('site', metavar='SITE', help='Site name under sites/.')
-        sub.add_argument('retrieval', metavar='RETRIEVAL', help='Directory name under sites/<site>/retrieval/.')
-        sub.add_argument('-D', '--device', default='auto', help='PyTorch device: auto selects CUDA, then MPS, then CPU (default: auto).')
-        if command == 'train':
-            sub.add_argument('-t', '--n-trials', type=int, help='Override the trial count when the recipe defines a parameter search.')
-            mode = sub.add_mutually_exclusive_group()
-            mode.add_argument('-f', '--fresh', dest='run_mode', action='store_const', const='fresh', help="Replace only this retrieval's model and optimization study.")
-            mode.add_argument('-c', '--continue', dest='run_mode', action='store_const', const='continue', help='Add trials to this retrieval\'s existing optimization study.')
-        sub.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization or evaluation.')
-        sub.add_argument('--dataset', help='Override the named analysis dataset for optimization or evaluation.')
-        sub.add_argument('-s', '--start-date', help='First observation day for optimization or evaluation, YYYY-MM-DD; fitting/test periods come from the split recipe.')
-        sub.add_argument('-e', '--end-date', help='Last observation day for optimization or evaluation, YYYY-MM-DD (inclusive).')
-        sub.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'), help='Inclusive observation day-of-month range (1 31 selects all days).')
-        if command == 'evaluate':
-            for kind in ('observation', 'test'):
-                sub.add_argument(f'--{kind}-height-range', nargs='+', metavar='HEIGHT', help='Profile height bounds in metres (MIN MAX), or model for the complete model grid.')
-            sub.add_argument('--station-id', help='Radiosonde station ID; required when the analysis dataset has multiple stations.')
-            sub.add_argument('-o', '--output', type=Path, help='New HTML file (default: dated report in the retrieval evaluation/ directory).')
+    train = commands.add_parser('train', help='Train from a named recipe, optimizing when it defines a parameter search.')
+    train.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
+    train.add_argument('site', metavar='SITE', help='Site name under sites/.')
+    train.add_argument('retrieval', metavar='RETRIEVAL', help='Directory name under sites/<site>/retrieval/.')
+    train.add_argument('-D', '--device', default='auto', help='PyTorch device: auto selects CUDA, then MPS, then CPU (default: auto).')
+    train.add_argument('-t', '--n-trials', type=int, help='Override the trial count when the recipe defines a parameter search.')
+    mode = train.add_mutually_exclusive_group()
+    mode.add_argument('-f', '--fresh', dest='run_mode', action='store_const', const='fresh', help="Replace only this retrieval's model and optimization study.")
+    mode.add_argument('-c', '--continue', dest='run_mode', action='store_const', const='continue', help="Add trials to this retrieval's existing optimization study.")
+    train.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization.')
+    train.add_argument('--dataset', help='Override the named analysis dataset for optimization.')
+    train.add_argument('-s', '--start-date', help='First observation day for optimization, YYYY-MM-DD. Fitting/test periods come from the split recipe.')
+    train.add_argument('-e', '--end-date', help='Last observation day for optimization, YYYY-MM-DD (inclusive).')
+    train.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'), help='Inclusive observation day-of-month range (1 31 selects all days).')
+    evaluate = commands.add_parser('evaluate', help='Compare saved retrievals using a named evaluation recipe.')
+    evaluate.add_argument('site', metavar='SITE')
+    evaluate.add_argument('evaluation', metavar='EVALUATION', help='Recipe name under sites/<site>/evaluations/.')
+    evaluate.add_argument('-p', '--project-dir', type=Path, default=Path('.'))
+    evaluate.add_argument('-r', '--retrieval', nargs='+', metavar='RETRIEVAL', help='Replace the recipe retrieval list for this run.')
+    evaluate.add_argument('-D', '--device', default='auto', help='PyTorch device (default: auto).')
+    evaluate.add_argument('-o', '--output-dir', type=Path, help='New directory for report.html and metrics.nc.')
     for name in ('data', 'train', 'evaluate', 'predict'):
         commands.choices[name].add_argument('-b', '--background', action='store_true',
             help='Run detached from the terminal and append console output to the task log.')
     args = parser.parse_args(argv)
     if args.command == 'data' and args.background and args.dry_run:
         parser.error('--background cannot be combined with --dry-run.')
-    if args.command in ('train', 'evaluate'):
+    if args.command == 'train':
         selection = {key: getattr(args, key) for key in ('start_date', 'end_date') if getattr(args, key) is not None}
         if args.days_of_month is not None:
             selection['days_of_month'] = dict(zip(('first', 'last'), args.days_of_month))
-    if args.command == 'evaluate':
-        for key in ('observation_height_range', 'test_height_range'):
-            value = getattr(args, key)
-            if value is not None:
-                try:
-                    value = 'model' if value == ['model'] else [float(bound) for bound in value]
-                except ValueError:
-                    parser.error(f'--{key.replace("_", "-")} requires MIN MAX or model.')
-                setattr(args, key, value)
     if args.command == 'predict':
         if args.date is not None and args.end_date is not None:
             parser.error('--end-date requires --start-date.')
@@ -129,13 +117,12 @@ def main(argv=None):
             if failed:
                 parser.exit(1, 'Prediction incomplete; see the reported dates/groups. Successful output was saved.\n')
         elif args.command == 'evaluate':
-            from openMWR.evaluation import evaluate_retrieval, write_report
-            options = {key: getattr(args, key) for key in ('data_source', 'station_id', 'dataset', 'observation_height_range', 'test_height_range')}
-            options.update(selection)
-            if args.output is not None and args.output.exists():
-                raise FileExistsError(f'Report already exists: {args.output}. Choose a new filename.')
-            report = evaluate_retrieval(args.project_dir, args.site, args.retrieval, device=args.device, **options)
-            print(write_report(report, args.output))
+            from openMWR.evaluation import EvaluationRecipe, evaluate, save_evaluation
+            if args.output_dir is not None and args.output_dir.exists():
+                raise FileExistsError(f'Evaluation output already exists: {args.output_dir}. Choose a new directory.')
+            recipe = EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
+            result = evaluate(recipe, retrievals=args.retrieval, device=args.device)
+            print(save_evaluation(result, args.output_dir))
         else:
             from openMWR.train import TrainingWorkflow
             workflow = TrainingWorkflow.from_recipe(args.project_dir, args.site, args.retrieval, args.device)
