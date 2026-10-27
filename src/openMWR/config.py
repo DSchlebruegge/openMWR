@@ -1,9 +1,10 @@
 """Shared configuration checks, independent of recipes and workflow execution."""
 
 from difflib import get_close_matches
-from datetime import date
+from datetime import date, datetime
 import math
 from numbers import Integral, Real
+import re
 import tomllib
 
 from openMWR.paths import project_root
@@ -169,22 +170,46 @@ def check_analysis(settings):
         raise ValueError('analysis.required_observations must not be empty.')
 
 
-def check_invalid_measurements(periods):
-    """Validate optional site-wide invalid measurement periods in UTC."""
-    if not isinstance(periods, list):
+def check_invalid_measurements(rules):
+    """Validate variable-specific rules containing UTC dates or exact intervals."""
+    if not isinstance(rules, list):
         raise ValueError('invalid_measurements must be an array of tables.')
-    for period in periods:
+    for rule in rules:
         label = 'invalid_measurements'
-        check_keys(period, ('variables', 'start_date', 'end_date', 'reason'), label)
-        require_keys(period, ('variables', 'start_date'), label)
-        if any(period[key] is None for key in ('start_date', 'end_date') if key in period):
-            raise ValueError(f'{label}: date bounds must be quoted ISO dates.')
-        check_time_selection(period, label)
-        check_strings(period['variables'], f'{label}.variables')
-        if not period['variables']:
+        check_keys(rule, ('variables', 'periods', 'reason'), label)
+        require_keys(rule, ('variables', 'periods'), label)
+        check_strings(rule['variables'], f'{label}.variables')
+        if not rule['variables']:
             raise ValueError(f'{label}.variables must not be empty.')
-        if 'reason' in period and not isinstance(period['reason'], str):
+        if 'reason' in rule and not isinstance(rule['reason'], str):
             raise ValueError(f'{label}.reason must be text.')
+        if not isinstance(rule['periods'], list) or not rule['periods']:
+            raise ValueError(f'{label}.periods must be a non-empty array of tables.')
+        label += '.periods'
+        for period in rule['periods']:
+            check_keys(period, ('start_date', 'end_date', 'start_time', 'end_time'), label)
+            if any(key in period for key in ('start_time', 'end_time')):
+                if any(key in period for key in ('start_date', 'end_date')):
+                    raise ValueError(f'{label}: use either date bounds or time bounds, without mixing them.')
+                require_keys(period, ('start_time',), label)
+                bounds = {}
+                for key in ('start_time', 'end_time'):
+                    if key not in period:
+                        continue
+                    value = period[key]
+                    try:
+                        if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z', value):
+                            raise ValueError
+                        bounds[key] = datetime.fromisoformat(value)
+                    except ValueError:
+                        raise ValueError(f'{label}.{key} must be a quoted UTC timestamp (YYYY-MM-DDTHH:MM:SS[.ffffff]Z).') from None
+                if 'end_time' in bounds and bounds['start_time'] >= bounds['end_time']:
+                    raise ValueError(f'{label}.start_time must be before the exclusive end_time.')
+            else:
+                require_keys(period, ('start_date',), label)
+                if any(period[key] is None for key in ('start_date', 'end_date') if key in period):
+                    raise ValueError(f'{label}: date bounds must be quoted ISO dates.')
+                check_time_selection(period, label)
 
 
 def check_infrared(settings):

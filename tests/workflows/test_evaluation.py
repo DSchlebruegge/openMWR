@@ -30,7 +30,7 @@ def save_fixed(model, root):
 
 def comparison_project(root):
     create_site('test', root, mwr_height=550, invalid_measurements=[{
-        'variables': ['surface_p'], 'start_date': '2024-01-22', 'end_date': '2024-01-22'}])
+        'variables': ['surface_p'], 'periods': [{'start_date': '2024-01-22', 'end_date': '2024-01-22'}]}])
     times = np.arange('2024-01-20', '2024-01-24', dtype='datetime64[D]')
     heights = np.array([0., 1000.])
     frequencies = np.array([22.24, 31.4])

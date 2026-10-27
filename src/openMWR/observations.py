@@ -6,15 +6,24 @@ import xarray as xr
 from openMWR.config import check_invalid_measurements
 
 
-def mask_invalid_measurements(data, periods, *, time='time'):
-    """Mask declared variables over inclusive UTC date ranges, retaining other data."""
-    check_invalid_measurements(periods)
+def mask_invalid_measurements(data, rules, *, time='time'):
+    """Mask each rule's variables over the union of its declared UTC periods."""
+    check_invalid_measurements(rules)
     result = data.copy()
-    for period in periods:
-        invalid = result[time] >= np.datetime64(period['start_date'])
-        if 'end_date' in period:
-            invalid = invalid & (result[time] < np.datetime64(period['end_date']) + np.timedelta64(1, 'D'))
-        for name in period['variables']:
+    for rule in rules:
+        invalid = xr.zeros_like(result[time], dtype=bool)
+        for period in rule['periods']:
+            if 'start_time' in period:
+                # Dataset times are UTC without a timezone. Validation requires Z.
+                selected = result[time] >= np.datetime64(period['start_time'][:-1])
+                if 'end_time' in period:
+                    selected = selected & (result[time] < np.datetime64(period['end_time'][:-1]))
+            else:
+                selected = result[time] >= np.datetime64(period['start_date'])
+                if 'end_date' in period:
+                    selected = selected & (result[time] < np.datetime64(period['end_date']) + np.timedelta64(1, 'D'))
+            invalid = invalid | selected
+        for name in rule['variables']:
             if name in result.data_vars:
                 result[name] = result[name].where(~invalid)
     return result
@@ -63,15 +72,15 @@ def load_analysis_dataset(project_dir, site, dataset, *, bls=False):
         exclude_rain = recipe.values['analysis']['exclude_rain']
         if exclude_rain:
             required = [*required, 'rain_flag']
-    periods = get_invalid_measurements(site, project_dir)
-    measured = mask_invalid_measurements(data.sel(data_source='hatpro', drop=True), periods)
+    rules = get_invalid_measurements(site, project_dir)
+    measured = mask_invalid_measurements(data.sel(data_source='hatpro', drop=True), rules)
     if 'old_time' in measured:
-        measured = mask_invalid_measurements(measured, periods, time='old_time')
+        measured = mask_invalid_measurements(measured, rules, time='old_time')
     valid = valid_observation_times(measured, required)
     if exclude_rain and 'rain_flag' in measured:
         dry = measured.rain_flag == 0.0
         valid = valid & dry.all([dim for dim in dry.dims if dim not in ('time', 'station')])
-    affected = {name for period in periods for name in period['variables']}
+    affected = {name for rule in rules for name in rule['variables']}
     if required and not bool(valid.all()):
         # Exclude individual station/time pairs as well as wholly invalid times.
         # A model without the failed sensor must not reuse these analysis pairs.

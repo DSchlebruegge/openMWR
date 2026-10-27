@@ -167,8 +167,7 @@ def test_prediction_without_weather_keeps_other_products_and_reuses_loaded_obser
         config.write_text(config.read_text() + '''
 [[invalid_measurements]]
 variables = ["surface_T", "surface_p", "surface_rh"]
-start_date = "2024-01-01"
-end_date = "2024-01-01"
+periods = [{ start_date = "2024-01-01", end_date = "2024-01-01" }]
 reason = "Station unavailable"
 ''')
     observations = import_hatpro_data(datetime(2024, 1, 1), 'test', prediction_project,

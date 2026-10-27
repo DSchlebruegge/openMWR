@@ -430,8 +430,7 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_
     site.write_text(site.read_text() + '''
 [[invalid_measurements]]
 variables = ["surface_p"]
-start_date = "2020-01-01"
-end_date = "2020-01-01"
+periods = [{ start_date = "2020-01-01", end_date = "2020-01-01" }]
 ''')
     recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r17'},
            analysis={'required_observations': ['TB', 'surface_p']})

@@ -92,14 +92,34 @@ Record known sensor failures in `site.toml`, using openMWR variable names:
 ```toml
 [[invalid_measurements]]
 variables = ["surface_T", "surface_p", "surface_rh"]
-start_date = "2025-01-12"
-end_date = "2025-01-14"
 reason = "Weather station unavailable"
+periods = [
+    { start_date = "2025-01-12", end_date = "2025-01-14" },
+]
 ```
 
-Dates are inclusive UTC days. Omit `end_date` for an ongoing failure. Loading
-masks these variables before averaging and retains other measurements. Original
-files are preserved.
+Dates are inclusive UTC days. Omit `end_date` for an ongoing failure.
+For part of a day, use quoted UTC timestamps instead:
+
+```toml
+[[invalid_measurements]]
+variables = ["TB_IR"]
+reason = "IR sensor unavailable"
+periods = [
+    { start_time = "2025-01-12T10:15:30Z", end_time = "2025-01-12T10:40:00Z" },
+    { start_time = "2025-01-13T08:00:00Z", end_time = "2025-01-13T08:30:00Z" },
+]
+```
+
+The start is included and the end is excluded. Timestamps require `Z` for UTC
+and can include up to six fractional-second digits. Omit `end_time` for an
+ongoing failure. Use either date bounds or timestamp bounds within each period.
+List periods sharing the same variables and reason in one entry. Add another
+entry for a different sensor or fault.
+
+Loading masks these variables before averaging and retains other measurements.
+Original files are preserved. Fault detection and the choice of intervals belong
+in the working project.
 
 Analysis recipes list `required_observations`. Matched samples need finite values
 in each listed variable. Optimization, evaluation and OMB analysis also apply
