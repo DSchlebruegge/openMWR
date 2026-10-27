@@ -114,6 +114,8 @@ def test_model_can_explicitly_inherit_dataset_grids_and_omit_dropout(tmp_path):
 @pytest.mark.parametrize(('section', 'setting', 'value', 'message'), [
     (None, 'retrievals', ['example', 'example'], 'duplicates'),
     (None, 'schema_version', 2, 'schema_version'),
+    (None, 'bls_baseline', 'missing', 'must name a retrieval in retrievals'),
+    (None, 'bls_baseline', '../example', 'without directory separators'),
     ('observations', 'data_source', 'other', 'radiosonde or era5'),
     ('observations', 'height_range', None, 'Missing observations settings'),
     ('observations', 'variables', ['TB', 'T'], 'TB separately'),

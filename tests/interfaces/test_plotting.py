@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from openMWR.plot import SkewT, load_radiosonde_profile, plot_err, plot_scatter_lwp
+from openMWR.evaluation import _profile_figure
 
 
 def errors():
@@ -68,6 +69,25 @@ def test_missing_lwp_still_produces_a_figure():
     plot_scatter_lwp(predicted, reference, figure=figure, show=False)
     assert len(figure.axes) == 2
     assert figure.axes[0].lines[0].get_xdata().size == 0
+
+
+def test_report_error_axes_distinguish_signed_errors_from_nonnegative_errors():
+    profiles = errors().assign(T=lambda ds: -ds.T)
+    spectral = xr.Dataset({'TB': (('model', 'frq'), [[-1., 2.]])},
+                          coords={'model': ['test'], 'frq': [22.24, 31.4]})
+    for data, dimension in [(profiles, 'height'), (spectral, 'frq')]:
+        for metric in ('RMSE', 'MAE', 'ME', 'Relative RMSE'):
+            figure = _profile_figure(abs(data) if metric in ('RMSE', 'MAE') else data,
+                                     metric, {'test': 'blue'})
+            for ax in figure.axes:
+                if metric in ('RMSE', 'MAE'):
+                    assert len(ax.lines) == 1
+                    assert (ax.get_xlim() if dimension == 'height' else ax.get_ylim())[0] == 0
+                else:
+                    assert len(ax.lines) == 2
+                    zero_line = ax.lines[-1]
+                    np.testing.assert_array_equal(
+                        zero_line.get_xdata() if dimension == 'height' else zero_line.get_ydata(), [0, 0])
 
 
 def test_radiosonde_selection_and_reusing_a_profile_without_file_reads(tmp_path):

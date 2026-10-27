@@ -24,7 +24,7 @@ they do not establish infrared numerical accuracy.
 | `workflows/test_datasets.py` | Build/update/rebuild, dependency sharing, calendar membership, readiness and recovery |
 | `workflows/test_training.py` | Fixed training, Python/command equivalence, held-out fit, reproducibility and saved settings |
 | `workflows/test_optimization.py` | Searches, scoring, OMB/bias preparation, continuation, reproducibility and safe replacement |
-| `workflows/test_evaluation.py` | Common-sample comparisons, coverage, explicit selections and portable HTML/NetCDF results |
+| `workflows/test_evaluation.py` | Separate zenith/BLS groups, rescored baselines, coverage, explicit selections and portable HTML/NetCDF results |
 | `workflows/test_prediction.py` | Applying saved models, smoothing, grouped daily outputs and missing observations |
 | `science/test_observations.py` | Variable validity, UTC period bounds, independent station samples and matching across outages |
 | `interfaces/test_devices.py` | Automatic device priority, explicit overrides and hardware availability |

@@ -108,7 +108,8 @@ analysis = evaluate(recipe, retrievals=["NN_example", "MLR_example"])
 directory = save_evaluation(analysis)
 
 restored = load_evaluation(directory)
-errors = restored.evaluations[0].metrics["errors"]
+zenith = next(case for case in restored.evaluations if case.key == "zenith_observations")
+errors = zenith.metrics["errors"]
 temperature_rmse = errors.T.sel(error="RMSE")
 ```
 
@@ -116,8 +117,10 @@ The command uses this same engine and recipe. `evaluate()` returns xarray
 metrics without saving a report. `save_evaluation()` writes `report.html` and
 `metrics.nc` together in a new directory. Reload them to make custom plots
 without running inference again. The metadata records effective settings and
-input identities. See [Retrieval Analysis](retrieval_analysis.ipynb) for plotting
-examples.
+input identities. Result keys are `zenith_observations`, `zenith_test`,
+`bls_observations` and `bls_test` for the groups and inputs present in the recipe.
+A configured `bls_baseline` has separate scores in each group. See
+[Retrieval Analysis](retrieval_analysis.ipynb) for plotting examples.
 
 ## Predict and plot
 

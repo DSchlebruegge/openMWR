@@ -406,10 +406,16 @@ The command prints a new directory under `sites/my_site/evaluations/radiosonde/`
 Open its `report.html` in a browser. `metrics.nc` contains the same numerical
 results for [Python analysis](python_usage.md#evaluate-retrievals).
 
-All selected models use the explicitly chosen test dataset. Scores compare
-common finite samples for each variable and height. Coverage tables show how
-many profiles each model could process and how many remain for scoring.
-The selected model grids must agree within the evaluation height range.
+All selected models use the explicitly chosen test dataset. Zenith and BLS
+models have separate report sections. Scores compare common finite samples
+within each group for each variable and height. Coverage tables show how many
+profiles each model could process and how many remain for scoring. Model grids
+must agree within each group over the selected evaluation height range.
+
+After training a BLS model, add it to `retrievals` to include its comparison.
+Optionally add `bls_baseline = "NN_example"` at the top of the evaluation recipe
+to show that selected zenith model alongside the BLS models. Its scores are
+recalculated on the BLS comparison's common cases.
 
 Measurement comparison and simulated test performance answer different questions.
 The latter does not measure performance on the instrument's observations.

@@ -1,6 +1,8 @@
 schema_version = 1
 retrievals = ["NN_example"]
-# Add other trained profile retrieval names to compare them on common samples.
+# Add other trained profile retrieval names. Zenith and BLS are scored separately.
+# To compare a selected zenith model alongside BLS models, uncomment:
+# bls_baseline = "NN_example"
 
 [observations]
 dataset = "analysis_radiosonde"

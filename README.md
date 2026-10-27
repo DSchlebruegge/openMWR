@@ -609,15 +609,35 @@ Run `openMWR evaluate munich_G5 radiosonde`. Add `--retrieval NN_example` to
 select one model without editing the comparison. Omit `[observations]` or `[test]`
 when only one comparison is needed. Each section explicitly selects reference
 data and variables. Profile `height_range` uses metres above the instrument,
-or `"model"` for the whole model grid. All selected models must share that grid,
-which the reference data must cover. Spectral comparisons use `variables = ["TB"]`
+or `"model"` for the whole model grid. Models in each comparison group must share
+that grid, which the reference data must cover. Spectral comparisons use `variables = ["TB"]`
 without a height range.
 
-Scores use common finite reference/prediction pairs across selected retrievals,
-separately for each variable and level. Adding a model can therefore change the
-scored samples. Coverage tables show availability before and after this selection.
+Zenith and BLS models are grouped automatically from their saved settings.
+Each group has its own observation and simulated-test results. Scores use common
+finite reference/prediction pairs within that group, separately for each variable
+and level. Missing scans do not reduce the zenith comparison's samples. Coverage
+tables show availability before and after common-pair selection.
+
+To include a selected zenith model in the BLS comparison, add this at the top of
+the recipe, before `[observations]`:
+
+```toml
+bls_baseline = "NN_example"
+```
+
+The baseline must be a selected zenith profile retrieval. It keeps its zenith
+inputs and is rescored against the BLS reference cases using common valid pairs.
+Its scores can differ between groups. Both groups use the same engine, with
+predictions calculated once per model and input section. `--retrieval` restricts
+all selected models, including the baseline. To retain it, include its name.
+
 No common pairs gives an unavailable score. RPG products can be included with
 `observations.include_rpg = true`. The scan product contributes temperature only.
+Both groups use zenith RPG as the relative-RMSE reference, recalculated on each
+group's common pairs. This also requires the zenith analysis file for BLS-only
+comparisons. Mean retrieved LWP is a separate diagnostic over shared finite
+predictions, without an LWP reference.
 
 The command prints a new run directory under `sites/<site>/evaluations/<name>/`.
 It contains a portable `report.html` and grouped numerical results in `metrics.nc`,

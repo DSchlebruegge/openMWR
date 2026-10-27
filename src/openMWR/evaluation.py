@@ -1,6 +1,7 @@
 """Named evaluation recipes, common-sample comparisons and portable results."""
 
 import base64
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -34,6 +35,7 @@ from openMWR.provenance import checkpoint_id, plain_value, software_identity, ta
 from openMWR.xr_utils import load_combined_dataset
 
 logger = logging.getLogger(__name__)
+MODE_TITLES = {'zenith': 'Zenith', 'bls': 'Boundary layer scan'}
 VARIABLE_LABELS = {
     'T': 'Temperature [K]', 'rh': 'Relative humidity [%]',
     'lwc': 'Liquid water content [g/m³]', 'lwp': 'Liquid water path [g/m²]',
@@ -66,7 +68,7 @@ class EvaluationRecipe:
     def validate(self):
         check_name(self.site, 'site')
         check_name(self.name, 'evaluation')
-        check_keys(self.values, ('schema_version', 'retrievals', 'observations', 'test'), 'evaluation recipe')
+        check_keys(self.values, ('schema_version', 'retrievals', 'bls_baseline', 'observations', 'test'), 'evaluation recipe')
         if type(self.values.get('schema_version')) is not int or self.values['schema_version'] != 1:
             raise ValueError('Evaluation schema_version must be 1.')
         check_strings(self.values.get('retrievals'), 'retrievals')
@@ -74,6 +76,10 @@ class EvaluationRecipe:
             raise ValueError('Select at least one retrieval.')
         for name in self.values['retrievals']:
             check_name(name, 'retrieval')
+        if 'bls_baseline' in self.values:
+            check_name(self.values['bls_baseline'], 'bls_baseline')
+            if self.values['bls_baseline'] not in self.values['retrievals']:
+                raise ValueError('bls_baseline must name a retrieval in retrievals.')
         if not {'observations', 'test'} & self.values.keys():
             raise ValueError('Configure [observations], [test], or both.')
         for section in ('observations', 'test'):
@@ -119,6 +125,7 @@ class EvaluationRecipe:
 @dataclass
 class Evaluation:
     key: str
+    mode: str
     title: str
     error_types: tuple[str, ...]
     samples: dict
@@ -202,27 +209,66 @@ def _reference_grid(models, reference, variables, settings):
     return reference.reset_coords(drop=True)
 
 
-def _evaluate_case(recipe, section, settings, models, device, inputs, notes):
+def _check_references(reference, other):
+    try:
+        xr.merge([reference, other], join='outer', compat='no_conflicts')
+    except xr.MergeError as exc:
+        raise ValueError('Zenith and scan analysis files disagree on reference values. Prepare consistent analysis datasets.') from exc
+
+
+def _rpg_predictions(mode, settings, models, observations, reference):
+    """Prepare vendor products on the comparison grid with consistent references."""
+    predictions = {}
+    variables = settings['variables']
+    for product_mode in (('zenith', 'bls') if mode == 'bls' else ('zenith',)):
+        name = 'RPG_BLS' if product_mode == 'bls' else 'RPG'
+        data = observations[product_mode]
+        product = data.sel(data_source='hatpro', drop=True)
+        available = ((set(variables) | {'lwp'}) & set(product)) - ({'rh', 'lwc', 'lwp', 'iwv'} if product_mode == 'bls' else set())
+        if not set(variables) & available:
+            continue
+        if product_mode != mode:
+            other = _reference_grid(models, data.sel(data_source=settings['data_source'], drop=True), variables, settings)
+            _check_references(reference, other)
+        pred = product[sorted(available)].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims}).reset_coords(drop=True)
+        predictions[name] = pred.expand_dims(model=[name])
+    if not predictions:
+        raise ValueError(f'No requested RPG outputs in {settings["dataset"]}. Disable observations.include_rpg.')
+    return predictions
+
+
+def _predict_cases(recipe, section, settings, groups, device, inputs):
     variables = settings['variables']
     logger.info('%s: dataset %s, variables %s.', section, settings['dataset'], ', '.join(variables))
-    predictions, references, supported = [], [], {}
+    cases = {}
     test_data = None
-    if section == 'test':
+    observations = {}
+    if section == 'observations':
+        for mode, group in groups.items():
+            # Scan comparisons also need zenith RPG, even without a zenith model.
+            if not group and not (mode == 'zenith' and settings.get('include_rpg')):
+                continue
+            path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls')
+            inputs[path] = checkpoint_id(path)
+            data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls')
+            data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
+            if settings['data_source'] == 'radiosonde':
+                data = _select_station(data, settings.get('station_id'), path)
+            if mode == 'zenith' and 'ang' in data.dims:
+                data = data.sel(ang=90, drop=True)
+            observations[mode] = data
+    else:
         for source in settings['sources']:
             path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], source, split='test')
             inputs[path] = checkpoint_id(path)
         test_data = load_combined_dataset(recipe.site, recipe.project_dir, 'test', settings['sources'], dataset=settings['dataset'])
-    for bls in (False, True):
-        group = [model for model in models if model.is_bls_model == bls]
+    for mode, group in groups.items():
         if not group:
             continue
+        bls = mode == 'bls'
+        predictions, supported = [], {}
         if section == 'observations':
-            path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], bls=bls)
-            inputs[path] = checkpoint_id(path)
-            data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=bls)
-            data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
-            if settings['data_source'] == 'radiosonde':
-                data = _select_station(data, settings.get('station_id'), path)
+            data = observations[mode]
             measured = data.sel(data_source='hatpro', drop=True)
             reference = data.sel(data_source=settings['data_source'], drop=True)
         else:
@@ -233,41 +279,32 @@ def _evaluate_case(recipe, section, settings, models, device, inputs, notes):
             reference = reference.sel(ang=90, drop=True)
         if not reference.sizes.get('time', 0):
             raise ValueError(f'No {section} samples remain after selection.')
-        reference = _reference_grid(models, reference, variables, settings)
-        references.append(reference)
+        reference = _reference_grid(group, reference, variables, settings)
         for model in group:
             logger.info('Predicting %s for %s.', model.name, section)
-            optimization = (model.training_metadata or {}).get('setup', {}).get('optimization')
-            if section == 'observations' and optimization:
-                selection = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
-                if isinstance(selection.get('days_of_month'), list):
-                    selection['days_of_month'] = dict(zip(('first', 'last'), selection['days_of_month']))
-                overlap = bool(select_time(reference, **selection).sizes['time'])
-                notes[model.name].append(
-                    f"Optimized against {optimization.get('data_source', 'an unrecorded reference')}. "
-                    f"Optimization selection: {_observation_note(selection)} "
-                    + ('Selected evaluation dates overlap this selection.' if overlap else 'Selected evaluation dates are outside this selection.'))
+            outputs = list(variables)
+            if section == 'observations' and 'lwp' in model.output and 'lwp' not in outputs:
+                outputs.append('lwp')
             valid = validate_model_data(model.input, measured, f'{section} inputs for {model.name}', require_samples=False)
             if bool(valid.any()):
                 pred = run_model_list([model], measured, device, include_input_vars=False)
-                pred = pred[variables].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims})
             else:
-                pred = xr.full_like(reference, np.nan).expand_dims(model=[model.name])
+                pred = xr.full_like(model.output[outputs], np.nan, dtype=float).expand_dims(
+                    model=[model.name], **{dim: reference[dim] for dim in ('time', 'station') if dim in reference.dims})
+            pred = pred[outputs].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims})
             predictions.append(pred.reset_coords(drop=True))
-            supported[model.name] = set(variables)
+            supported[model.name] = set(outputs)
         if section == 'observations' and settings.get('include_rpg'):
-            name = 'RPG_BLS' if bls else 'RPG'
-            available = (set(variables) & set(measured)) - ({'rh', 'lwc', 'lwp', 'iwv'} if bls else set())
-            if not available:
-                raise ValueError(f'No requested RPG outputs in {settings["dataset"]}. Disable observations.include_rpg.')
-            pred = measured[sorted(available)].sel({dim: reference[dim] for dim in ('height', 'frq') if dim in reference.dims}).reset_coords(drop=True)
-            predictions.append(pred.expand_dims(model=[name]))
-            supported[name] = available
-    try:
-        reference = xr.merge(references, join='outer', compat='no_conflicts')
-    except xr.MergeError as exc:
-        raise ValueError('Zenith and scan analysis files disagree on reference values. Prepare consistent analysis datasets.') from exc
-    pred = xr.concat(predictions, dim='model', join='outer')
+            for name, pred in _rpg_predictions(mode, settings, group, observations, reference).items():
+                predictions.append(pred)
+                supported[name] = set(pred.data_vars)
+        cases[mode] = (reference, xr.concat(predictions, dim='model', join='outer'), supported)
+    return cases
+
+
+def _score_case(mode, section, settings, pred, reference, supported):
+    """Apply the same common-pair selection and metrics to each comparison group."""
+    variables = settings['variables']
     # Retain the full reference cohort, including cases a model could not process.
     pred = pred.reindex({dim: reference[dim] for dim in ('time', 'station') if dim in reference.dims})
     available = _paired_profiles(pred, reference, variables)
@@ -289,18 +326,32 @@ def _evaluate_case(recipe, section, settings, models, device, inputs, notes):
         metrics['mame'] = np.abs(profiles.sel(error='ME', drop=True)).mean('height')
     if 'lwp' in variables:
         metrics['lwp_scatter'] = xr.Dataset({'predicted_lwp': scored.lwp, 'reference_lwp': truth.lwp})
-    if section == 'observations' and 'RPG' in pred.model.values and profiles.data_vars:
-        rpg = profiles.sel(model='RPG')
-        relative = ((profiles - rpg) / rpg.where(rpg != 0) * 100).sel(error='RMSE', drop=True)
+    if section == 'observations' and 'lwp' in pred:
+        names = [name for name, outputs in supported.items() if 'lwp' in outputs]
+        lwp = pred.lwp.sel(model=names)
+        lwp = lwp.where(np.isfinite(lwp).all('model'))
+        dimensions = [dim for dim in ('time', 'station') if dim in lwp.dims]
+        mean = lwp.mean(dimensions)
+        mean.attrs = {'units': 'g/m²'}
+        metrics['mean_lwp'] = xr.Dataset({'lwp': mean, 'profiles': lwp.count(dimensions)})
+    if section == 'observations' and 'RPG' in supported and profiles.data_vars:
+        rpg_variables = [name for name in profiles if name in supported['RPG']]
+        rpg_profiles = profiles[rpg_variables]
+        rpg = rpg_profiles.sel(model='RPG')
+        relative = ((rpg_profiles - rpg) / rpg.where(rpg != 0) * 100).sel(error='RMSE', drop=True)
         for values in relative.values():
             values.attrs = {'units': '%'}
         metrics.update(relative_rmse_profiles=relative, relative_rmse=relative.mean('height'))
     # Dataset attributes from source files belong in run metadata, not metrics.
     for values in metrics.values():
         values.attrs = {}
+    for key in ('relative_rmse', 'relative_rmse_profiles'):
+        if key in metrics:
+            metrics[key].attrs['reference'] = 'zenith RPG'
     note = (_observation_note(settings) if section == 'observations' else f"Explicit test dataset: {settings['dataset']}. Sources: {', '.join(settings['sources'])}.")
-    note += ' Scores use common finite reference/prediction pairs across participating retrievals, separately for each variable and level. No reference interpolation is performed.'
-    return Evaluation(section, 'Observations' if section == 'observations' else 'Simulated test data', error_types, _sample_summary(reference), metrics, note)
+    note += ' Scores use common finite reference/prediction pairs within this comparison group, separately for each variable and level. No reference interpolation is performed.'
+    title = f"{MODE_TITLES[mode]} · {'Observations' if section == 'observations' else 'Simulated test data'}"
+    return Evaluation(f'{mode}_{section}', mode, title, error_types, _sample_summary(reference), metrics, note)
 
 
 def _model_notes(model, recipe):
@@ -316,7 +367,11 @@ def _model_notes(model, recipe):
 
 def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
     """Evaluate a named comparison without training, downloading or saving results."""
-    settings = {**recipe.values, 'retrievals': list(retrievals) if retrievals is not None else recipe.values['retrievals']}
+    settings = deepcopy(recipe.values)
+    if retrievals is not None:
+        settings['retrievals'] = list(retrievals)
+        if settings.get('bls_baseline') not in settings['retrievals']:
+            settings.pop('bls_baseline', None)
     recipe = EvaluationRecipe(project_root(recipe.project_dir), recipe.site, recipe.name, settings).validate()
     with task_log(evaluation_dir(recipe.project_dir, recipe.site, recipe.name) / 'evaluation.log'):
         started = utc_now()
@@ -325,14 +380,54 @@ def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
         models = [load_model(name, recipe.site, recipe.project_dir) for name in settings['retrievals']]
         if len({'TB' in model.output for model in models}) > 1:
             raise ValueError('Evaluate spectral and profile retrievals in separate recipes.')
+        groups = {mode: [model for model in models if model.is_bls_model == (mode == 'bls')]
+                  for mode in MODE_TITLES}
+        baseline_name = settings.get('bls_baseline')
+        baseline = next((model for model in models if model.name == baseline_name), None)
+        if baseline is not None and (baseline.is_bls_model or 'TB' in baseline.output):
+            raise ValueError('bls_baseline must be a zenith profile retrieval.')
+        if not groups['bls']:
+            settings.pop('bls_baseline', None)
+            baseline = None
         configuration = [site_config_file(recipe.project_dir, recipe.site)]
         configuration += [dataset_recipe_file(recipe.project_dir, recipe.site, settings[key]['dataset'])
                           for key in ('observations', 'test') if key in settings]
         inputs = {path: checkpoint_id(path) for path in configuration if path.is_file()}
         notes = {model.name: _model_notes(model, recipe) for model in models}
         logger.info('Evaluating %s with retrievals %s.', recipe.name, ', '.join(settings['retrievals']))
-        evaluations = [_evaluate_case(recipe, key, settings[key], models, device, inputs, notes)
-                       for key in ('observations', 'test') if key in settings]
+        evaluations = {mode: [] for mode in MODE_TITLES}
+        for section in ('observations', 'test'):
+            if section not in settings:
+                continue
+            selection = settings[section]
+            cases = _predict_cases(recipe, section, selection, groups, device, inputs)
+            for mode, group in groups.items():
+                if not group:
+                    continue
+                reference, predicted, supported = cases[mode]
+                compared = group
+                if mode == 'bls' and baseline is not None:
+                    compared = [baseline, *group]
+                    reference = _reference_grid(compared, reference, selection['variables'], selection)
+                    zenith_reference, zenith_predictions, zenith_supported = cases['zenith']
+                    _check_references(reference, zenith_reference)
+                    baseline_rows = [baseline.name]
+                    predicted = xr.concat([zenith_predictions.sel(model=baseline_rows), predicted], dim='model', join='outer')
+                    supported = {**{name: zenith_supported[name] for name in baseline_rows}, **supported}
+                if section == 'observations':
+                    for model in compared:
+                        optimization = (model.training_metadata or {}).get('setup', {}).get('optimization')
+                        if optimization:
+                            dates = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
+                            if isinstance(dates.get('days_of_month'), list):
+                                dates['days_of_month'] = dict(zip(('first', 'last'), dates['days_of_month']))
+                            overlap = bool(select_time(reference, **dates).sizes['time'])
+                            notes[model.name].append(
+                                f"{MODE_TITLES[mode]} observations: optimized against {optimization.get('data_source', 'an unrecorded reference')}. "
+                                f"Optimization selection: {_observation_note(dates)} "
+                                + ('Selected evaluation dates overlap this selection.' if overlap else 'Selected evaluation dates are outside this selection.'))
+                evaluations[mode].append(_score_case(mode, section, selection, predicted, reference, supported))
+        evaluations = [case for group in evaluations.values() for case in group]
         metadata = dict(site=recipe.site, evaluation=recipe.name, project_dir=str(recipe.project_dir),
                         started_utc=started, finished_utc=utc_now(), settings=plain_value(settings),
                         device=device, device_name=device_name(device), code=software_identity(),
@@ -360,9 +455,9 @@ def save_evaluation(analysis, output_dir=None):
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix='.evaluation-', dir=output_dir.parent))
     try:
-        sections = [dict(key=e.key, title=e.title, error_types=e.error_types, samples=e.samples,
+        sections = [dict(key=e.key, mode=e.mode, title=e.title, error_types=e.error_types, samples=e.samples,
                          note=e.note, metrics=list(e.metrics)) for e in analysis.evaluations]
-        xr.Dataset(attrs={'format_version': 1, 'metadata': json.dumps(plain_value(meta)),
+        xr.Dataset(attrs={'format_version': 2, 'metadata': json.dumps(plain_value(meta)),
                           'sections': json.dumps(plain_value(sections))}).to_netcdf(temporary / 'metrics.nc')
         for evaluation in analysis.evaluations:
             for name, values in evaluation.metrics.items():
@@ -380,7 +475,7 @@ def load_evaluation(directory):
     """Reload numerical results and metadata for Python analysis or report rendering."""
     path = Path(directory) / 'metrics.nc'
     with xr.open_dataset(path) as root:
-        if root.attrs.get('format_version') != 1:
+        if root.attrs.get('format_version') != 2:
             raise ValueError(f'Unsupported evaluation result format: {path}.')
         metadata = json.loads(root.attrs['metadata'])
         sections = json.loads(root.attrs['sections'])
@@ -418,11 +513,15 @@ def _profile_figure(ds, metric, colors):
             ax.set_ylabel('Height above instrument [km]')
             if metric in ('RMSE', 'MAE'):
                 ax.set_xlim(left=0)
+            else:
+                ax.axvline(0, color='black', linewidth=0.8)
         else:
             ax.set_xlabel('Frequency [GHz]')
             ax.set_ylabel(f'{metric}: {VARIABLE_LABELS.get(variable, variable)}')
             if metric in ('RMSE', 'MAE'):
                 ax.set_ylim(bottom=0)
+            else:
+                ax.axhline(0, color='black', linewidth=0.8)
         ax.legend()
         ax.grid()
     return figure
@@ -491,13 +590,21 @@ def render_report(analysis):
     parts.append(
         "<p>ME is prediction minus reference. MAME is the mean absolute vertical "
         "mean error. Summary errors for profile variables aggregate over time, stations "
-        "(where present) and height; vertical error profiles aggregate over time and "
-        "stations. Scores use the same finite pairs for all participating retrievals in each variable and level. No common pairs means an unavailable score.</p>"
+        "(where present) and height. Vertical error profiles aggregate over time and "
+        "stations. Zenith and scan retrievals are scored separately. Within each group, scores use the same finite pairs for all participating retrievals in each variable and level. No common pairs means an unavailable score.</p>"
     )
+    current_mode = None
     for evaluation in analysis.evaluations:
-        parts.append(
-            f'<section id="{evaluation.key}"><h2>{escape(evaluation.title)}</h2>'
-        )
+        if evaluation.mode != current_mode:
+            if current_mode is not None:
+                parts.append('</section>')
+            current_mode = evaluation.mode
+            parts.append(f'<section id="mode-{current_mode}"><h2>{MODE_TITLES[current_mode]} retrievals</h2>')
+            baseline = meta['settings'].get('bls_baseline')
+            if current_mode == 'bls' and baseline:
+                parts.append(f'<p>Zenith baseline: {escape(baseline)}. Its scores are recalculated on this group’s common valid cases and can differ from its zenith results.</p>')
+        case_title = evaluation.title.split(' · ', 1)[1]
+        parts.append(f'<section id="{evaluation.key}"><h3>{escape(case_title)}</h3>')
         parts.append(_samples_html(evaluation.samples))
         if evaluation.note:
             parts.append(f"<p>{escape(evaluation.note)}</p>")
@@ -513,11 +620,14 @@ def render_report(analysis):
         )
         if "mean_lwp" in evaluation.metrics:
             parts.append(
-                "<h3>Mean retrieved LWP</h3>" + _table(evaluation.metrics["mean_lwp"])
+                "<h4>Mean retrieved LWP</h4>"
+                "<p>Mean over common finite LWP predictions in this group. This is a diagnostic, "
+                "without an LWP reference.</p>"
+                + _table(evaluation.metrics["mean_lwp"], labels={**VARIABLE_LABELS, 'profiles': 'Profiles'})
             )
         for metric in evaluation.error_types:
             parts.append(
-                f"<h3>{metric}</h3>"
+                f"<h4>{metric}</h4>"
                 + _table(evaluation.metrics["errors"].sel(error=metric, drop=True))
             )
             profile_errors = evaluation.metrics["error_profiles"]
@@ -528,12 +638,16 @@ def render_report(analysis):
             if figure is not None:
                 parts.append(_figure_html(figure, f'{evaluation.title}: {metric}'))
             if metric == "ME" and "mame" in evaluation.metrics:
-                parts.append("<h4>MAME</h4>" + _table(evaluation.metrics["mame"]))
+                parts.append("<h5>MAME</h5>" + _table(evaluation.metrics["mame"]))
         if "relative_rmse" in evaluation.metrics:
+            rpg_reference = evaluation.metrics['relative_rmse'].attrs.get('reference')
+            if not rpg_reference:
+                raise ValueError(f'Missing relative RMSE reference for {evaluation.key}. Rebuild the evaluation.')
             parts.append(
-                "<h3>Relative RMSE to RPG [%]</h3><p>Differences are calculated at each height, "
-                "then averaged over height. Negative values indicate a smaller RMSE than RPG. "
-                "A zero RPG RMSE gives an undefined relative difference.</p>"
+                f"<h4>Relative RMSE to {escape(rpg_reference)} [%]</h4><p>The reference is scored "
+                "on this group's common pairs. Differences are calculated at each height, "
+                f"then averaged over height. Negative values indicate a smaller RMSE than {escape(rpg_reference)}. "
+                "A zero reference RMSE gives an undefined relative difference.</p>"
                 + _table(evaluation.metrics["relative_rmse"], labels={})
             )
             parts.append(
@@ -543,7 +657,7 @@ def render_report(analysis):
                         "Relative RMSE",
                         colors,
                     ),
-                    "Relative RMSE to RPG [%]",
+                    f"Relative RMSE to {rpg_reference} [%]",
                 )
             )
         if "monthly_temperature_rmse" in evaluation.metrics:
@@ -562,7 +676,7 @@ def render_report(analysis):
             ax.grid()
             fig.autofmt_xdate()
             parts.append(
-                "<h3>Monthly temperature RMSE</h3>"
+                "<h4>Monthly temperature RMSE</h4>"
                 + _figure_html(
                     fig,
                     "Mean of per-profile temperature RMSE",
@@ -570,8 +684,7 @@ def render_report(analysis):
             )
         parts.append("</section>")
 
-    parts.append("<h2>Individual retrievals</h2>")
-    scatter = next((e for e in analysis.evaluations if 'lwp_scatter' in e.metrics), None)
+    parts.append("</section><h2>Individual retrievals</h2>")
     for i, model in enumerate(meta["models"]):
         name = model["name"]
         parts.append(
@@ -593,14 +706,12 @@ def render_report(analysis):
                 float_format=lambda value: f"{value:.4g}", na_rep="—", border=0
             )
         )
-        if scatter is not None and name in scatter.metrics['lwp_scatter'].model.values:
-            parts.append(
-                _figure_html(
-                    _scatter_figure(scatter.metrics['lwp_scatter'], name),
-                    f"{scatter.title}: full range and LWP zoom",
-                    fmt="png",
-                )
-            )
+        for evaluation in analysis.evaluations:
+            scatter = evaluation.metrics.get('lwp_scatter')
+            if scatter is not None and name in scatter.model.values:
+                parts.append(_figure_html(
+                    _scatter_figure(scatter, name),
+                    f"{evaluation.title}: full range and LWP zoom", fmt="png"))
         details = json.dumps(model, indent=2, ensure_ascii=False)
         parts.append(
             f"<details><summary>Checkpoint identifier</summary><pre>{escape(details)}</pre></details></section>"
