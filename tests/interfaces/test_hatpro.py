@@ -61,36 +61,53 @@ def test_modes_select_and_clean_only_their_daily_files(site, monkeypatch):
     assert set(out_dir.iterdir()) == {out_dir / "zenith.nc", bls_file}
 
 
-def test_daily_and_update_duplicates_keep_original_first_values(site, monkeypatch):
+def test_overlapping_days_and_updates_keep_first_values_with_missing_profiles(site, monkeypatch):
     project_dir, out_dir, today = site
+    first_day = today - pd.Timedelta(days=2)
     yesterday = today - pd.Timedelta(days=1)
     updating = False
 
     def create_day(date, bls, suffix, site, project_dir, out_dir, import_retrieval_data):
         if updating:
             times = [today, today + pd.Timedelta(hours=12), today + pd.Timedelta(hours=18)]
-            values = [32, 33, 34]
+            values = [42, 43, 44]
+        elif date == first_day:
+            times = [first_day, first_day + pd.Timedelta(hours=12), yesterday]
+            values = [10, 11, 12]
         elif date == yesterday:
             times = [yesterday, yesterday + pd.Timedelta(hours=12), today]
-            values = [10, 11, 12]
+            values = [22, 23, 24]
         else:
             times = [today, today + pd.Timedelta(hours=12)]
-            values = [22, 23]
-        daily_dataset(times, values, bls).to_netcdf(
+            values = [32, 33]
+        data = daily_dataset(times, values, bls)
+        if date != today:
+            data = data.assign_coords(height=[0., 1000.])
+            data['T'] = (('time', 'height'), np.full((len(times), 2),
+                                                   280. if date == first_day else 281.))
+        data.to_netcdf(
             out_dir / f"hatpro_data{suffix}_{date:%Y%m%d}.nc"
         )
 
     monkeypatch.setattr(hatpro_data, "_create_hatpro_day_file", create_day)
-    hatpro_data.create_hatpro_dataset("test", project_dir)
+    # Directory entries need not be in date order.
+    original_glob = hatpro_data.glob.glob
+    monkeypatch.setattr(hatpro_data.glob, 'glob', lambda pattern: original_glob(pattern)[::-1])
+    hatpro_data.create_hatpro_dataset("test", project_dir, start_date=str(first_day.date()))
     with xr.open_dataset(out_dir / "zenith.nc") as initial:
-        assert initial.TB.sel(time=today).item() == 12
+        np.testing.assert_array_equal(initial.TB.values[:, 0], [10, 11, 12, 23, 24, 33])
+        np.testing.assert_array_equal(initial.T.sel(time=yesterday), [280., 280.])
+        assert np.isnan(initial.T.sel(time=today + pd.Timedelta(hours=12))).all()
 
     updating = True
     hatpro_data.create_hatpro_dataset("test", project_dir, update_only=True)
-    with xr.open_dataset(out_dir / "zenith.nc") as updated:
-        np.testing.assert_array_equal(updated.TB.values[:, 0], [10, 11, 12, 23, 34])
-        assert updated.indexes["time"].is_unique
-        assert updated.indexes["time"].is_monotonic_increasing
+    for name in ('zenith.nc', 'bls.nc'):
+        with xr.open_dataset(out_dir / name) as updated:
+            values = updated.TB.isel(ang=0) if 'ang' in updated.TB.dims else updated.TB
+            np.testing.assert_array_equal(values.values[:, 0], [10, 11, 12, 23, 24, 33, 44])
+            assert updated.indexes["time"].is_unique
+            assert updated.indexes["time"].is_monotonic_increasing
+            assert np.isnan(updated.T.sel(time=today + pd.Timedelta(hours=18))).all()
 
 
 def test_combined_failure_propagates_and_preserves_existing_update(site, monkeypatch):

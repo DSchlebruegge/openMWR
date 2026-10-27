@@ -461,7 +461,7 @@ def create_hatpro_dataset(
 
             logger.info(f'Finished creating daily files for Hatpro data with BLS: {bls}')
 
-            files = glob.glob(str(hatpro_out_dir / daily_pattern))
+            files = sorted(glob.glob(str(hatpro_out_dir / daily_pattern)))
 
             if len(files) == 0:
                 logger.info(f'No Hatpro daily files created for site {site} with BLS: {bls}')
@@ -472,9 +472,12 @@ def create_hatpro_dataset(
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
 
+            # Days can overlap and contain different optional RPG products.
             with xr.open_mfdataset(
                 files,
-                combine='by_coords',
+                combine='nested',
+                concat_dim='time',
+                coords='minimal',
                 join='outer',
                 compat='no_conflicts',
             ) as ds_hatpro_new:
@@ -482,7 +485,10 @@ def create_hatpro_dataset(
 
                 if update_only_bls:
                     with xr.open_dataset(combined_file) as ds_hatpro_old:
-                        ds_hatpro = xr.concat([ds_hatpro_old, ds_hatpro], dim='time').drop_duplicates(dim='time').sortby("time")
+                        ds_hatpro = xr.concat(
+                            [ds_hatpro_old, ds_hatpro], dim='time', coords='minimal',
+                            join='outer', compat='no_conflicts',
+                        ).drop_duplicates(dim='time').sortby("time")
                         _set_time_encoding_to_seconds(ds_hatpro)
                         ds_hatpro.to_netcdf(tmp_file)
                 else:
