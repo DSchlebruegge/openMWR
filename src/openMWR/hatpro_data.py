@@ -12,11 +12,12 @@ from openMWR.utils import (
     progress_log,
 )
 from openMWR.parallel import run_pool_date_range
-from openMWR.xr_utils import change_coord_of_ds, swap_dims_and_rename, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
+from openMWR.xr_utils import change_coord_of_ds, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
 from openMWR.site import get_config_parameter, get_invalid_measurements
 from openMWR.paths import dataset_dir, dataset_file
 from openMWR.observations import mask_invalid_measurements
+from openMWR.hatpro_io import load_hatpro_day
 
 logger = logging.getLogger(__name__)
 
@@ -100,106 +101,6 @@ def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
 
     return ds
 
-def _get_naming_convention(ds_BRT: xr.Dataset) -> tuple[dict[str, str], dict[str, str]]:
-    """
-    Identify the variable and dimension naming convention used by RPG files.
-
-    Parameters
-    ----------
-    ds_BRT : xr.Dataset
-        Brightness temperature dataset used to inspect software version
-        attributes.
-
-    Returns
-    -------
-    tuple[dict[str, str], dict[str, str]]
-        Mapping dictionaries `(var_names, dim_names)` where keys are openMWR
-        internal names (e.g., `TB`, `surface_p`, `frequencie_dim`) and values
-        are the corresponding names in the input dataset.
-
-    Notes
-    -----
-    The function expects either `radiometer_software_version` or
-    `Radiometer_Software_Version` to be present in `ds_BRT.attrs`.
-    """
-
-    if 'radiometer_software_version' in ds_BRT.attrs:  # Different naming convention from v10+; check attribute capitalization
-        var_names = {'TB': 'TBs',
-                    'surface_p': 'env_pressure',
-                    'surface_T': 'env_temperature',
-                    'surface_rh': 'env_relative_humidity',
-                    'TB_IR': 'IRR_data',
-                    'rain_flag': 'rain_flag',
-                    'azimuth_angle': 'azimuth_angle',
-                    'elevation_angle': 'elevation_angle',
-                    'lwp': 'LWP_data',
-                    'lwc': 'liquid_water_profiles',
-                    'T': 'temperature_profiles',
-                    'ah': 'Absolute_Humidity_Profiles',
-                    'rh': 'relative_humidity_profiles',
-                    'iwv': 'IWV_data',
-        }
-        dim_names = {
-            'altitude_dim': 'number_altitude_layers',
-            'altitude_var': 'altitude_layers',
-            'frequencie_dim': 'number_frequencies',
-            'frequencie_var': 'frequencies',
-            'scan_angles_dim': 'number_scan_angles',
-            'scan_angles_var': 'elevation_scan_angles',
-        }
-
-    elif 'Radiometer_Software_Version' in ds_BRT.attrs:
-        var_names = {'TB': 'TBs',
-                    'surface_p': 'Surf_P',
-                    'surface_T': 'Surf_T',
-                    'surface_rh': 'Surf_RH',
-                    'TB_IR': 'IRR_Map',
-                    'rain_flag': 'RF',
-                    'azimuth_angle': 'AziAng',
-                    'elevation_angle': 'ElAng',
-                    'lwp': 'LWP',
-                    'lwc': 'LWC_prof',
-                    'T': 'T_prof',
-                    'ah': 'AH_Prof',
-                    'rh': 'RH_prof',
-                    'iwv': 'IWV',
-        }
-        dim_names = {
-            'altitude_dim': 'altitude_layer',
-            'altitude_var': 'altitude',
-            'frequencie_dim': 'number_frequencies',
-            'frequencie_var': 'Freq',
-            'scan_angles_dim': 'number_scan_angles',
-            'scan_angles_var': 'ElAngs',
-        }
-    return var_names, dim_names
-
-
-
-def _load_daily_files(files, *, decode_timedelta):
-    """Retain usable observations when an auxiliary sensor file is unavailable."""
-    datasets = {}
-    for suffix, path in files.items():
-        optional = suffix in ('MET', 'IRT')
-        if optional and not os.path.exists(path):
-            logger.warning('Optional HATPRO input is missing: %s', path)
-            continue
-        try:
-            datasets[suffix] = xr.load_dataset(path, decode_timedelta=decode_timedelta).drop_duplicates('time')
-        except (OSError, ValueError) as exc:
-            if not optional:
-                raise
-            logger.warning('Optional HATPRO input is unreadable: %s: %s', path, exc)
-    return datasets
-
-
-def _surface_meteorology(data, names, periods):
-    """Normalize and mask available surface observations before time matching."""
-    variables = {names[key]: key for key in ('surface_p', 'surface_T', 'surface_rh')
-                 if names[key] in data}
-    return mask_invalid_measurements(data[list(variables)].rename(variables), periods)
-
-
 def import_hatpro_data(
     date: Union[datetime, pd.Timestamp],
     site: str,
@@ -215,7 +116,9 @@ def import_hatpro_data(
     ----------
     date : datetime or pandas.Timestamp
         Date used to construct RPG file paths like
-        `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>.NC`.
+        `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>[.NC]`.
+        The site hatpro_format selects auto, netcdf or binary observations.
+        RPG retrieval products require NetCDF in either mode.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
     project_dir : str
@@ -250,74 +153,28 @@ def import_hatpro_data(
     - IR brightness temperatures are converted to Kelvin.
     - A standard frequency grid is enforced if unexpected values are found.
     """
-    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
     periods = get_invalid_measurements(site, project_dir)
-
-    file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
-
-    file_suffixes = ["BRT", "MET", "IRT"]
+    products = ['BRT', 'MET', 'IRT']
     if import_retrieval_data:
-        file_suffixes += ["LWP", "LPR", "TPC", "HPC", "IWV"]
-
-    # Build file paths
-    files = {suffix: f"{file_base}.{suffix}.NC" for suffix in file_suffixes}
-
-    datasets = _load_daily_files(files, decode_timedelta=True)
-
-    ds_BRT = datasets["BRT"]
-
-    var_names, dim_names = _get_naming_convention(ds_BRT)
-
-    ds_BRT = swap_dims_and_rename(ds_BRT, old_dim=dim_names['frequencie_dim'], old_var=dim_names['frequencie_var'], new_dim="frq")
-    ds_BRT = ds_BRT[[var_names['TB'], var_names['rain_flag'], var_names['azimuth_angle'], var_names['elevation_angle']]]
-    ds_BRT[var_names['rain_flag']] = ds_BRT[var_names['rain_flag']].astype("float64")
-
-    ds_BRT["frq"] = ds_BRT["frq"].astype("float64").round(2)
+        products += ['LWP', 'LPR', 'TPC', 'HPC', 'IWV']
+    datasets = load_hatpro_day(date, site, project_dir, products)
+    ds_BRT = datasets['BRT']
+    ds_BRT['rain_flag'] = ds_BRT.rain_flag.astype('float64')
+    ds_BRT['frq'] = ds_BRT.frq.astype('float64').round(2)
     frq = np.array([22.24,23.04,23.84,25.44,26.24,27.84,31.40,51.26,52.28,53.86,54.94,56.66,57.30,58.00])
-    if not np.array_equal(ds_BRT["frq"].values, frq):
-        logger.error(f'Frequency variable has unexpected values: {ds_BRT["frq"].values}. Using standard frequencies.')
-        ds_BRT["frq"] = frq
+    if not np.array_equal(ds_BRT.frq.values, frq):
+        logger.error('Frequency variable has unexpected values: %s. Using standard frequencies.', ds_BRT.frq.values)
+        ds_BRT['frq'] = frq
 
-    ds_MET = _surface_meteorology(datasets["MET"], var_names, periods) if "MET" in datasets else None
-
+    ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
     extra = []
-    if "IRT" in datasets:
-        ds_IRT = datasets["IRT"][var_names['TB_IR']].isel(number_wavelength=0)
-        ds_IRT = ds_IRT + 273.15
-        ds_IRT.attrs["units"] = "K"
-        extra.append(ds_IRT)
-
+    if 'IRT' in datasets:
+        extra.append(datasets['IRT'].TB_IR.isel(wavelength=0, drop=True))
     if import_retrieval_data:
-        ds_LWP = datasets["LWP"]
-        ds_LPR = datasets["LPR"]
-        ds_TPC = datasets["TPC"]
-        ds_HPC = datasets["HPC"]
-        ds_IWV = datasets["IWV"]
-
-        ds_LWP = ds_LWP[var_names['lwp']]
-
-        ds_IWV = ds_IWV[var_names['iwv']]
-
-        ds_LPR = swap_dims_and_rename(ds_LPR, old_dim=dim_names['altitude_dim'], old_var=dim_names['altitude_var'], new_dim="height_lwc")
-        ds_LPR = ds_LPR[var_names['lwc']]
-
-        ds_TPC = swap_dims_and_rename(ds_TPC, old_dim=dim_names['altitude_dim'], old_var=dim_names['altitude_var'], new_dim="height")
-        ds_TPC = ds_TPC[var_names['T']]
-
-        ds_HPC = swap_dims_and_rename(ds_HPC, old_dim=dim_names['altitude_dim'], old_var=dim_names['altitude_var'], new_dim="height")
-        ds_HPC = ds_HPC[[var_names['ah'], var_names['rh']]]
-
-        # Merge datasets into a single dataset
-        ds_hatpro = xr.merge([ds_BRT, *extra, ds_LWP, ds_LPR, ds_TPC, ds_HPC, ds_IWV], join='outer')
-    else:
-        ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
-
-    # Add the nearest surface met data in time
+        extra.extend(datasets[key] for key in ('LWP', 'LPR', 'TPC', 'HPC', 'IWV'))
+    ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro = add_variables_at_closest_time(ds_hatpro, ds_MET, max_diff=2)
-
-    # Rename variables
-    ds_hatpro = ds_hatpro.rename({v: k for k, v in var_names.items() if v in ds_hatpro})
     ds_hatpro = mask_invalid_measurements(ds_hatpro, periods)
 
     # Filter
@@ -364,7 +221,9 @@ def import_hatpro_data_bls(
     ----------
     date : datetime or pandas.Timestamp
         Date used to construct RPG file paths like
-        `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>.NC`.
+        `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>[.NC]`.
+        The site hatpro_format selects auto, netcdf or binary observations.
+        RPG retrieval products require NetCDF in either mode.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
     project_dir : str
@@ -395,81 +254,34 @@ def import_hatpro_data_bls(
     -----
     - A standard elevation angle grid and frequency grid are enforced if
       unexpected values are found.
-    - The smallest elevation angle (0 deg) is dropped after sorting.
+    - The reader excludes the NetCDF surface-temperature channel from scan angles.
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
-    hatpro_data_dir = get_config_parameter(site, 'hatpro_data_dir', project_dir)
     periods = get_invalid_measurements(site, project_dir)
-
-    file_base = f"{hatpro_data_dir}/{date:Y%Y/M%m/D%d}/{date:%y%m%d}"
-
-    file_suffixes = ["MET", "BLB"]
-    if import_retrieval_data:
-        file_suffixes += ["TPB"]
-
-    # Build file paths
-    files = {suffix: f"{file_base}.{suffix}.NC" for suffix in file_suffixes}
-
-    datasets = _load_daily_files(files, decode_timedelta=None)
-
-    ds_MET = datasets.get("MET")
-    ds_BLB = datasets["BLB"]
-
-    if import_retrieval_data:
-        ds_TPB = datasets["TPB"]
-
-    var_names, dim_names = _get_naming_convention(ds_BLB)
-    if ds_MET is not None:
-        ds_MET = _surface_meteorology(ds_MET, var_names, periods)
-        if mean_one_min:
-            ds_MET = mean_n_min(ds_MET, 1)
-
-    ds_BLB = swap_dims_and_rename(ds_BLB, old_dim=dim_names['frequencie_dim'], old_var=dim_names['frequencie_var'], new_dim="frq")
-    ds_BLB = swap_dims_and_rename(ds_BLB, old_dim=dim_names['scan_angles_dim'], old_var=dim_names['scan_angles_var'], new_dim='ang')
-
-    ds_BLB["ang"] = ds_BLB["ang"].astype("float64").round(2)
-    ang = np.array([90.0, 30.0, 19.2, 14.4, 11.4, 8.4, 6.6, 5.4, 4.8, 4.2, 0])
-    if len(ds_BLB["ang"].values) != len(ang):
-        raise ValueError(f'Elevation angle variable for BLS has unexpected length: {len(ds_BLB["ang"].values)}. Expected: {len(ang)}.')
-    if not np.array_equal(ds_BLB["ang"].values, ang):
-        logger.error(f'Elevation angle variable for BLS has unexpected values: {ds_BLB["ang"].values}. Using standard angles.')
-        ds_BLB["ang"] = ang
-
-
-    ds_BLB["frq"] = ds_BLB["frq"].astype("float64").round(2)
+    products = ['MET', 'BLB'] + (['TPB'] if import_retrieval_data else [])
+    datasets = load_hatpro_day(date, site, project_dir, products)
+    ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
+    if ds_MET is not None and mean_one_min:
+        ds_MET = mean_n_min(ds_MET, 1)
+    ds_BLB = datasets['BLB']
+    ds_BLB['ang'] = ds_BLB.ang.astype('float64').round(2)
+    ang = np.array([90.0, 30.0, 19.2, 14.4, 11.4, 8.4, 6.6, 5.4, 4.8, 4.2])
+    if ds_BLB.sizes['ang'] != len(ang):
+        raise ValueError(f"Elevation angle variable for BLS has unexpected length: {ds_BLB.sizes['ang']}. Expected: {len(ang)} scan angles.")
+    if not np.array_equal(ds_BLB.ang.values, ang):
+        logger.error('Elevation angle variable for BLS has unexpected values: %s. Using standard angles.', ds_BLB.ang.values)
+        ds_BLB['ang'] = ang
+    ds_BLB['frq'] = ds_BLB.frq.astype('float64').round(2)
     frq = np.array([22.24,23.04,23.84,25.44,26.24,27.84,31.40,51.26,52.28,53.86,54.94,56.66,57.30,58.00])
-    if not np.array_equal(ds_BLB["frq"].values, frq):
-        logger.error(f'Frequency variable for BLS has unexpected values: {ds_BLB["frq"].values}. Using standard frequencies.')
-        ds_BLB["frq"] = frq
-
-    if 'AzAng' in ds_BLB:
-        ds_BLB = ds_BLB.rename({'AzAng' :var_names['azimuth_angle']})
-
-    ds_BLB = ds_BLB[[var_names['TB'], var_names['rain_flag'], var_names['azimuth_angle']]]
-    ds_BLB[var_names['rain_flag']] = ds_BLB[var_names['rain_flag']].astype("float64")
-
+    if not np.array_equal(ds_BLB.frq.values, frq):
+        logger.error('Frequency variable for BLS has unexpected values: %s. Using standard frequencies.', ds_BLB.frq.values)
+        ds_BLB['frq'] = frq
+    ds_BLB['rain_flag'] = ds_BLB.rain_flag.astype('float64')
     ds_BLB = ds_BLB.sortby('ang')
-    ds_BLB = ds_BLB.sel(ang=slice(1, None))
-
-    if import_retrieval_data:
-        ds_TPB = swap_dims_and_rename(ds_TPB, old_dim=dim_names['altitude_dim'], old_var=dim_names['altitude_var'], new_dim="height")
-        ds_TPB = ds_TPB[var_names['T']]
-
-        ds_hatpro_bls = xr.merge([ds_BLB, ds_TPB], join='outer')
-    else:
-        ds_hatpro_bls = ds_BLB
-
-    # Add the nearest surface met data in time
+    ds_hatpro_bls = xr.merge([ds_BLB, datasets['TPB']], join='outer') if import_retrieval_data else ds_BLB
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro_bls = add_variables_at_closest_time(ds_hatpro_bls, ds_MET, max_diff=2)
-
-    # Rename variables
-    ds_hatpro_bls = ds_hatpro_bls.rename({v: k for k, v in var_names.items() if v in ds_hatpro_bls})
     ds_hatpro_bls = mask_invalid_measurements(ds_hatpro_bls, periods)
-
-    # Filter
-    #ds_hatpro_bls = ds_hatpro_bls.where(ds_hatpro_bls['azimuth_angle'].round(0) == 0., drop=True)
-
 
     if import_retrieval_data and 'surface_p' in ds_hatpro_bls and bool(np.isfinite(ds_hatpro_bls.surface_p).any()):
         # Compute pressure from hydrostatic equilibrium

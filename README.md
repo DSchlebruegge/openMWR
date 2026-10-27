@@ -198,6 +198,35 @@ Supported recipe kinds and input roles are:
 | `split` | `simulation` | Required `[split] test_days_of_month`, `validation_days_of_month`; optional `start_date`, `end_date`, `days_of_month` |
 | `analysis` | `observations`: HATPRO, `reference`: simulation | Required `[analysis] max_time_difference_minutes`, `exclude_rain`, `height_range`, `required_observations`. Optional `stations` |
 
+HATPRO inputs use `hatpro_data_dir` from `site.toml`, with daily files such as
+`Y2025/M10/D06/251006.BRT.NC` or `251006.BRT`. The same input settings apply to
+dataset generation and daily prediction:
+
+```toml
+hatpro_format = "auto"
+```
+
+`auto` prefers NetCDF separately for each product and uses binary when that
+NetCDF file is absent. `netcdf` and `binary` require the selected observation
+format. A corrupt selected file does not trigger a switch to another format.
+Missing or unreadable optional MET/IRT inputs are reported and other observations
+remain available. Each daily import logs the selected format for every product.
+Malformed NetCDF files report missing variables or coordinates before processing.
+
+Binary BRT, BLB, MET and IRT observations are decoded by
+[MWRpy](https://github.com/actris-cloudnet/mwrpy) and use the same masking,
+matching and averaging as NetCDF. BLS retrieval inputs use integrated BLB scans.
+The binary BLB product has no explicit azimuth field and omits the 0-degree
+surface-temperature channel that the importer discards from NetCDF.
+RPG retrieval products, including profiles, LWP and IWV, require NetCDF in all
+modes when `import_retrieval_data` is enabled.
+
+Binary timestamps marked as local time require `hatpro_time_offset_hours`, the
+fixed local time minus UTC in hours. For example, `1` converts UTC+01:00 to UTC.
+It is ignored for files already marked as UTC. The reader does not infer a time
+zone or daylight-saving changes. Changing an explicit format or offset requires
+rebuilding existing prepared HATPRO datasets.
+
 Derived recipes inherit their input stations unless selecting a subset.
 Split recipes select their profile pool, then assign whole days to test and
 validation using inclusive monthly ranges. All other days go to training:

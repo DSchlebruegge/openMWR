@@ -15,7 +15,13 @@
 # hatpro_data_dir = "..."
 # mwr_measurement_start_date = "YYYY-MM-DD"
 
-# Optional: include the instrument's own retrieval products in HATPRO datasets.
+# Observation files: "auto" prefers NetCDF per product, then binary.
+# Choose "netcdf" or "binary" to require that format.
+# hatpro_format = "auto"
+# Binary local timestamps need a fixed offset in hours (local time minus UTC).
+# hatpro_time_offset_hours = 1
+
+# Optional: include the instrument's own NetCDF retrieval products in HATPRO datasets.
 # rpg_retrieval_exists = false
 
 # Prediction output defaults to data/sites/<site>/predictions/.

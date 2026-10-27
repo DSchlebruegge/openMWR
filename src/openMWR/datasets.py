@@ -336,8 +336,16 @@ class DatasetWorkflow:
                                 latitude=round(self.site_settings['latitude'] * 4) / 4,
                                 longitude=round(self.site_settings['longitude'] * 4) / 4)
             else:
+                from openMWR.hatpro_io import check_hatpro_format
+
+                format = self.site_settings.get('hatpro_format', 'auto')
+                offset = self.site_settings.get('hatpro_time_offset_hours')
+                check_hatpro_format(format, offset)
                 settings.update(import_retrieval_data=values.get('observations', {}).get('import_retrieval_data', self.site_settings.get('rpg_retrieval_exists', False)),
-                                hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'))
+                                hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'),
+                                hatpro_format=format)
+                if offset is not None:
+                    settings['hatpro_time_offset_hours'] = offset
                 periods = self.site_settings.get('invalid_measurements', [])
                 check_invalid_measurements(periods)
                 if periods:

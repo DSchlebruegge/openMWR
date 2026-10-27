@@ -1,0 +1,178 @@
+{
+  "legacy": {
+    "date": "2020-06-15",
+    "source": "/project/meteo/data/hatpro/Y2020/M06/D15/200615",
+    "products": {
+      "BRT": {
+        "code": 666666,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          129,
+          130,
+          131,
+          1167,
+          1168,
+          1169,
+          2185,
+          2186,
+          2187
+        ],
+        "binary_sha256": "953e70b6b48c7d879b02f039e6b623995fe3de98140f9a064bd8402b8ba4f02e",
+        "netcdf_sha256": "bbcc2f0b59e7bb5eb2c24934b5c3e6fb4c5f9b318e33180d8a08f2a348749c04"
+      },
+      "BLB": {
+        "code": 567845848,
+        "records": [
+          0,
+          1,
+          2
+        ],
+        "binary_sha256": "ce146fd460ee01e1639cc4a7ff98f90a1a30995fb0636937c704406256f49a1d",
+        "netcdf_sha256": "be520a9f016ae51620051f9727462fa0c61ba1573eb3617d2c510cf68a041ff8"
+      },
+      "MET": {
+        "code": 599658944,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          227,
+          228,
+          229,
+          1365,
+          1366,
+          1367,
+          2481,
+          2482,
+          2483
+        ],
+        "binary_sha256": "65b91b89cbb3775bf6ef3b65f13ea1ac52ec04c5ae422ffaf42f64ee43f62940",
+        "netcdf_sha256": "ad81a48004650ee4b52d7b24374d514a78aceb09b673f906f971b757468941ef"
+      },
+      "IRT": {
+        "code": 671112496,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          227,
+          228,
+          229,
+          1365,
+          1366,
+          1367,
+          2481,
+          2482,
+          2483
+        ],
+        "binary_sha256": "0861eb166fe093cf427a1e35344550552fcdd3b3c45841bafe3896c9b908237e",
+        "netcdf_sha256": "3ee29f609255398e3acc1daee6ba75f3ae567ada66e1ba1cf32f145efb16eefc"
+      }
+    }
+  },
+  "modern": {
+    "date": "2025-10-06",
+    "source": "/project/meteo/data/hatpro-g5/Y2025/M10/D06/251006",
+    "products": {
+      "BRT": {
+        "code": 666000,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          739,
+          740,
+          741,
+          1722,
+          1723,
+          1724,
+          2735,
+          2736,
+          2737
+        ],
+        "binary_sha256": "b48b64bba2e34e51edc9020deebdcfeba2c39ae754011d810060971608a0f5e3",
+        "netcdf_sha256": "3b78001d5b0315ec7cc1569eb8f50898e7df56cd431c461fbe8709c232032732"
+      },
+      "BLB": {
+        "code": 567845848,
+        "records": [
+          0,
+          1,
+          2
+        ],
+        "binary_sha256": "4d0607568f668e0a66dc902af1b45e47aae3ce425570eaddbd5407c81e46b3a5",
+        "netcdf_sha256": "bd179bbfb7f19a76b0602d98fb46e93f4780165039e4dd2860b3ac9a2f8ae803"
+      },
+      "MET": {
+        "code": 599658944,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          767,
+          768,
+          769,
+          1897,
+          1898,
+          1899,
+          3036,
+          3037,
+          3038
+        ],
+        "binary_sha256": "2052f252f656ca55ed64005d82085662d5eb6ae284d28172c8ddf437df661b9b",
+        "netcdf_sha256": "7535f783944a23eaddbecb53fbbda0bbde8410fd97182a6ee98b074792e5e843"
+      },
+      "IRT": {
+        "code": 671112000,
+        "records": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          736,
+          737,
+          738,
+          1718,
+          1719,
+          1720,
+          2722,
+          2723,
+          2724
+        ],
+        "binary_sha256": "477f90f608b24a005d11c3bfd636bced24dfa839d9fd9338b0e298b8b9a51e15",
+        "netcdf_sha256": "90bfcdb22969cb62d1be1aa77c9b8a10d0d224cdfd255943f4e1b41d8131963e"
+      }
+    }
+  }
+}

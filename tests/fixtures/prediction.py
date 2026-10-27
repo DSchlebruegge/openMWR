@@ -34,8 +34,10 @@ def raw_day(prediction_project, date, *, bls=True):
         'env_temperature': ('time', 290 + sample / 10),
         'env_relative_humidity': ('time', 50 + sample / 10),
     }, coords={'time': times})
-    irt = xr.Dataset({'IRR_data': (('time', 'number_wavelength'), -20 + sample[:, None])},
-                     coords={'time': times})
+    irt = xr.Dataset({
+        'IRR_data': (('time', 'number_wavelength'), -20 + sample[:, None]),
+        'frequencies': ('number_wavelength', [10.5]),
+    }, coords={'time': times})
     files = {'BRT': brt, 'MET': met, 'IRT': irt}
     if bls:
         scan_times = times[::2]

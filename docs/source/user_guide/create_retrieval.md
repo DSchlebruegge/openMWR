@@ -349,9 +349,17 @@ hatpro_data_dir = "/path/to/hatpro-data"
 mwr_measurement_start_date = "2024-11-01"
 ```
 
-The input root must contain the RPG NetCDF files in folders such as
-`Y2024/M11/D21/`. Set `rpg_retrieval_exists = true` if the instrument's retrieval
-products are also present and should be included for comparison.
+The input root must contain daily RPG files in folders such as
+`Y2024/M11/D21/`, named `241121.BRT.NC` or `241121.BRT`.
+By default, openMWR prefers NetCDF for each observation product and uses binary
+when that NetCDF file is absent. Set `hatpro_format = "netcdf"` or `"binary"`
+in `site.toml` to require one observation format for both datasets and prediction.
+Binary input supports BRT, BLB, MET and IRT. Files marked as local time also need
+`hatpro_time_offset_hours`, the fixed local time minus UTC in hours.
+
+Set `rpg_retrieval_exists = true` if the instrument's own NetCDF retrieval
+products are also present and should be included for comparison. These products
+require NetCDF even when observations use binary.
 `datasets/hatpro.toml` uses the site start and `end_date = "today"`. Set explicit
 dates there to limit the measurement period.
 

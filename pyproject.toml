@@ -25,6 +25,7 @@ dependencies = [
     "suntime",
     "metpy",
     "netCDF4",
+    "mwrpy>=1.7.3,<1.8",
     "dask",
     "tomli-w",
 ]

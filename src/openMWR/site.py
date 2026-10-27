@@ -50,6 +50,15 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
         gen : str
             Generation of the HATPRO microwave radiometer (e.g. ``"G4"``, ``"G5"``).
 
+        hatpro_format : str, optional
+            ``"auto"`` prefers NetCDF observations per product and uses binary
+            when NetCDF is absent. ``"netcdf"`` and ``"binary"`` require that
+            observation format. RPG retrieval products always need NetCDF.
+
+        hatpro_time_offset_hours : float, optional
+            Fixed local time minus UTC in hours for binary files marked as local
+            time. Required for those files. UTC files ignore this offset.
+
         mwr_height : float or int
             Height of the MWR above sea level (in meters).
 
