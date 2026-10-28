@@ -194,6 +194,9 @@ def load_hatpro_day(date, site, project_dir, products):
 
     BRT and BLB are required when requested. Missing or unreadable auxiliary
     sensors and NetCDF RPG retrievals are logged and omitted independently.
+    Discard missing timestamps and dates more than a day outside the file's
+    nominal day before matching or averaging. This tolerance retains midnight
+    overlaps and local-to-UTC shifts. The interval boundaries are included.
     Retain the first duplicate and sort timestamps for matching and averaging.
     """
     root, format, offset = get_config_parameter(site,
@@ -203,6 +206,8 @@ def load_hatpro_day(date, site, project_dir, products):
     if root is None:
         raise ValueError('Set hatpro_data_dir in site.toml before reading HATPRO observations.')
     base = Path(root) / date.strftime('Y%Y/M%m/D%d/%y%m%d')
+    day = np.datetime64(date.strftime('%Y-%m-%d'))
+    earliest, latest = day - np.timedelta64(1, 'D'), day + np.timedelta64(2, 'D')
     datasets = {}
     selected = {}
     for product in products:
@@ -212,7 +217,16 @@ def load_hatpro_day(date, site, project_dir, products):
         path = nc if use_netcdf else binary
         optional = product in _PRODUCT_VARIABLES and product not in ('BRT', 'BLB')
         try:
-            datasets[product] = read_hatpro_file(path, time_offset_hours=offset).drop_duplicates('time').sortby('time')
+            data = read_hatpro_file(path, time_offset_hours=offset)
+            valid = (data.time.values >= earliest) & (data.time.values <= latest)
+            invalid_count = int((~valid).sum())
+            if invalid_count:
+                logger.warning('Discarding %s samples from %s: missing timestamps or timestamps '
+                               'outside [%s, %s].', invalid_count, path, earliest, latest)
+                data = data.isel(time=valid)
+                if not data.sizes['time']:
+                    raise ValueError(f'{path}: no usable timestamps remain in the daily time window.')
+            datasets[product] = data.drop_duplicates('time').sortby('time')
             selected[product] = 'netcdf' if use_netcdf else 'binary'
             logger.debug('Read HATPRO %s from %s', 'NetCDF' if use_netcdf else 'binary', path)
         except (OSError, ValueError) as exc:

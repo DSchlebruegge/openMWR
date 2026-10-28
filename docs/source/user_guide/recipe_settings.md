@@ -114,6 +114,10 @@ angles. `build.log` reports the reason, including missing and measured scan
 angles. Measured angle labels are preserved, and extra angles are retained.
 Zenith and BLS are processed independently.
 
+Daily imports discard missing timestamps and timestamps more than 24 hours
+outside the file's nominal day. This tolerance preserves midnight overlaps and
+local-to-UTC shifts. The log names the file and reports the discarded count.
+
 Binary files marked as local time require `hatpro_time_offset_hours`, a fixed
 local time minus UTC offset. For example, `1` converts UTC+01:00 to UTC. UTC files
 ignore it. The reader does not infer time zones or daylight-saving changes.

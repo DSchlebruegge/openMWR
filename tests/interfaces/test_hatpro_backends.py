@@ -15,7 +15,7 @@ import xarray as xr
 from openMWR.datasets import DatasetWorkflow
 from openMWR import hatpro_data
 from openMWR.hatpro_data import import_hatpro_data, import_hatpro_data_bls
-from openMWR.hatpro_io import read_hatpro_file
+from openMWR.hatpro_io import load_hatpro_day, read_hatpro_file
 from openMWR.predict import PredictionWorkflow
 from openMWR.site import create_site
 from tests.fixtures.prediction import checkpoint
@@ -71,6 +71,80 @@ def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(t
         blb = read_hatpro_file(next(raw.glob(f'*.BLB{suffix}')))
         assert blb.sizes['ang'] == 10 and bool((blb.ang > 0).all())
     assert irt.wavelength.values.tolist() == [10.5]
+
+
+@pytest.mark.parametrize('format', ['netcdf', 'binary'])
+def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps(tmp_path, caplog, format):
+    date, raw = project(tmp_path)
+    configure(tmp_path, hatpro_format=format)
+
+    def append_times(path, times):
+        times = np.asarray(times, dtype='datetime64[ns]')
+        if path.suffix == '.NC':
+            original = xr.load_dataset(path)
+            extra = original.isel(time=[0] * len(times)).assign_coords(time=times)
+            combined = xr.concat([original, extra], dim='time', data_vars='minimal', coords='minimal',
+                                 compat='override')
+            combined.time.encoding = dict(units='seconds since 1970-01-01', dtype='int64',
+                                          _FillValue=np.iinfo('int64').min)
+            combined.to_netcdf(path)
+        else:
+            content = bytearray(path.read_bytes())
+            _, count, _, frequencies = struct.unpack_from('<4i', content)
+            header_size = 16 + 12 * frequencies
+            record_size = 9 + 4 * frequencies
+            record = content[header_size:header_size + record_size]
+            origin = read_hatpro_file(path).time.values[0]
+            original_time, = struct.unpack_from('<i', record)
+            for time in times:
+                struct.pack_into('<i', record, 0, original_time + int((time - origin) / np.timedelta64(1, 's')))
+                content.extend(record)
+            struct.pack_into('<i', content, 4, count + len(times))
+            path.write_bytes(content)
+
+    suffix = '.NC' if format == 'netcdf' else ''
+    brt = next(raw.glob(f'*.BRT{suffix}'))
+    overlaps = [np.datetime64(date) - np.timedelta64(1, 's'),
+                np.datetime64(date + timedelta(days=1)) + np.timedelta64(1, 's')]
+    append_times(brt, overlaps)
+    expected = {importer: importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+                for importer in (import_hatpro_data, import_hatpro_data_bls)}
+    expected_times = read_hatpro_file(brt).drop_duplicates('time').sortby('time').time
+    products = ['BRT', 'BLB', 'MET', 'IRT']
+    for product in products if format == 'netcdf' else ['BRT']:
+        bad_times = ['1940-01-01', '2037-01-01', 'NaT'] if format == 'netcdf' else ['1940-01-01', '2037-01-01']
+        append_times(next(raw.glob(f'*.{product}{suffix}')), bad_times)
+
+    # Check the loader before resampling, so a regression cannot exhaust CI memory.
+    with caplog.at_level('WARNING', logger='openMWR.hatpro_io'):
+        cleaned = load_hatpro_day(date, 'test', tmp_path, products)
+    xr.testing.assert_identical(cleaned['BRT'].time, expected_times)
+    for data in cleaned.values():
+        assert bool(((data.time >= np.datetime64(date - timedelta(days=1))) &
+                     (data.time <= np.datetime64(date + timedelta(days=2)))).all())
+    assert str(brt) in caplog.text and 'Discarding' in caplog.text
+    for importer, original in expected.items():
+        xr.testing.assert_identical(importer(date, 'test', tmp_path,
+            mean_one_min=True, import_retrieval_data=False), original)
+
+
+def test_days_with_only_invalid_timestamps_report_the_file_and_omit_optional_products(tmp_path, caplog):
+    date, raw = project(tmp_path)
+    configure(tmp_path, hatpro_format='netcdf')
+    original = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    for product in ['MET', 'IRT', 'BRT']:
+        path = next(raw.glob(f'*.{product}.NC'))
+        data = xr.load_dataset(path)
+        data.assign_coords(time=np.full(data.sizes['time'], np.datetime64('NaT', 'ns'))).to_netcdf(path)
+        if product == 'BRT':
+            with pytest.raises(ValueError, match='BRT.NC.*no usable timestamps'):
+                load_hatpro_day(date, 'test', tmp_path, ['BRT'])
+        else:
+            assert not load_hatpro_day(date, 'test', tmp_path, [product])
+            result = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+            xr.testing.assert_identical(result.TB, original.TB)
+            assert ('surface_p' if product == 'MET' else 'TB_IR') not in result
+        assert str(path) in caplog.text
 
 
 def test_auto_selects_each_product_and_never_hides_a_broken_selected_file(tmp_path):
@@ -307,6 +381,9 @@ def test_binary_errors_and_local_timestamps_have_explicit_meaning(tmp_path):
     local = read_hatpro_file(path, time_offset_hours=1)
     np.testing.assert_array_equal(local.time, utc.time - np.timedelta64(1, 'h'))
     np.testing.assert_array_equal(local.TB, utc.TB)
+    configure(tmp_path, hatpro_format='binary', hatpro_time_offset_hours=1)
+    xr.testing.assert_identical(load_hatpro_day(date, 'test', tmp_path, ['BRT'])['BRT'],
+                                local.drop_duplicates('time').sortby('time'))
     path.write_bytes(original)
     xr.testing.assert_identical(read_hatpro_file(path, time_offset_hours=1), utc)
 
