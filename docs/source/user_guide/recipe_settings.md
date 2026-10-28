@@ -262,4 +262,5 @@ score.
 
 Each run saves `report.html` and `metrics.nc` together in a new directory. Results
 record effective settings, input and checkpoint hashes and software identity.
+All report figures are embedded SVG vector graphics.
 Changing a retrieval recipe does not change a saved model's inference settings.

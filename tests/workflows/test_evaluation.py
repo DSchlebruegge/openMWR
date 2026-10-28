@@ -1,5 +1,9 @@
 """Saved fixed models exercise the complete comparison and publication workflow."""
 
+import base64
+import re
+from xml.etree import ElementTree
+
 import numpy as np
 import pytest
 import torch
@@ -150,7 +154,14 @@ def test_separate_groups_rescore_baseline_and_roundtrip_without_changing_inputs(
     directory = save_evaluation(result)
     assert {path.name for path in directory.iterdir()} == {'report.html', 'metrics.nc'}
     html = (directory / 'report.html').read_text()
-    assert 'data:image/' in html and 'common finite' in html and 'training_reference' in html
+    assert 'common finite' in html and 'training_reference' in html
+    sources = re.findall(r'<img\b[^>]*\bsrc="([^"]+)"', html)
+    assert sources
+    for source in sources:
+        assert source.startswith('data:image/svg+xml;base64,')
+        svg = ElementTree.fromstring(base64.b64decode(source.split(',', 1)[1]))
+        assert svg.tag == '{http://www.w3.org/2000/svg}svg'
+        assert not list(svg.iter('{http://www.w3.org/2000/svg}image'))
     assert 'id="mode-zenith"' in html and 'id="mode-bls"' in html
     assert 'Zenith baseline: new' in html and 'recalculated' in html
     assert 'Mean retrieved LWP' in html and 'without an LWP reference' in html

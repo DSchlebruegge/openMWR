@@ -540,13 +540,12 @@ def _scatter_figure(ds, model):
     return figure
 
 
-def _figure_html(figure, caption, fmt="svg"):
+def _figure_html(figure, caption):
     stream = BytesIO()
-    figure.savefig(stream, format=fmt, dpi=150, bbox_inches="tight")
+    figure.savefig(stream, format="svg", bbox_inches="tight")
     encoded = base64.b64encode(stream.getvalue()).decode("ascii")
-    mime = "image/svg+xml" if fmt == "svg" else "image/png"
     return (
-        f'<figure><img alt="{escape(caption, quote=True)}" src="data:{mime};base64,{encoded}">'
+        f'<figure><img alt="{escape(caption, quote=True)}" src="data:image/svg+xml;base64,{encoded}">'
         f"<figcaption>{escape(caption)}</figcaption></figure>"
     )
 
@@ -711,7 +710,7 @@ def render_report(analysis):
             if scatter is not None and name in scatter.model.values:
                 parts.append(_figure_html(
                     _scatter_figure(scatter, name),
-                    f"{evaluation.title}: full range and LWP zoom", fmt="png"))
+                    f"{evaluation.title}: full range and LWP zoom"))
         details = json.dumps(model, indent=2, ensure_ascii=False)
         parts.append(
             f"<details><summary>Checkpoint identifier</summary><pre>{escape(details)}</pre></details></section>"
