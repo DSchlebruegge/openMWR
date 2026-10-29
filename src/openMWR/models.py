@@ -14,6 +14,14 @@ from openMWR.config import check_coordinates, check_keys, check_number, require_
 from openMWR.paths import checkpoint_file
 
 logger = logging.getLogger(__name__)
+CHECKPOINT_VERSION = 1
+
+
+def _read_checkpoint(path):
+    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    if checkpoint.get('format_version') != CHECKPOINT_VERSION:
+        raise ValueError(f'Checkpoint {path} requires conversion. Run openMWR migrate --project-dir <project> for older checkpoints.')
+    return checkpoint
 
 def _capture_init_args(init):
     sig = inspect.signature(init)
@@ -99,6 +107,7 @@ class BaseModel(nn.Module):
         :meth:`BaseModel.load`.
         """
         checkpoint = {
+            'format_version': CHECKPOINT_VERSION,
             'model_state_dict': self.state_dict(),
             'hyper_params': hyper_params,
             'normalization': self.nor.to_dict(),
@@ -129,15 +138,8 @@ class BaseModel(nn.Module):
 
     @property
     def training_dataset(self):
-        """Named input stored by new checkpoints; decode old suffix metadata once.
-
-        Historical checkpoints remain byte-for-byte unchanged. This conversion
-        only selects the corresponding named dataset in the current layout.
-        """
-        if 'training_dataset' in self.hyper_params:
-            return self.hyper_params['training_dataset']
-        suffix = self.hyper_params.get('file_extension', '')
-        return f'training_{suffix.lower()}' if suffix else 'training'
+        """Named training input, defaulting to the ordinary training dataset."""
+        return self.hyper_params.get('training_dataset', 'training')
     
     @classmethod
     def load(cls, name, site: str, project_dir: str, file_path=None):
@@ -174,7 +176,7 @@ class BaseModel(nn.Module):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file {file_path} does not exist.")
 
-        checkpoint = torch.load(file_path, map_location=torch.device('cpu'), weights_only=False)
+        checkpoint = _read_checkpoint(file_path)
 
         return cls._from_checkpoint(checkpoint, name)
 
@@ -187,18 +189,6 @@ class BaseModel(nn.Module):
             
         checkpoint['structure']['name'] = name
         normalization = xr.Dataset.from_dict(checkpoint['normalization'])
-        if checkpoint['structure'].get('is_bls_model') and checkpoint['structure'].get('angles') is None:
-            # Historical BLS checkpoints froze the grid in normalization coordinates.
-            if 'ang' not in normalization.coords:
-                raise ValueError('Saved BLS model has no angle coordinates; its original grid is required.')
-            checkpoint['structure']['angles'] = normalization.ang.values.tolist()
-        if issubclass(cls, Model) and not checkpoint['structure'].get('is_MLR') and checkpoint['structure'].get('loss_weights') is None:
-            # Older checkpoints used fixed, mode-dependent weighting without saving it.
-            bls = checkpoint['structure'].get('is_bls_model', False)
-            profile = {'upper_bounds': [2000, 10000] if bls else [10000],
-                       'values': [1., .5, .25] if bls else [1., .5]}
-            checkpoint['structure']['loss_weights'] = {
-                **{key: profile for key in ('T', 'rh', 'lwc')}, 'lwp': 1., 'iwv': 1.}
 
         model = cls(**checkpoint['structure'])
 
@@ -252,7 +242,7 @@ class BaseModel(nn.Module):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file {file_path} does not exist.")
 
-        return torch.load(file_path, map_location='cpu', weights_only=False)['hyper_params']
+        return _read_checkpoint(file_path)['hyper_params']
     
     def create_slices(self):
         """
@@ -272,10 +262,8 @@ class BaseModel(nn.Module):
 def load_model(name, site, project_dir, file_path=None):
     """Load a built-in model using its checkpoint, without consulting a recipe."""
     path = file_path if file_path is not None else checkpoint_file(project_dir, site, name)
-    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-    kind = checkpoint.get('model_class')
-    if kind is None:
-        kind = 'Model' if 'heights' in checkpoint['structure'] else 'SpectralConsistencyModel'
+    checkpoint = _read_checkpoint(path)
+    kind = checkpoint['model_class']
     classes = {'Model': Model, 'SpectralConsistencyModel': SpectralConsistencyModel}
     if kind not in classes:
         raise ValueError(f"Unsupported checkpoint model class {kind!r}; load custom models with their Python class.")

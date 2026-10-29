@@ -1129,16 +1129,6 @@ class TrainingWorkflow:
                                   'optimization': {key: settings[key] for key in ('seed', 'score_weights', *TIME_SELECTION_KEYS) if key in settings}})
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
         previous = study.user_attrs.get('openMWR_experiment')
-        if previous is not None:
-            # Older recipe workflows also recorded unused defaults and recipe-only bias choices.
-            previous = {**previous, 'hyper_params': {key: value for key, value in previous['hyper_params'].items() if key not in unused}}
-            previous.pop('bias_correction', None)
-            # These values were fixed in older versions of the algorithms.
-            previous['hyper_params'].setdefault('seed', 'random')
-            if 'bias_weight' not in unused:
-                previous['hyper_params'].setdefault('bias_weight', 0.2)
-            previous.setdefault('optimization', {'seed': 'random', 'days_of_month': {'first': 1, 'last': 20},
-                                                'score_weights': {'T': 1.0, 'rh': 0.1} if 'T' in self.model.output else {'TB': 1.0}})
         if (previous is not None and previous != experiment) or (previous is None and study.trials):
             raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
         try:

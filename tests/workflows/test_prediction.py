@@ -34,7 +34,7 @@ def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project, mon
     assert result.bls.T.attrs['units'] == 'K'
     paths = workflow.save(result)
     assert [path.name for path in paths] == ['20240101_retrieval.nc', '20240101_retrieval_bls.nc']
-    assert 'model' not in xr.load_dataset(paths[1]).dims  # Existing published BLS shape.
+    assert all(xr.load_dataset(path).sizes['model'] == 1 for path in paths)
     cli = command(prediction_project, '-d', '2024-01-01', '-D', 'cpu')
     assert cli.returncode == 0, cli.stderr
     loaded = load_predictions(prediction_project, 'test', '2024-01-01')
@@ -43,6 +43,12 @@ def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project, mon
         xr.testing.assert_identical(getattr(loaded, name), expected)
     assert loaded.observations is None
     assert not list((prediction_project / 'data/sites/test').iterdir())  # No prepared dataset generation.
+
+    # Previously published single-model BLS files remain readable.
+    historical = xr.load_dataset(paths[1]).squeeze('model')
+    historical.to_netcdf(paths[1])
+    restored = load_predictions(prediction_project, 'test', '2024-01-01')
+    xr.testing.assert_identical(restored.bls, loaded.bls)
 
     # Missing data in one station must not discard a valid sample at another.
     stations = xr.concat([result.observations, result.observations], dim='station').assign_coords(station=['a', 'b'])

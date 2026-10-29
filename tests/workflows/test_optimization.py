@@ -55,6 +55,13 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     # Matching settings can resume through either setup path.
     continued = training_workflow(tmp_path, manual=True).optimize(n_trials=1, run_mode='continue')
     assert len(continued.trials) == 2
+    checkpoint = (recipe.parent / 'model.pth').read_bytes()
+    definition = continued.user_attrs['openMWR_experiment']
+    # Recorded settings are compared exactly, including obsolete fields.
+    continued.set_user_attr('openMWR_experiment', {**definition, 'bias_correction': {'factor': 1.0}})
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
+    continued.set_user_attr('openMWR_experiment', definition)
     changed_bias = training_workflow(tmp_path)
     changed_bias.change_hyper_params(mean_bias=[0.1, 0.1])
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
@@ -67,6 +74,7 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
         training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
     assert len(optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db').trials) == 2
+    assert (recipe.parent / 'model.pth').read_bytes() == checkpoint
 
 
 @pytest.mark.parametrize('replacement', ['deleted', 'replaced'])

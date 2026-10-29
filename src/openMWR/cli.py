@@ -16,8 +16,8 @@ def main(argv=None):
     create = commands.add_parser('create-site', help='Create site settings, dataset, retrieval and evaluation recipes.')
     create.add_argument('site', metavar='SITE', help='New site name under sites/.')
     create.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
-    migrate = commands.add_parser('migrate', help='Convert 0.1 site settings and move saved retrievals to the new layout.')
-    migrate.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Old project containing data/sites/ (default: current directory).')
+    migrate = commands.add_parser('migrate', help='Upgrade old site settings and saved retrieval checkpoints.')
+    migrate.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     migrate.add_argument('-n', '--dry-run', action='store_true', help='Check all destinations and show changes without writing files.')
     data = commands.add_parser('data', help='Create or update named datasets.')
     data.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
@@ -105,6 +105,7 @@ def main(argv=None):
             sites = migrate_project(args.project_dir, dry_run=args.dry_run)
             if sites:
                 print('Original JSON files, datasets, scripts and optimization databases stay in place.')
+                print('Original checkpoints are kept as model.pth.bak beside each converted model.pth.')
                 print('Check paths in sites/<site>/site.toml. Relative paths start at the project root.')
                 print('Choose a saved retrieval explicitly for prediction. No retrieval.toml is required:')
                 print('  openMWR predict SITE RETRIEVAL --date YYYY-MM-DD --output-dir data/migration_prediction')

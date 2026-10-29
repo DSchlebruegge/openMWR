@@ -1,8 +1,8 @@
 # Upgrading from 0.1
 
-Version 0.2 changes the project layout and Python interface. Existing trained
-retrievals can still be loaded. You do not need to retrain them to predict.
-Keep a backup before moving files. The `0.1` Git tag identifies the previous
+Version 0.2 changes the project layout, checkpoint format and Python interface.
+Existing trained retrievals can be converted without retraining.
+Keep a project backup before migrating. The `0.1` Git tag identifies the previous
 interface.
 
 Install the new version using the [installation instructions](installation.md).
@@ -23,14 +23,20 @@ openMWR migrate
 
 The command converts every `data/sites/<site>/config.json` to
 `sites/<site>/site.toml` and moves each `retrieval/<name>.pth` into
-`sites/<site>/retrieval/<name>/model.pth`. Checkpoint contents and names stay the
-same. Original JSON files, datasets, scripts and optimization databases stay in
-place. A shared `grids.toml` is added if missing. No dataset or training recipes
-are generated.
+`sites/<site>/retrieval/<name>/model.pth`. It makes the saved model class, grids,
+loss weights and dataset name explicit. Model weights, normalization and names
+stay the same. Each original checkpoint is retained as `model.pth.bak` beside
+the converted file. Original JSON files, datasets, scripts and optimization
+databases stay in place. A shared `grids.toml` is added if missing. No dataset or
+training recipes are generated.
 
-All destinations are checked before any changes. Matching site TOML files are
-kept, so running the command again is safe. Different site settings or an
-occupied checkpoint destination stop the migration without overwriting files.
+The command also converts older checkpoints already in the new directories.
+Run it again if you used the earlier layout-only migration. Current-format
+checkpoints and matching site TOML files are kept on repeated runs.
+
+All conversions and destinations are checked before any changes. Conflicting
+site settings, occupied destinations for old-layout files and existing
+checkpoint backups stop conversion. Original backups are never overwritten.
 
 Check paths in the converted site TOML files. Relative paths now start at the
 working-project root. `hatpro_format = "netcdf"` keeps the reader choice of 0.1.
@@ -42,6 +48,8 @@ openMWR predict my_site NN --date 2025-01-12 --output-dir data/migration_predict
 
 Prediction reads the saved weights, grids and normalization. It does not need a
 `retrieval.toml`. The example saves to a separate comparison directory.
+New zenith and BLS prediction files both retain a `model` dimension, including
+single-model results. Previously saved scalar-model BLS files remain readable.
 
 Zenith predictions use a centred five-sample mean, as the old daily workflow did.
 In Python, `PredictionWorkflow(..., smooth=False)` returns unsmoothed predictions.

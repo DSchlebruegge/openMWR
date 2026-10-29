@@ -528,11 +528,7 @@ class PredictionWorkflow:
         return predicted
 
     def save(self, result):
-        """Replace selected daily NetCDF files and return their paths.
-
-        Retain the historical scalar BLS model coordinate for a single BLS
-        retrieval. In-memory predictions always keep the model dimension.
-        """
+        """Replace selected daily NetCDF files, keeping the model dimension."""
         if result.site != self.site:
             raise ValueError('Cannot save predictions from another site with this workflow.')
         paths = []
@@ -542,8 +538,6 @@ class PredictionWorkflow:
             path = _daily_file(self.output_dir, result.date, bls)
             path.parent.mkdir(parents=True, exist_ok=True)
             output = predicted.drop_vars(['doy_sin', 'doy_cos'], errors='ignore')
-            if bls and output.sizes.get('model') == 1:
-                output = output.squeeze('model')
             output.to_netcdf(path)
             logger.info('Saved %s', path)
             paths.append(path)

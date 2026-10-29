@@ -8,6 +8,7 @@ import torch
 import xarray as xr
 
 from openMWR.models import Model, load_model
+from openMWR.migrate import migrate_project
 from openMWR.predict import run_model
 from openMWR.site import create_site, get_config_parameter
 from openMWR.train import TrainingWorkflow
@@ -76,20 +77,27 @@ def test_version_01_checkpoint_migration_preserves_predictions(tmp_path, name):
     reference = torch.load(Path(__file__).parents[1] / 'data/checkpoint_01.pt',
                            map_location='cpu', weights_only=False)
     case = next(case for case in reference['cases'] if case['name'] == name)
-    old = tmp_path / 'data/sites/test/retrieval' / f'{name}.pth'
-    old.parent.mkdir(parents=True)
-    old.write_bytes(case['checkpoint'])
-    original = old.read_bytes()
+    create_site('test', tmp_path, gen='G5')
     current = tmp_path / 'sites/test/retrieval' / name / 'model.pth'
     current.parent.mkdir(parents=True)
-    old.rename(current)
+    current.write_bytes(case['checkpoint'])
+    with pytest.raises(ValueError, match='openMWR migrate'):
+        load_model(name, 'test', tmp_path)
+    migrate_project(tmp_path)
 
     model = load_model(name, 'test', tmp_path)
     inputs = xr.Dataset.from_dict(case['inputs'])
     expected = xr.Dataset.from_dict(case['prediction'])
     actual = run_model(model, inputs, 'cpu', include_input_vars=False)
     xr.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
-    assert current.read_bytes() == original
+    assert current.with_name('model.pth.bak').read_bytes() == case['checkpoint']
+    converted = torch.load(current, map_location='cpu', weights_only=False)
+    original = torch.load(current.with_name('model.pth.bak'), map_location='cpu', weights_only=False)
+    for key, value in original['model_state_dict'].items():
+        assert torch.equal(value, converted['model_state_dict'][key])
+    xr.testing.assert_identical(xr.Dataset.from_dict(converted['normalization']),
+                               xr.Dataset.from_dict(original['normalization']))
+    assert 'file_extension' not in converted['hyper_params']
     assert not current.with_name('retrieval.toml').exists()
     assert model.training_dataset == 'training_r17'
     if case['loss_weights'] is not None:

@@ -8,6 +8,9 @@ Weights and normalization are assigned explicitly. No training or external data
 is used. The BLS case uses the old implicit angle grid. Neural profile cases use
 the old implicit height weights. Checkpoints have no recipe or model-class tag.
 The source and expected results are independent of the current loaders.
+Tests explicitly convert these archives before current-format loading and verify
+that original bytes remain in backups and weights, normalization and predictions
+are preserved.
 
 To deliberately regenerate from a checkout of the `0.1` tag:
 

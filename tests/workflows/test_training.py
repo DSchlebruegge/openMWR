@@ -97,7 +97,7 @@ def test_one_epoch_models_train_and_evaluate(kind, mode, tmp_path):
     assert analysis.evaluations[1].samples['time_coordinates'] == 6
 
 
-def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path):
+def test_python_overrides_are_saved_and_prediction_needs_no_recipe(tmp_path):
     recipe, data = retrieval_project(tmp_path, suffix='', search=False)
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     workflow.change_hyper_params(repeats_for_linear_regression=2)
@@ -105,8 +105,7 @@ def test_python_overrides_are_saved_and_old_checkpoint_needs_no_recipe(tmp_path)
     path = recipe.parent / 'model.pth'
     checkpoint = torch.load(path, weights_only=False)
     assert checkpoint['training_metadata']['effective']['hyper_params']['repeats_for_linear_regression'] == 2
-    for key in ('training_metadata', 'model_class'):
-        checkpoint.pop(key)
+    checkpoint.pop('training_metadata')
     torch.save(checkpoint, path)
     recipe.unlink()
     assert load_model('example', 'test', tmp_path).training_metadata is None
