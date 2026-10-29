@@ -1234,12 +1234,13 @@ class TrainingWorkflow:
         return study
 
 
-def separate_training_data(site, source, project_dir, simulation_dataset='simulation_r20', dataset='training',
+def separate_training_data(site, source, project_dir, simulation_dataset, dataset='training',
                            *, test_days_of_month, validation_days_of_month,
                            start_date=None, end_date=None, days_of_month=None):
     """Split selected simulations by inclusive day-of-month ranges.
 
-    All timestamps on a calendar day have the same assignment across sources.
+    simulation_dataset explicitly names the input simulations. All timestamps
+    on a calendar day have the same assignment across sources.
     Training receives days outside the test and validation ranges. Changed
     inputs regenerate the three files; no random assignments or old memberships
     are needed. The dataset workflow skips unchanged inputs.

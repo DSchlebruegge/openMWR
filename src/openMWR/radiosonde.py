@@ -433,7 +433,7 @@ def create_radiosonde_dataset_for_RT(
 
 def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
            freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles',
-           dataset: str = 'simulation_r20', RT_model: str = 'torchMWRT', *, infrared):
+           RT_model: str = 'torchMWRT', *, dataset: str, infrared):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -463,7 +463,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         Absorption model passed to the selected RT backend.
     profiles_dataset : str, optional
         Name of the prepared-profile input dataset.
-    dataset : str, optional
+    dataset : str
         Name of the output simulation dataset.
     RT_model : {"torchMWRT", "pyrtlib"}, optional
         RT backend used in :func:`openMWR.run_RT.run_RT`.
@@ -536,9 +536,8 @@ def create_analysis_dataset(
     from_forward_calc: bool = True,
     save: bool = True,
     observations_dataset: str = 'hatpro',
-    reference_dataset: str = 'simulation_r20',
     dataset: str = 'analysis_radiosonde',
-    *, max_time_difference_minutes, exclude_rain, height_range, required_observations,
+    *, reference_dataset: str, max_time_difference_minutes, exclude_rain, height_range, required_observations,
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """
     Create analysis datasets pairing Hatpro measurements with radiosonde data.
@@ -552,15 +551,16 @@ def create_analysis_dataset(
     project_dir : str
         Working-project root containing data/ and sites/.
     from_forward_calc : bool, optional
-        If True, use radiosonde datasets with forward-calculated brightness
-        temperatures (`radiosonde_data_with_RT_*`). If False, use the prepared
-        radiosonde datasets without RT.
+        If True, use a radiosonde simulation as the reference. If False, use
+        prepared radiosonde profiles without RT.
     save : bool, optional
         If True, write outputs to `data/sites/{site}/{dataset}/` and return
         None. If False, return the assembled datasets.
-    observations_dataset, reference_dataset, dataset : str, optional
-        Names of the observation input, reference input and analysis output.
+    reference_dataset : str
+        Name of the reference input dataset.
         Use a prepared-profile reference when from_forward_calc=False.
+    observations_dataset, dataset : str, optional
+        Names of the observation input and analysis output.
 
     Returns
     -------
