@@ -48,7 +48,7 @@ def git_identity(path):
 
 def software_identity():
     packages = {}
-    for name in ("openMWR", "torch", "numpy", "xarray", "scikit-learn", "optuna"):
+    for name in ("openMWR", "torch", "numpy", "xarray", "optuna"):
         try:
             packages[name] = version(name)
         except PackageNotFoundError:

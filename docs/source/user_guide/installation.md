@@ -52,6 +52,14 @@ is equivalent to `openMWR`. The commands work with either installation method.
 To work from another directory, pass `--project-dir /path/to/my_project` to a
 command. `openMWR COMMAND --help` lists its options and short aliases.
 
+For running notebooks or displaying plots inline, install the `notebook` extra:
+
+```bash
+python -m pip install --editable '../openMWR[notebook]'
+```
+
+With uv, use `uv pip install --editable '../openMWR[notebook]'`.
+
 ## Install libRadtran
 
 libRadtran is a required dependency for the forward calculation of the infrared sensor measurements on
