@@ -5,6 +5,7 @@ from typing import Union
 
 
 PathLike = Union[str, Path]
+PREDICTIONS_DIR = "predictions"
 
 
 def project_root(project_dir: PathLike) -> Path:
@@ -34,14 +35,14 @@ def site_config_file(project_dir: PathLike, site: str) -> Path:
 
 def dataset_recipe_file(project_dir: PathLike, site: str, name: str) -> Path:
     """Return the editable recipe for a named dataset."""
-    _dataset_name(site)
+    _path_name(site)
     _dataset_name(name)
     return site_root(project_dir, site) / "datasets" / f"{name}.toml"
 
 
 def dataset_dir(project_dir: PathLike, site: str, name: str) -> Path:
     """Return the generated-data directory owned by a dataset."""
-    _dataset_name(site)
+    _path_name(site)
     _dataset_name(name)
     return site_data_dir(project_dir, site) / name
 
@@ -54,7 +55,7 @@ def dataset_file(project_dir: PathLike, site: str, name: str, source: str | None
     files per source; observation and analysis datasets contain zenith/BLS files.
     """
     if source is not None:
-        _dataset_name(source)
+        _path_name(source)
         if split is not None and split not in ("training", "validation", "test"):
             raise ValueError("split must be training, validation or test.")
         filename = f"{split + '_' if split else ''}{source}.nc"
@@ -72,9 +73,15 @@ def era5_cache_file(project_dir: PathLike, latitude: float, longitude: float,
     return data_root(project_dir) / "era5" / f"era5_{lat}_{lon}_{hour_interval}h.nc"
 
 
-def _dataset_name(value: str) -> None:
+def _path_name(value: str) -> None:
     if not isinstance(value, str) or not value or value in (".", "..") or "/" in value or "\\" in value:
         raise ValueError("Site, dataset and source names must be nonempty names without directory separators.")
+
+
+def _dataset_name(value: str) -> None:
+    _path_name(value)
+    if value.casefold() == PREDICTIONS_DIR:
+        raise ValueError(f"Dataset name {value!r} is reserved for prediction outputs. Choose another dataset name.")
 
 
 def retrieval_dir(project_dir: PathLike, site: str, name: str) -> Path:
@@ -87,17 +94,16 @@ def checkpoint_file(project_dir: PathLike, site: str, name: str) -> Path:
     return retrieval_dir(project_dir, site, name) / "model.pth"
 
 
-def evaluation_dir(project_dir: PathLike, site: str, name: str) -> Path:
-    """Return the run/log directory beside a named evaluation recipe."""
-    _dataset_name(site)
-    _dataset_name(name)
-    return site_root(project_dir, site) / 'evaluations' / name
-
-
 def evaluation_recipe_file(project_dir: PathLike, site: str, name: str) -> Path:
     """Return the configuration for one reproducible comparison."""
-    directory = evaluation_dir(project_dir, site, name)
-    return directory.parent / f'{name}.toml'
+    _path_name(site)
+    _path_name(name)
+    return site_root(project_dir, site) / 'evaluations' / f'{name}.toml'
+
+
+def evaluation_log_file(project_dir: PathLike, site: str, name: str) -> Path:
+    """Return the append log beside an evaluation recipe and its HTML reports."""
+    return evaluation_recipe_file(project_dir, site, name).with_suffix('.log')
 
 
 def optimization_file(project_dir: PathLike, site: str, name: str) -> Path:

@@ -7,6 +7,7 @@ User Guide
 
    installation
    create_retrieval
+   retrieval_examples
    run_retrieval.ipynb
    retrieval_analysis
    run_operational

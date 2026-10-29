@@ -19,15 +19,15 @@ they do not establish infrared numerical accuracy.
 
 | Area | Owns the detailed proof |
 | --- | --- |
-| `workflows/test_setup.py` | Creating a usable starter and preserving user files |
+| `workflows/test_setup.py` | Creating a minimal NN starter, adding other example recipes and preserving user files |
 | `workflows/test_migration.py` | Previewing/converting old layouts and checkpoints, original backups, all-site preflight and safe retry/repeat |
 | `workflows/test_background.py` | Detachment, completed commands, preserved logs and startup failures |
-| `workflows/test_datasets.py` | Build/update/rebuild, dependency sharing, calendar membership, readiness and recovery |
+| `workflows/test_datasets.py` | Build/update/rebuild, prediction-directory ownership, dependency sharing, calendar membership, readiness and recovery |
 | `workflows/test_training.py` | Fixed training, Python/command equivalence, held-out fit, selected outputs, reproducibility and saved settings |
 | `workflows/test_optimization.py` | Searches, scoring, recipe overrides, continuation, reproducibility and safe replacement |
 | `workflows/test_omb.py` | Paired selection and plots, station/angle reports, calibration markers, checkpoint noise, vector output, fitted shifts and saved OMB settings |
 | `science/test_omb.py` | Physical moments, common-sample covariance and regression invariants |
-| `workflows/test_evaluation.py` | Separate zenith/BLS groups, rescored baselines, coverage, explicit selections and portable HTML/NetCDF results |
+| `workflows/test_evaluation.py` | Separate zenith/BLS groups, rescored baselines, coverage, explicit selections and standalone vector HTML reports |
 | `workflows/test_prediction.py` | Applying saved models, smoothing, mixed profile/column outputs and missing observations |
 | `science/test_observations.py` | Variable validity, UTC period bounds, independent station samples and matching across outages |
 | `interfaces/test_devices.py` | Automatic device priority, explicit overrides and hardware availability |

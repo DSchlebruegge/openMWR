@@ -9,9 +9,7 @@ from io import BytesIO
 import json
 import logging
 from pathlib import Path
-import shutil
 from string import Template
-import tempfile
 import tomllib
 
 import numpy as np
@@ -29,7 +27,7 @@ from openMWR.models import load_model
 from openMWR.observations import load_analysis_dataset
 from openMWR.site import load_site_config
 from openMWR.paths import (project_root, site_config_file, dataset_file, checkpoint_file,
-                           dataset_recipe_file, evaluation_dir, evaluation_recipe_file)
+                           dataset_recipe_file, evaluation_log_file, evaluation_recipe_file)
 from openMWR.plot import plot_scatter_lwp
 from openMWR.predict import run_model_list, validate_model_data
 from openMWR.provenance import checkpoint_id, plain_value, software_identity, task_log, utc_now
@@ -375,7 +373,7 @@ def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
         if settings.get('bls_baseline') not in settings['retrievals']:
             settings.pop('bls_baseline', None)
     recipe = EvaluationRecipe(project_root(recipe.project_dir), recipe.site, recipe.name, settings).validate()
-    with task_log(evaluation_dir(recipe.project_dir, recipe.site, recipe.name) / 'evaluation.log'):
+    with task_log(evaluation_log_file(recipe.project_dir, recipe.site, recipe.name)):
         started = utc_now()
         device = resolve_device(device)
         hashes = {name: checkpoint_id(checkpoint_file(recipe.project_dir, recipe.site, name)) for name in settings['retrievals']}
@@ -445,48 +443,26 @@ def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
         return Analysis(metadata, evaluations)
 
 
-def save_evaluation(analysis, output_dir=None):
-    """Atomically publish report.html and grouped metrics.nc in a new run directory."""
+def save_evaluation(analysis, output_file=None):
+    """Save one standalone HTML report, preserving existing files.
+
+    Numerical results remain available on ``analysis.evaluations`` for custom
+    Python work. No numerical export or report subdirectory is created.
+    """
     meta = analysis.metadata
-    if output_dir is None:
-        stamp = datetime.fromisoformat(meta['started_utc']).strftime('%Y%m%dT%H%M%S.%fZ')
-        output_dir = evaluation_dir(meta['project_dir'], meta['site'], meta['evaluation']) / stamp
-    output_dir = Path(output_dir).resolve()
-    if output_dir.exists():
-        raise FileExistsError(f'Evaluation output already exists: {output_dir}. Choose a new directory.')
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix='.evaluation-', dir=output_dir.parent))
-    try:
-        sections = [dict(key=e.key, mode=e.mode, title=e.title, error_types=e.error_types, samples=e.samples,
-                         note=e.note, metrics=list(e.metrics)) for e in analysis.evaluations]
-        xr.Dataset(attrs={'format_version': 2, 'metadata': json.dumps(plain_value(meta)),
-                          'sections': json.dumps(plain_value(sections))}).to_netcdf(temporary / 'metrics.nc')
-        for evaluation in analysis.evaluations:
-            for name, values in evaluation.metrics.items():
-                values.to_netcdf(temporary / 'metrics.nc', mode='a', group=f'{evaluation.key}/{name}')
-        (temporary / 'report.html').write_text(render_report(analysis), encoding='utf-8')
-        temporary.rename(output_dir)
-    finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-    logger.info('Evaluation saved to %s', output_dir)
-    return output_dir
-
-
-def load_evaluation(directory):
-    """Reload numerical results and metadata for Python analysis or report rendering."""
-    path = Path(directory) / 'metrics.nc'
-    with xr.open_dataset(path) as root:
-        if root.attrs.get('format_version') != 2:
-            raise ValueError(f'Unsupported evaluation result format: {path}.')
-        metadata = json.loads(root.attrs['metadata'])
-        sections = json.loads(root.attrs['sections'])
-    evaluations = []
-    for section in sections:
-        metrics = {name: xr.load_dataset(path, group=f'{section["key"]}/{name}') for name in section.pop('metrics')}
-        section['error_types'] = tuple(section['error_types'])
-        evaluations.append(Evaluation(**section, metrics=metrics))
-    return Analysis(metadata, evaluations)
+    if output_file is None:
+        stamp = datetime.fromisoformat(meta['started_utc']).strftime('%Y-%m-%d_%H-%M-%S')
+        recipe = evaluation_recipe_file(meta['project_dir'], meta['site'], meta['evaluation'])
+        output_file = recipe.with_name(f'{meta["evaluation"]}_{stamp}.html')
+    output_file = Path(output_file).resolve()
+    if output_file.exists():
+        raise FileExistsError(f'Evaluation output already exists: {output_file}. Choose a new filename.')
+    document = render_report(analysis)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open('x', encoding='utf-8') as stream:
+        stream.write(document)
+    logger.info('Evaluation saved to %s', output_file)
+    return output_file
 
 
 def _table(ds, labels=VARIABLE_LABELS):

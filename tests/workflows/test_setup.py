@@ -9,7 +9,7 @@ import tomli_w
 from openMWR.datasets import DatasetWorkflow
 from openMWR.evaluation import EvaluationRecipe
 from openMWR.recipes import RetrievalRecipe
-from openMWR.site import create_site
+from openMWR.site import create_site, retrieval_examples
 
 
 def command(project, site):
@@ -37,11 +37,10 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
     assert all(settings['kind'] != 'era5' for settings in datasets.values())
     settings = tomllib.loads((directory / 'site.toml').read_text())
     assert settings == {'prediction': {'retrievals': ['NN_example']}}
-    assert {path.name for path in (directory / 'retrieval').iterdir()} == {
-        f'{family}{suffix}_example' for family in ('NN', 'MLR', 'NN_BLS', 'SPC')
-        for suffix in ('', '_opt')}
-    for name in ('radiosonde', 'spectral'):
-        EvaluationRecipe.load(project, 'my_site', name)
+    assert {path.name for path in (directory / 'retrieval').iterdir()} == {'NN_example'}
+    assert {path.name for path in (directory / 'evaluations').iterdir()} == {'radiosonde.toml'}
+    EvaluationRecipe.load(project, 'my_site', 'radiosonde')
+    assert 'data/' in (project / '.gitignore').read_text()
     recipe = RetrievalRecipe.load(project, 'my_site', 'NN_example')
     assert recipe.section('model')['freqs'] == 'dataset'
     assert all(not isinstance(value, dict) for value in recipe.section('training').values())
@@ -56,6 +55,7 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
 def test_existing_site_is_preserved_and_another_site_can_be_created(tmp_path):
     directory = create_site('first', tmp_path, with_examples=True)
     (directory / 'site.toml').write_text('# User edits\ngen = "G4"\n')
+    (tmp_path / '.gitignore').write_text('# Project-owned exclusions\nlarge-data/\n')
     grids_file = tmp_path / 'grids.toml'
     grids = tomllib.loads(grids_file.read_text())
     grids['heights']['custom'] = [0., 1000.]
@@ -65,6 +65,9 @@ def test_existing_site_is_preserved_and_another_site_can_be_created(tmp_path):
     before = {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()}
     rejected = command(tmp_path, 'first')
     assert rejected.returncode == 1 and 'Site already exists' in rejected.stderr
+    assert before == {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()}
+    rejected = run_cli('create-retrieval', 'first', 'NN_example', '-p', str(tmp_path))
+    assert rejected.returncode == 1
     assert before == {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()}
     created = command(tmp_path, 'second')
     assert created.returncode == 0, created.stderr
@@ -95,12 +98,15 @@ def test_python_configuration_overrides_and_both_dataset_chains(tmp_path):
         'hatpro', 'radiosondes', 'profiles', 'simulation', 'analysis_radiosonde']
     assert workflow.settings('simulation')['absorption_model'] == 'R24'
     from openMWR.train import TrainingWorkflow
-    for retrieval in sorted((directory / 'retrieval').iterdir()):
-        recipe = RetrievalRecipe.load(tmp_path, 'test', retrieval.name)
+    for example in retrieval_examples():
+        created = run_cli('create-retrieval', 'test', example, '-e', example, '-p', str(tmp_path))
+        assert created.returncode == 0, created.stderr
+        assert {path.name for path in (directory / 'retrieval' / example).iterdir()} == {'retrieval.toml'}
+        recipe = RetrievalRecipe.load(tmp_path, 'test', example)
         training = TrainingWorkflow(recipe.create_model(), 'test', 'cpu', tmp_path)
         training.add_standard_training_hyper_params(**recipe.training_params(training))
         training.add_input_noise_params(**recipe.input_noise_params(training))
-        assert training.requires_optimization == ('_opt_' in retrieval.name)
+        assert training.requires_optimization == example.endswith('_opt')
     del settings['mwr_height']
     (directory / 'site.toml').write_text(tomli_w.dumps(settings))
     with pytest.raises(ValueError, match='set mwr_height in .*site.toml'):

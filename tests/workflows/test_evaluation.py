@@ -9,7 +9,7 @@ import pytest
 import torch
 import xarray as xr
 
-from openMWR.evaluation import EvaluationRecipe, evaluate, load_evaluation, save_evaluation
+from openMWR.evaluation import EvaluationRecipe, evaluate, save_evaluation
 from openMWR.models import Model, SpectralConsistencyModel
 from openMWR.site import create_site
 from tests.fixtures.cli import run_cli
@@ -96,7 +96,7 @@ height_range = "model"
     return EvaluationRecipe.load(root, 'test', 'comparison')
 
 
-def test_separate_groups_rescore_baseline_and_roundtrip_without_changing_inputs(tmp_path):
+def test_separate_groups_rescore_baseline_and_save_standalone_report_without_changing_inputs(tmp_path):
     recipe = comparison_project(tmp_path)
     originals = {path: path.read_bytes() for path in tmp_path.rglob('*')
                  if path.suffix in ('.pth', '.nc', '.toml')}
@@ -151,9 +151,11 @@ def test_separate_groups_rescore_baseline_and_roundtrip_without_changing_inputs(
     scan_only = evaluate(recipe, retrievals=['scan']).evaluations[0]
     assert set(scan_only.metrics['errors'].model.values) == {'scan', 'RPG', 'RPG_BLS'}
     assert set(scan_only.metrics['relative_rmse'].data_vars) == {'T', 'rh'}
-    directory = save_evaluation(result)
-    assert {path.name for path in directory.iterdir()} == {'report.html', 'metrics.nc'}
-    html = (directory / 'report.html').read_text()
+    path = save_evaluation(result)
+    assert path.parent == tmp_path / 'sites/test/evaluations'
+    assert re.fullmatch(r'comparison_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.html', path.name)
+    assert not list(tmp_path.rglob('metrics.nc'))
+    html = path.read_text()
     assert 'common finite' in html and 'training_reference' in html
     sources = re.findall(r'<img\b[^>]*\bsrc="([^"]+)"', html)
     assert sources
@@ -167,26 +169,20 @@ def test_separate_groups_rescore_baseline_and_roundtrip_without_changing_inputs(
     assert 'Mean retrieved LWP' in html and 'without an LWP reference' in html
     assert 'Relative RMSE to zenith RPG [%]' in html
     assert 'Boundary layer scan · Simulated test data: full range and LWP zoom' in html
-    restored = load_evaluation(directory)
-    assert restored.metadata == result.metadata
-    for original, loaded in zip(result.evaluations, restored.evaluations):
-        assert loaded.mode == original.mode
-        for name in original.metrics:
-            xr.testing.assert_identical(original.metrics[name], loaded.metrics[name])
-    report = (directory / 'report.html').read_bytes()
+    report = path.read_bytes()
     with pytest.raises(FileExistsError):
-        save_evaluation(result, directory)
-    assert (directory / 'report.html').read_bytes() == report
-    command = run_cli('evaluate', 'test', 'comparison', '-p', str(tmp_path), '-o', str(tmp_path / 'cli run'))
+        save_evaluation(result, path)
+    assert path.read_bytes() == report
+    command = run_cli('evaluate', 'test', 'comparison', '-p', str(tmp_path), '-o', str(tmp_path / 'cli run.html'))
     assert command.returncode == 0, command.stderr
-    actual = load_evaluation(tmp_path / 'cli run')
-    xr.testing.assert_equal(actual.evaluations[0].metrics['errors'], observations.metrics['errors'])
+    assert command.stdout.strip() == str(tmp_path / 'cli run.html')
+    assert 'id="mode-bls"' in (tmp_path / 'cli run.html').read_text()
     assert all(path.read_bytes() == before for path, before in originals.items())
     # An unknown relative-RMSE reference must never receive a guessed label.
-    restored.evaluations[2].metrics['relative_rmse'].attrs.pop('reference')
+    result.evaluations[2].metrics['relative_rmse'].attrs.pop('reference')
     with pytest.raises(ValueError, match='Missing relative RMSE reference.*Rebuild the evaluation'):
-        save_evaluation(restored, tmp_path / 'failed')
-    assert not (tmp_path / 'failed').exists() and not list(tmp_path.glob('.evaluation-*'))
+        save_evaluation(result, tmp_path / 'failed.html')
+    assert not (tmp_path / 'failed.html').exists()
 
 
 def test_explicit_station_period_and_height_selection_and_missing_coverage(tmp_path):
@@ -238,8 +234,7 @@ def test_spectral_retrieval_uses_the_same_engine_and_result_format(tmp_path):
     for section in result.evaluations:
         np.testing.assert_allclose(section.metrics['errors'].TB.sel(error='RMSE'), 100.)
         assert 'mean_lwp' not in section.metrics
-    restored = load_evaluation(save_evaluation(result))
-    xr.testing.assert_identical(restored.evaluations[0].metrics['errors'], result.evaluations[0].metrics['errors'])
+    assert 'TB' in save_evaluation(result).read_text()
 
 
 

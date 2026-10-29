@@ -17,6 +17,21 @@ from openMWR.paths import dataset_file, era5_cache_file, radiosonde_year_file
 
 from tests.fixtures.datasets import dataset_project, recipe, install_raw, synthetic_simulation, saved_simulation, rebuild_hint
 
+def test_reserved_dataset_name_cannot_rebuild_prediction_outputs(dataset_project):
+    directory = dataset_project / 'data/sites/test/predictions'
+    directory.mkdir()
+    saved = directory / 'daily.nc'
+    saved.write_bytes(b'Saved prediction product')
+    # Case variants also collide on case-insensitive filesystems.
+    for name in ('predictions', 'Predictions'):
+        settings = recipe(dataset_project, name, kind='radiosonde', stations=['03715'])
+        before = settings.read_bytes()
+        with pytest.raises(ValueError, match='reserved for prediction outputs'):
+            DatasetWorkflow(dataset_project, 'test').build(name, rebuild=True)
+        assert saved.read_bytes() == b'Saved prediction product'
+        assert settings.read_bytes() == before
+
+
 def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset_project, monkeypatch):
     import openMWR.run_RT as rt
 

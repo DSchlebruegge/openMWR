@@ -16,6 +16,12 @@ def main(argv=None):
     create = commands.add_parser('create-site', help='Create site settings, dataset, retrieval and evaluation recipes.')
     create.add_argument('site', metavar='SITE', help='New site name under sites/.')
     create.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
+    from openMWR.site import retrieval_examples
+    create_model = commands.add_parser('create-retrieval', help='Create a named retrieval recipe from a bundled example.')
+    create_model.add_argument('site', metavar='SITE')
+    create_model.add_argument('retrieval', metavar='RETRIEVAL', help='New directory name under sites/<site>/retrieval/.')
+    create_model.add_argument('-p', '--project-dir', type=Path, default=Path('.'))
+    create_model.add_argument('-e', '--example', choices=retrieval_examples(), default='NN', help='Recipe to copy (default: NN). Review its settings before training.')
     migrate = commands.add_parser('migrate', help='Upgrade old site settings and saved retrieval checkpoints.')
     migrate.add_argument('-p', '--project-dir', type=Path, default=Path('.'), help='Project containing data/ and sites/ (default: current directory).')
     migrate.add_argument('-n', '--dry-run', action='store_true', help='Check all destinations and show changes without writing files.')
@@ -56,7 +62,7 @@ def main(argv=None):
     evaluate.add_argument('-p', '--project-dir', type=Path, default=Path('.'))
     evaluate.add_argument('-r', '--retrieval', nargs='+', metavar='RETRIEVAL', help='Replace the recipe retrieval list for this run.')
     evaluate.add_argument('-D', '--device', default='auto', help='PyTorch device (default: auto).')
-    evaluate.add_argument('-o', '--output-dir', type=Path, help='New directory for report.html and metrics.nc.')
+    evaluate.add_argument('-o', '--output', type=Path, help='HTML filename (default: timestamped file beside the evaluation recipe).')
     omb = commands.add_parser('omb', help='Report observed minus simulated TB from an existing analysis dataset.')
     omb.add_argument('site', metavar='SITE')
     omb.add_argument('dataset', metavar='DATASET', help='Named paired analysis dataset.')
@@ -118,6 +124,11 @@ def main(argv=None):
             print(f'  openMWR data {quote(args.site)} training --with-dependencies --dry-run')
             print(f'  openMWR data {quote(args.site)} training --with-dependencies')
             print(f'  openMWR train {quote(args.site)} NN_example')
+        elif args.command == 'create-retrieval':
+            from openMWR.site import create_retrieval
+            directory = create_retrieval(args.site, args.retrieval, args.project_dir, example=args.example)
+            print(directory / 'retrieval.toml')
+            print('Review the dataset, stations, model and training settings before training.')
         elif args.command == 'migrate':
             from openMWR.migrate import migrate_project
             sites = migrate_project(args.project_dir, dry_run=args.dry_run)
@@ -149,11 +160,11 @@ def main(argv=None):
                 parser.exit(1, 'Prediction incomplete; see the reported dates/groups. Successful output was saved.\n')
         elif args.command == 'evaluate':
             from openMWR.evaluation import EvaluationRecipe, evaluate, save_evaluation
-            if args.output_dir is not None and args.output_dir.exists():
-                raise FileExistsError(f'Evaluation output already exists: {args.output_dir}. Choose a new directory.')
+            if args.output is not None and args.output.exists():
+                raise FileExistsError(f'Evaluation output already exists: {args.output}. Choose a new filename.')
             recipe = EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
             result = evaluate(recipe, retrievals=args.retrieval, device=args.device)
-            print(save_evaluation(result, args.output_dir))
+            print(save_evaluation(result, args.output))
         elif args.command == 'omb':
             from openMWR.omb import Omb_Analysis
             if args.output is not None and args.output.exists():

@@ -334,7 +334,9 @@ therefore also need the zenith analysis file. Mean retrieved LWP compares shared
 finite predictions without an LWP reference. No common pairs gives an unavailable
 score.
 
-Each run saves `report.html` and `metrics.nc` together in a new directory. Results
-record effective settings, input and checkpoint hashes and software identity.
-All report figures are embedded SVG vector graphics.
+Each run saves one `NAME_YYYY-MM-DD_HH-MM-SS.html` beside its evaluation recipe,
+with a UTC timestamp. `--output` selects an explicit filename. The report records
+effective settings, input and checkpoint hashes and software identity.
+All figures are embedded SVG vector graphics. Python evaluation returns the
+numerical metrics in memory.
 Changing a retrieval recipe does not change a saved model's inference settings.

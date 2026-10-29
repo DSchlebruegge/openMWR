@@ -11,8 +11,8 @@ updated openMWR checkout.
 
 ## Keep using a trained retrieval
 
-Run the following examples from your working project, the directory containing
-`data/`. Replace `my_site` and `NN` with your own names.
+Run the following examples from the working project, the directory containing
+`data/`. Replace `my_site` and `NN` with the existing site and retrieval names.
 
 Preview the migration, then apply it:
 
@@ -33,7 +33,7 @@ training recipes are generated. Extra historical site fields are retained under
 `[custom]`. Scientific processing choices now belong in dataset recipes.
 
 The command also converts older checkpoints already in the new directories.
-Run it again if you used the earlier layout-only migration. Current-format
+Run it again after an earlier layout-only migration. Current-format
 checkpoints and matching site TOML files are kept on repeated runs.
 
 All conversions and destinations are checked before any changes. Conflicting
@@ -42,7 +42,7 @@ for those files stop conversion. Original backups are never overwritten.
 
 Current checkpoints contain tensors and plain metadata and use restricted
 loading. Older formats require this explicit conversion. Migration reads older
-Python objects, so migrate only checkpoints you trust.
+Python objects, so migrate only trusted checkpoints.
 
 Check paths in the converted site TOML files. Relative paths now start at the
 working-project root. `hatpro_format = "netcdf"` keeps the reader choice of 0.1.
@@ -94,8 +94,8 @@ settings.
 ## Keep or rebuild processed datasets
 
 Dataset recipes live in `sites/my_site/datasets/`. Set their scientific choices
-to match the code that generated your files. The starter recommends R24, which
-does not describe an existing R17 or R20 simulation. Check frequency offsets,
+to match the code that generated the existing files. The starter recommends R24,
+which does not describe an existing R17 or R20 simulation. Check frequency offsets,
 grids and profile preparation too. A setting in the old site JSON does not
 necessarily mean it was passed to the calculation.
 
@@ -127,7 +127,7 @@ datasets.record("profiles", provenance="Imported from 0.1. Preparation checked a
 datasets.record("simulation", provenance="Imported from 0.1. RT settings checked against the original script.")
 ```
 
-`record()` records your declaration. It cannot recover or verify historical
+`record()` stores the declared provenance. It cannot recover or verify historical
 settings. If those settings are unknown, retain the files for reference and
 rebuild that dataset. Do not create records that claim guessed settings are known.
 See [recipe settings](recipe_settings.md) for the required choices.

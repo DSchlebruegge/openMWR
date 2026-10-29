@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+*.log
+data/
+libRadtran-*/
+sites/*/retrieval/*/optimization.db*
+sites/*/retrieval/*/training_progress.pdf
+sites/*/retrieval/*/model.pth.bak*
+sites/*/evaluations/*.html

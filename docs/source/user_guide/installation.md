@@ -3,7 +3,7 @@
 ## Install openMWR
 
 Use Python 3.11 or newer. Keep the package checkout separate from the working
-project containing your site settings, datasets and retrievals:
+project containing site settings, datasets and retrievals:
 
 ```bash
 git clone https://github.com/DSchlebruegge/openMWR.git
@@ -104,14 +104,14 @@ rm reptran_2024_all.tar
 ```
 
 openMWR first looks for a `libRadtran-*` directory in the current working directory, then for `uvspec` on `PATH`.
-For an installation elsewhere, add its `bin` directory to `PATH` once in your shell configuration (e.g. `~/.bashrc` or `~/.zshrc`):
+For an installation elsewhere, add its `bin` directory to `PATH` in the shell configuration (e.g. `~/.bashrc` or `~/.zshrc`):
 
 ```bash
 export PATH="$HOME/opt/libRadtran-2.0.6/bin:$PATH"
 ```
 
 The data directory is found automatically at `data/` or `share/libRadtran/data/` under the installation prefix.
-If you keep the data elsewhere, set `LIBRADTRAN_DATA_FILES` to that directory.
+For data stored elsewhere, set `LIBRADTRAN_DATA_FILES` to that directory.
 
 Return to the working project:
 

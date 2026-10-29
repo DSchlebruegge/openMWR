@@ -61,20 +61,21 @@ def test_train_selects_action_and_passes_overrides(tmp_path, monkeypatch, optimi
 
 
 def test_evaluation_selects_recipe_and_protects_existing_results(tmp_path, monkeypatch):
-    evaluate, save, load = Mock(), Mock(return_value=tmp_path / 'result'), Mock()
+    evaluate, save, load = Mock(), Mock(return_value=tmp_path / 'result.html'), Mock()
     monkeypatch.setattr('openMWR.evaluation.evaluate', evaluate)
     monkeypatch.setattr('openMWR.evaluation.save_evaluation', save)
     monkeypatch.setattr('openMWR.evaluation.EvaluationRecipe.load', load)
     args = ['evaluate', 'site', 'comparison', '-p', str(tmp_path),
-            '-r', 'first', 'second', '-o', str(tmp_path / 'result')]
+            '-r', 'first', 'second', '-o', str(tmp_path / 'result.html')]
     result = run_cli(*args)
-    assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / 'result')
+    assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / 'result.html')
     load.assert_called_once_with(tmp_path, 'site', 'comparison')
     evaluate.assert_called_once_with(load.return_value, retrievals=['first', 'second'], device='auto')
-    save.assert_called_once_with(evaluate.return_value, tmp_path / 'result')
-    (tmp_path / 'result').mkdir()
+    save.assert_called_once_with(evaluate.return_value, tmp_path / 'result.html')
+    (tmp_path / 'result.html').write_text('Existing report')
     assert run_cli(*args).returncode == 1
     assert evaluate.call_count == save.call_count == 1
+    assert (tmp_path / 'result.html').read_text() == 'Existing report'
 
 
 def test_prediction_range_reuses_workflow_and_reports_partial_success(tmp_path, monkeypatch):
@@ -116,7 +117,7 @@ def test_data_dry_run_and_diagnostic_are_read_only(dataset_project):
 @pytest.mark.parametrize(('command', 'search', 'extra', 'log'), [
     ('train', False, [], 'sites/test/retrieval/example/training.log'),
     ('train', True, [], 'sites/test/retrieval/example/optimization.log'),
-    ('evaluate', False, [], 'sites/test/evaluations/example/evaluation.log'),
+    ('evaluate', False, [], 'sites/test/evaluations/example.log'),
     ('predict', False, ['-d', '2024-01-01', '-o', 'output with spaces'], 'output with spaces/prediction.log'),
     ('omb', False, [], 'data/sites/test/example/omb.log'),
 ])

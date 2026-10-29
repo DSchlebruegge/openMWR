@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from openMWR.config import check_name
-from openMWR.paths import dataset_dir, retrieval_dir, evaluation_dir
+from openMWR.paths import dataset_dir, retrieval_dir, evaluation_log_file
 
 
 LOG_ENV = '_OPENMWR_BACKGROUND_LOG'
@@ -33,7 +33,7 @@ def launch(args, argv):
         from openMWR.evaluation import EvaluationRecipe
 
         EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
-        path = evaluation_dir(args.project_dir, args.site, args.evaluation) / 'evaluation.log'
+        path = evaluation_log_file(args.project_dir, args.site, args.evaluation)
     elif args.command == 'omb':
         check_name(args.dataset, 'dataset')
         path = dataset_dir(args.project_dir, args.site, args.dataset) / 'omb.log'

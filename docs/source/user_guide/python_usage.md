@@ -2,8 +2,8 @@
 
 The commands and Python interface use the same dataset, training, evaluation
 and prediction workflows. Start from the recipes created in
-[Create a Retrieval](create_retrieval.md), then use Python when you need to
-inspect data or customize a calculation. Run scripts and notebooks from the
+[Create a Retrieval](create_retrieval.md), then use Python to inspect data or
+customize a calculation. Run scripts and notebooks from the
 working project with its environment.
 
 ## Build datasets
@@ -56,8 +56,8 @@ file. The checkpoint records
 the effective settings. Use another retrieval name to keep experiments separate,
 or `train(run_mode="fresh")` to replace an existing result.
 
-Python selects training or optimization explicitly. For a search recipe that
-has not been run yet:
+Python selects training or optimization explicitly. Create a search recipe with
+`openMWR create-retrieval my_site NN_opt_example --example NN_opt`, then run:
 
 ```python
 workflow = TrainingWorkflow.from_recipe(".", "my_site", "NN_opt_example")
@@ -66,7 +66,7 @@ study = workflow.optimize(n_trials=20)
 
 The observation selection and score come from the recipe. Use
 `optimize(run_mode="continue", n_trials=20)` to add trials to a compatible study.
-`workflow.requires_optimization` tells you whether searches remain in the current
+`workflow.requires_optimization` indicates whether searches remain in the current
 parameters. `train()` needs fixed values. `optimize()` needs at least one search.
 
 ## Construct a model directly
@@ -108,31 +108,30 @@ hyperparameters. Recipe-based construction keeps more choices together in one fi
 
 For custom architectures, subclass {py:class}`openMWR.models.BaseModel` in Python.
 Use the built-in models as a reference for the training and prediction interface.
-Load custom checkpoints through your own class's `load()` method. Recipe model
+Load custom checkpoints through the custom class's `load()` method. Recipe model
 kinds and command checkpoint loading use the built-in model classes.
 
 ## Evaluate retrievals
 
 ```python
 from openMWR.evaluation import (
-    EvaluationRecipe, evaluate, save_evaluation, load_evaluation,
+    EvaluationRecipe, evaluate, save_evaluation,
 )
 
 recipe = EvaluationRecipe.load(".", "my_site", "radiosonde")
 recipe.values["observations"]["start_date"] = "2025-01-01"
 analysis = evaluate(recipe, retrievals=["NN_example", "MLR_example"])
-directory = save_evaluation(analysis)
+report = save_evaluation(analysis)
 
-restored = load_evaluation(directory)
-zenith = next(case for case in restored.evaluations if case.key == "zenith_observations")
+zenith = next(case for case in analysis.evaluations if case.key == "zenith_observations")
 errors = zenith.metrics["errors"]
 temperature_rmse = errors.T.sel(error="RMSE")
 ```
 
 The command uses this same engine and recipe. `evaluate()` returns xarray
-metrics without saving a report. `save_evaluation()` writes `report.html` and
-`metrics.nc` together in a new directory. Reload them to make custom plots
-without running inference again. The metadata records effective settings and
+metrics without saving a report. `save_evaluation()` writes one standalone HTML
+file beside the evaluation recipe. Use the returned analysis for custom plots
+or explicitly export selected metrics if needed. The metadata records effective settings and
 input identities. Result keys are `zenith_observations`, `zenith_test`,
 `bls_observations` and `bls_test` for the groups and inputs present in the recipe.
 A configured `bls_baseline` has separate scores in each group. See

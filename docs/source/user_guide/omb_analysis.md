@@ -122,7 +122,7 @@ residuals, residual_std = omb.remove_explained_variance(
 )
 ```
 
-Both arrays are in kelvin. Use xarray selection and plotting methods for your
-own analysis. `difference.to_netcdf("omb.nc")` exports the differences if needed.
+Both arrays are in kelvin. Use xarray selection and plotting methods for further
+analysis. `difference.to_netcdf("omb.nc")` exports the differences if needed.
 `omb.save()` generates the HTML report. Training noise and bias adjustment
 require separate [recipe settings](recipe_settings.md#input-noise-and-bias-correction).

@@ -23,8 +23,8 @@ Files are saved under `data/sites/my_site/predictions/YYYY/MM/` as
 Set `retrieval_output_dir` in `site.toml` or pass `--output-dir` to choose another
 root. Relative paths resolve from the working project.
 
-You can list several retrieval names. Omitting them uses `[prediction].retrievals`
-in `site.toml`. Reprocessing replaces the selected day's zenith or scan file,
+List several retrieval names to process them together. Omitting them uses
+`[prediction].retrievals` in `site.toml`. Reprocessing replaces the selected day's zenith or scan file,
 including its model selection. Zenith measurements are averaged to one minute.
 Zenith predictions receive a centred five-sample running mean. Scan predictions
 are not smoothed.
@@ -55,7 +55,7 @@ Successful launching does not mean that processing has finished.
 Data commands append console output to the first selected dataset's `build.log`.
 Other datasets keep their own build logs. Rebuilds preserve `build.log` while
 replacing the generated data. Training uses `training.log` or `optimization.log`
-beside the retrieval. Evaluation uses `sites/<site>/evaluations/<name>/evaluation.log`. Prediction appends
+beside the retrieval. Evaluation uses `sites/<site>/evaluations/<name>.log`. Prediction appends
 to `prediction.log` in the prediction output directory.
 
 Use `--dry-run` before launching a background data build. The two options cannot

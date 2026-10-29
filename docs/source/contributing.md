@@ -4,18 +4,18 @@ Any contributions to the openMWR package are very welcome!
 
 ## How to Contribute
 
-You can contribute by:
+Contributions include:
 
 - Reporting bugs
 - Suggesting improvements
 - Adding new features
 - Improving documentation
 
-To contribute, please create a new issue or create a pull request with your changes.
+Open an issue or submit a pull request with the changes.
 
 ## Build the documentation
 
-With your Python environment activated, run from the openMWR checkout:
+With the Python environment activated, run from the openMWR checkout:
 
 ```bash
 python -m pip install --editable ".[docs]"

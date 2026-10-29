@@ -10,9 +10,10 @@ simulated brightness temperatures. The main steps are:
 5. Train the retrieval model
 6. Compare the retrieval with real measurements
 
-Follow [Installation](installation.md) first. Run the commands from your working
+Follow [Installation](installation.md) first. Run the commands from the working
 project, with its virtual environment activated. The example uses `my_site` as
-the site name and Munich settings. Replace these with your own.
+the site name and Munich settings. Replace them with the intended site name and
+settings.
 
 The commands read TOML files, called *recipes*, which describe datasets and
 retrievals. The first step creates these files.
@@ -23,8 +24,9 @@ retrievals. The first step creates these files.
 openMWR create-site my_site
 ```
 
-This creates site settings, dataset recipes and retrieval examples. They contain
-example settings to review for your instrument and application:
+This creates site settings, dataset recipes, one NN retrieval recipe and an
+evaluation recipe. Review the example settings for the instrument and intended
+application:
 
 ```text
 grids.toml
@@ -39,10 +41,8 @@ sites/my_site/
         analysis_radiosonde.toml
     retrieval/
         NN_example/retrieval.toml
-        ...
     evaluations/
         radiosonde.toml
-        spectral.toml
 data/sites/my_site/
 ```
 
@@ -54,6 +54,11 @@ downloaded and generated datasets. `grids.toml` defines named height, frequency
 and elevation-angle grids shared by the sites in this project.
 Creating a site does not download or process data and refuses to overwrite an
 existing site.
+It also creates a `.gitignore` if one is absent, excluding data, logs, generated
+reports and optimization databases. To preserve studies for later continuation,
+back up their databases separately. Retrieval recipes and model checkpoints are
+not excluded.
+Additional retrievals are available in [Retrieval Examples](retrieval_examples.md).
 
 Uncomment and fill in the instrument settings at the top of
 `sites/my_site/site.toml`, before `[prediction]`. For the G5 HATPRO in Munich:
@@ -74,7 +79,7 @@ paths are needed later for evaluation and prediction.
 The diagram shows the available dataset types and how their inputs connect.
 The names below each type correspond to recipe filenames without `.toml`.
 `create-site` supplies the radiosonde path. [ERA5](#using-era5) is an alternative
-that you can add later.
+source.
 
 ```{figure} ../../_static/dataset_workflow.svg
 :alt: Radiosondes or ERA5 feed prepared profiles, then simulations. Simulations feed training splits and analysis datasets. Analysis also takes HATPRO measurements.
@@ -91,13 +96,13 @@ with matching reference profiles. It does not use the training split.
 
 Several recipes can share an input. To compare two absorption models, keep one
 prepared-profile dataset and create two simulation recipes with different names.
-You can also prepare the same source in different ways. Each derived dataset is
+Different preparation recipes can also share a source. Each derived dataset is
 saved under `data/sites/my_site/<recipe-name>/`.
 
 `openMWR data` builds or updates the selected datasets. Adding
 `--with-dependencies` follows the arrows from their sources first. Without it,
-the inputs must already exist. The steps below run separately so you can inspect
-each result.
+the inputs must already exist. Run the steps below separately and inspect each
+result.
 
 ## Download and Prepare the Training Data
 
@@ -194,8 +199,8 @@ Monthly completion is also a modelling assumption.
 required grid. Both choices reject profiles that still lack the fields needed
 for radiative transfer.
 
-`levels_208_30km` names 208 heights up to 30 km in `grids.toml`. You can add another
-named grid there or use a numeric list in the recipe. Heights are in metres.
+`levels_208_30km` names 208 heights up to 30 km in `grids.toml`. Custom grids can
+be defined there or as numeric lists in recipes. Heights are in metres.
 The retrieval can use this grid or a subset of it.
 
 To use the MWR height as the profile base instead of the radiosonde station
@@ -242,13 +247,13 @@ openMWR data my_site simulation
 Results are saved as `data/sites/my_site/simulation/03715.nc`.
 To control parallel processing, add `[execution]` with `processes = 4`, for
 example. With torchMWRT, this controls the libRadtran workers. The microwave
-calculation processes profiles in batches. Choose a worker count that fits your
+calculation processes profiles in batches. Choose a worker count that fits the
 available CPU cores and memory.
 
 For channel-frequency experiments, `frequency_shift` accepts one offset per
 channel under `[radiative_transfer]`. Offsets are in GHz and are subtracted from
 the nominal frequencies. Copy the recipe to a new name before changing the
-simulation if you want to keep both datasets.
+simulation to keep both datasets.
 
 ## Separate training, validation and test datasets
 
@@ -315,7 +320,7 @@ pressure and relative humidity, and the sine and cosine of the day of year.
 Outputs are temperature, relative humidity and LWC profiles, plus LWP and IWV.
 Experience with Munich retrievals suggests that predicting these quantities
 jointly can improve performance. Use `output_vars` to select a different set of
-targets for your application.
+targets.
 Normalization and loss weights are written explicitly in the recipe.
 The network and its training use PyTorch.
 
@@ -403,7 +408,7 @@ The reference profiles must cover the selected observation period.
 
 Open `sites/my_site/evaluations/radiosonde.toml`. This comparison recipe selects
 the saved models and reference data independently of their training recipes.
-Set `station_id` and `test.sources` to your radiosonde station IDs. Add the
+Set `station_id` and `test.sources` to the selected radiosonde station IDs. Add the
 observation start date under `[observations]`:
 
 ```toml
@@ -422,9 +427,11 @@ retrievals = ["NN_example", "MLR_example"]
 openMWR evaluate my_site radiosonde
 ```
 
-The command prints a new directory under `sites/my_site/evaluations/radiosonde/`.
-Open its `report.html` in a browser. `metrics.nc` contains the same numerical
-results for [Python analysis](python_usage.md#evaluate-retrievals).
+The command prints the path to one standalone HTML report, saved as
+`sites/my_site/evaluations/radiosonde_YYYY-MM-DD_HH-MM-SS.html` with a UTC
+timestamp. Open it in a browser. All figures are embedded vector graphics.
+Use `--output comparison.html` to choose a filename. Existing files are preserved.
+Numerical results are available through [Python](python_usage.md#evaluate-retrievals).
 
 All selected models use the explicitly chosen test dataset. Zenith and BLS
 models have separate report sections. Scores compare common finite samples
@@ -449,7 +456,13 @@ See [Retrieval Analysis](retrieval_analysis.ipynb) for custom plots.
 
 ## Optimize hyperparameters and input noise
 
-The generated `NN_opt_example` recipe demonstrates parameter searches. A fixed
+Create an optimization example:
+
+```bash
+openMWR create-retrieval my_site NN_opt_example --example NN_opt
+```
+
+Its recipe demonstrates parameter searches. A fixed
 value is replaced by an explicit range in the same place, for example under
 `[training]`:
 
@@ -461,8 +474,8 @@ Its `[input_noise]` section also contains search ranges. `[optimization]`
 sets the trial count, sampling seed, analysis dataset and scoring weights.
 The example score weights temperature RMSE by 1.0 and relative-humidity RMSE by
 0.1, with the model's height weights applied across its full output grid.
-Here that includes monthly-completed upper levels. Review this objective and
-the output grid for your use.
+Here that includes monthly-completed upper levels. Review the objective and
+output grid before optimization.
 
 Add `start_date = "2024-11-01"` under `[optimization]` in the retrieval recipe.
 The example uses observation days 1–20 for optimization. The separate
@@ -488,10 +501,10 @@ the underlying datasets. Keep those unchanged when continuing a study.
 
 ## Other retrievals
 
-The generated examples also include `MLR_example` for multilinear regression,
-`NN_BLS_example` for boundary layer scans, and `SPC_example` for spectral
-consistency. Each has an `_opt_example` counterpart. They use the same commands
-with their own retrieval name. Scan models need simulations at their input angles.
+[Retrieval Examples](retrieval_examples.md) provides multilinear regression,
+boundary layer scan and spectral-consistency recipes, with fixed and optimization
+settings. Add them with `openMWR create-retrieval` and use the same training
+commands with their retrieval name. Scan models need simulations at their input angles.
 
 Next, [run and plot a retrieval](run_retrieval.ipynb), set up
 [regular prediction and updates](run_operational.md), or use the same workflows

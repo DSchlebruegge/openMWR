@@ -8,7 +8,7 @@ import tomli_w
 from typing import Any, Union
 from openMWR.config import (check_name, check_invalid_measurements, check_keys,
                             check_number, check_strings, check_time_selection, check_hatpro_format)
-from openMWR.paths import project_root, site_root, site_data_dir, site_config_file
+from openMWR.paths import project_root, site_root, site_data_dir, site_config_file, retrieval_dir, PREDICTIONS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,29 @@ def _example_files(directory, relative=Path()):
             yield path, entry.read_text(encoding='utf-8')
 
 
+def retrieval_examples():
+    """Return the names of the bundled fixed and optimization recipes."""
+    directory = files('openMWR').joinpath('templates', 'site', 'retrieval')
+    return sorted(entry.name.removesuffix('_example') for entry in directory.iterdir() if entry.is_dir())
+
+
+def create_retrieval(site, name, project_dir, *, example='NN'):
+    """Copy one bundled recipe into a new named retrieval directory.
+
+    Review its scientific settings and station selection before training.
+    Existing retrieval directories are never overwritten.
+    """
+    load_site_config(site, project_dir)
+    check_name(name, 'retrieval')
+    if example not in retrieval_examples():
+        raise ValueError(f'Unknown retrieval example {example!r}. Choose from {", ".join(retrieval_examples())}.')
+    text = files('openMWR').joinpath('templates', 'site', 'retrieval', f'{example}_example', 'retrieval.toml').read_text(encoding='utf-8')
+    directory = retrieval_dir(project_dir, site, name)
+    directory.mkdir(parents=True, exist_ok=False)
+    (directory / 'retrieval.toml').write_text(text, encoding='utf-8')
+    return directory
+
+
 def create_site(site: str, project_dir: str, *, with_examples: bool = False, **config):
     """
     Create directory structure and config file for a new site.
@@ -127,9 +150,8 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
 
     with_examples : bool, default=False
         Include commented site settings, a radiosonde dataset chain, HATPRO and
-        radiosonde-analysis recipes, and fixed/optimization examples for zenith
-        NN/MLR, BLS NN and spectral-consistency retrievals. Named profile and
-        spectral evaluation examples select comparison data separately.
+        radiosonde-analysis recipes, one zenith NN retrieval and its evaluation.
+        Other retrieval examples are available through ``create_retrieval``.
         Site details and radiosonde station IDs must be filled in before processing data.
 
     **config : dict
@@ -206,7 +228,12 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
         raise FileExistsError(f'Site already exists: {directory}. Choose a new site name.')
     documents = {}
     if with_examples:
-        documents.update(_example_files(files('openMWR').joinpath('templates', 'site')))
+        for path, text in _example_files(files('openMWR').joinpath('templates', 'site')):
+            if path.parts[0] == 'retrieval' and path.parts[1] != 'NN_example':
+                continue
+            if path == Path('evaluations/spectral.toml'):
+                continue
+            documents[path] = text
         config = {'prediction': {'retrievals': ['NN_example']}, **config}
     config = {key: value for key, value in config.items() if value is not None}
     _validate_site(config)
@@ -214,6 +241,9 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
     documents[Path('site.toml')] = documents.get(Path('site.toml'), '') + document
 
     directory.mkdir(parents=True)
+    ignore_path = project_root(project_dir) / '.gitignore'
+    if not ignore_path.exists():
+        ignore_path.write_text(files('openMWR').joinpath('templates', 'project.gitignore').read_text(encoding='utf-8'), encoding='utf-8')
     grids_path = project_root(project_dir) / 'grids.toml'
     if not grids_path.exists():
         grids_path.write_text(files('openMWR').joinpath('templates', 'grids.toml').read_text(encoding='utf-8'), encoding='utf-8')
@@ -239,7 +269,7 @@ def prediction_output_dir(project_dir, site, output_dir=None, *, site_config=Non
     if output_dir is None:
         output_dir = load_site_config(site, project_dir, config=site_config).get('retrieval_output_dir')
     if output_dir is None:
-        return site_data_dir(project_dir, site, 'predictions')
+        return site_data_dir(project_dir, site, PREDICTIONS_DIR)
     return project_root(project_dir) / Path(output_dir).expanduser()
 
 
