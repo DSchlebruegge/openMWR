@@ -12,6 +12,7 @@ User Guide
    run_operational
    python_usage
    recipe_settings
+   upgrading_from_0_1
    torchMWRT_demo
    omb_analysis
    spc_retrieval

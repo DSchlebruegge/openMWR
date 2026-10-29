@@ -20,6 +20,8 @@ Start with [Installation](user_guide/installation.md), then
 recipes and the `openMWR` commands. The same workflows are available
 [from Python](user_guide/python_usage.md).
 
+For an existing project, see [Upgrading from 0.1](user_guide/upgrading_from_0_1.md).
+
 ## User Guide
 
 ```{toctree}

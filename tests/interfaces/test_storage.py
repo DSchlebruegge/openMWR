@@ -1,4 +1,5 @@
 import tomllib
+from pathlib import Path
 
 import numpy as np
 import optuna
@@ -6,7 +7,8 @@ import pytest
 import torch
 import xarray as xr
 
-from openMWR.models import Model
+from openMWR.models import Model, load_model
+from openMWR.predict import run_model
 from openMWR.site import create_site, get_config_parameter
 from openMWR.train import TrainingWorkflow
 
@@ -69,31 +71,28 @@ def test_workflow_loads_retrieval_optimization_history(tmp_path):
     assert workflow.hyper_params["learning_rate"] == 0.01
 
 
-@pytest.mark.parametrize(('bls', 'bounds', 'values'), [
-    (False, [10000], [1., .5]),
-    (True, [2000, 10000], [1., .5, .25]),
-], ids=['zenith', 'bls'])
-def test_historical_checkpoint_recovers_weights_and_angles(tmp_path, bls, bounds, values):
-    weights = {**{name: {'upper_bounds': bounds, 'values': values} for name in ('T', 'rh', 'lwc')},
-               'lwp': 1., 'iwv': 1.}
-    model = Model('historical', heights=[0., 2000., 2001., 10000., 10001.],
-                  freqs=[22.24], is_bls_model=bls, hidden_layers=[4],
-                  additional_input_vars=[], loss_weights=weights, angles=[90.] if bls else None)
-    model.nor = xr.Dataset(coords={'ang': model.angles}) if bls else xr.Dataset()
-    model.eval()
-    inputs = torch.zeros(2, model.n_input)
-    before = model(inputs)
-    model.save('test', tmp_path, {})
+@pytest.mark.parametrize('name', ['zenith', 'bls', 'mlr', 'spectral'])
+def test_version_01_checkpoint_migration_preserves_predictions(tmp_path, name):
+    reference = torch.load(Path(__file__).parents[1] / 'data/checkpoint_01.pt',
+                           map_location='cpu', weights_only=False)
+    case = next(case for case in reference['cases'] if case['name'] == name)
+    old = tmp_path / 'data/sites/test/retrieval' / f'{name}.pth'
+    old.parent.mkdir(parents=True)
+    old.write_bytes(case['checkpoint'])
+    original = old.read_bytes()
+    current = tmp_path / 'sites/test/retrieval' / name / 'model.pth'
+    current.parent.mkdir(parents=True)
+    old.rename(current)
 
-    path = tmp_path / 'sites/test/retrieval/historical/model.pth'
-    checkpoint = torch.load(path, weights_only=False)
-    checkpoint['structure'].pop('loss_weights')
-    checkpoint['structure']['angles'] = None
-    torch.save(checkpoint, path)
-
-    restored = Model.load('historical', 'test', tmp_path)
-    restored.eval()
-    xr.testing.assert_identical(restored.loss_weights, model.loss_weights)
-    if bls:
-        assert restored.angles == model.angles
-    torch.testing.assert_close(restored(inputs), before)
+    model = load_model(name, 'test', tmp_path)
+    inputs = xr.Dataset.from_dict(case['inputs'])
+    expected = xr.Dataset.from_dict(case['prediction'])
+    actual = run_model(model, inputs, 'cpu', include_input_vars=False)
+    xr.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+    assert current.read_bytes() == original
+    assert not current.with_name('retrieval.toml').exists()
+    assert model.training_dataset == 'training_r17'
+    if case['loss_weights'] is not None:
+        xr.testing.assert_identical(model.loss_weights, xr.Dataset.from_dict(case['loss_weights']))
+    if name == 'bls':
+        np.testing.assert_array_equal(model.angles, model.nor.ang)

@@ -20,7 +20,7 @@ def test_installed_console_and_module_entry_points():
     console = Path(sys.executable).with_name('openMWR')
     for invocation in ([str(console)], [sys.executable, '-m', 'openMWR']):
         result = subprocess.run([*invocation, '-h'], capture_output=True, text=True, check=True)
-        assert all(name in result.stdout for name in ('create-site', 'data', 'train', 'evaluate', 'predict'))
+        assert all(name in result.stdout for name in ('create-site', 'migrate', 'data', 'train', 'evaluate', 'predict'))
 
 
 def test_data_flags_and_multiple_targets_reach_workflow(tmp_path, monkeypatch):
