@@ -28,12 +28,12 @@ def test_recipe_training_requires_only_selected_training_and_validation_files(tm
     ('mlr', 'model', 'hidden_layers = [4]'),
     ('mlr', 'model', 'dropout_rate = 0.1'),
     ('mlr', 'model', 'loss_weights = { T = 1.0, rh = 1.0, lwc = 1.0, lwp = 1.0, iwv = 1.0 }'),
-    ('nn', 'training', 'repeats_for_linear_regression = 2'),
+    ('mlr', 'training', 'repeats_for_linear_regression = 2'),
 ])
 def test_unused_model_settings_are_rejected(kind, section, setting, tmp_path):
     recipe, data = retrieval_project(tmp_path, kind, search=False)
     recipe.write_text(recipe.read_text().replace(f'[{section}]\n', f'[{section}]\n{setting}\n'))
-    with pytest.raises(ValueError, match='is not used by'):
+    with pytest.raises(ValueError, match='is not used by|Unknown training setting'):
         TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     assert not (recipe.parent / 'model.pth').exists()
 

@@ -31,7 +31,7 @@ def test_python_helpers_observe_template_values_and_overrides(tmp_path, monkeypa
     package = tmp_path / 'package'
     copytree(files('openMWR').joinpath('templates'), package / 'templates')
     monkeypatch.setattr('openMWR.recipes.files', lambda name: package)
-    key = 'repeats_for_linear_regression' if family == 'MLR' else 'epochs'
+    key = 'seed' if family == 'MLR' else 'epochs'
     for suffix in ('', '_opt'):
         path = package / f'templates/site/retrieval/{family}{suffix}_example/retrieval.toml'
         settings = tomllib.loads(path.read_text())
@@ -47,7 +47,6 @@ def test_python_helpers_observe_template_values_and_overrides(tmp_path, monkeypa
     training = workflow(project, family)
     training.add_standard_training_hyper_params()
     assert training.hyper_params[key] == 17
-    assert ('repeats_for_linear_regression' in training.hyper_params) == (family == 'MLR')
     assert ('weight_decay' in training.hyper_params) == (family != 'MLR')
     training.add_standard_training_hyper_params(**{key: 3})
     assert training.hyper_params[key] == 3

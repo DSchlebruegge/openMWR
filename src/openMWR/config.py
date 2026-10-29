@@ -9,16 +9,16 @@ import tomllib
 
 from openMWR.paths import project_root
 
-INTEGER_TRAINING = ("epochs", "batch_size", "repeats_for_linear_regression", "epoch_max_lr")
+INTEGER_TRAINING = ("epochs", "batch_size", "epoch_max_lr")
 _NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
-TRAINING_PARAMETERS = _NN_TRAINING | {"repeats_for_linear_regression", "seed", "bias_weight"}
+TRAINING_PARAMETERS = _NN_TRAINING | {"seed", "bias_weight"}
 TIME_SELECTION_KEYS = ('start_date', 'end_date', 'days_of_month')
 
 
 def training_parameters(is_mlr, loss_fn=None):
     """Training settings used by the selected fitting method."""
     if is_mlr:
-        return {"repeats_for_linear_regression", "seed"}
+        return {"seed"}
     choices = (loss_fn.get('choices', []) if isinstance(loss_fn, dict)
                else getattr(loss_fn, 'choices', [loss_fn]))
     return _NN_TRAINING | {'seed'} | ({'bias_weight'} if any(v in ('MAEPlusBiasLoss', 'MSEPlusBiasLoss') for v in choices) else set())

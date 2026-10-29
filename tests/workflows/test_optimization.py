@@ -62,6 +62,15 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
         training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
     continued.set_user_attr('openMWR_experiment', definition)
+    # A history fitted with sampled noise cannot continue with the expected loss.
+    old_fitting = {key: value for key, value in definition.items() if key != 'fitting'}
+    old_fitting['hyper_params'] = {**definition['hyper_params'], 'repeats_for_linear_regression': 10}
+    continued.set_user_attr('openMWR_experiment', old_fitting)
+    legacy = training_workflow(tmp_path)
+    legacy.change_hyper_params(repeats_for_linear_regression=10)
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        legacy.optimize(n_trials=1, run_mode='continue')
+    continued.set_user_attr('openMWR_experiment', definition)
     changed_bias = training_workflow(tmp_path)
     changed_bias.change_hyper_params(mean_bias=[0.1, 0.1])
     with pytest.raises(ValueError, match='different or unrecorded experiment'):

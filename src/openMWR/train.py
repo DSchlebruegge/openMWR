@@ -10,7 +10,6 @@ import os
 import optuna
 import logging
 from functools import wraps
-from sklearn.linear_model import LinearRegression
 from collections import namedtuple
 
 from typing import Union, List
@@ -30,6 +29,7 @@ from openMWR.config import (TRAINING_PARAMETERS, check_keys, check_name, require
                             TIME_SELECTION_KEYS, check_score_weights)
 
 logger = logging.getLogger(__name__)
+_MLR_FITTING = 'least squares with expected input-noise penalty'
 
 
 def _logged_run(action):
@@ -279,7 +279,7 @@ class TrainingWorkflow:
         setup = {'training_sources': self.hyper_params.get('sources', self.hyper_params.get('station_ids', [])),
                  'training_selection': self.hyper_params.get('training_selection', {}),
                  'training_dataset': self.hyper_params.get('training_dataset', 'training'),
-                 'fitting': 'ordinary least squares with input-noise repeats' if self.model.is_MLR else self.hyper_params['loss_fn']}
+                 'fitting': _MLR_FITTING if self.model.is_MLR else self.hyper_params['loss_fn']}
         self.logger.info('Training sources: %s; selection: %s; dataset: %s.', setup['training_sources'], setup['training_selection'], setup['training_dataset'])
         self.logger.info('Fitting: %s.', setup['fitting'])
         if optimization is not None:
@@ -414,7 +414,6 @@ class TrainingWorkflow:
                         epoch_max_lr=None,
                         loss_fn=None,
                         weight_decay=None,
-                        repeats_for_linear_regression=None,
                         seed=None,
                         bias_weight=None):
         """Use the matching bundled example's training settings, with explicit overrides.
@@ -426,8 +425,7 @@ class TrainingWorkflow:
                       if key in TRAINING_PARAMETERS}
         overrides = {'batch_size': batch_size, 'epochs': epochs, 'lr_height': lr_height,
                      'lr_low': lr_low, 'epoch_max_lr': epoch_max_lr, 'loss_fn': loss_fn,
-                     'weight_decay': weight_decay, 'seed': seed, 'bias_weight': bias_weight,
-                     'repeats_for_linear_regression': repeats_for_linear_regression}
+                     'weight_decay': weight_decay, 'seed': seed, 'bias_weight': bias_weight}
         parameters.update({key: value for key, value in overrides.items() if value is not None})
         validate_parameter_usage(self.model.is_MLR, parameters, complete=True)
         self.change_hyper_params(**{key: resolve_parameter(value, key, f'training.{key}', self)
@@ -944,7 +942,7 @@ class TrainingWorkflow:
     
     def _calc_linear_regression(self, model: BaseModel, x_training, y_training, hyper_params):
         """
-        Fit a linear regression model for MLR-based architectures.
+        Fit MLR coefficients using the exact expected input-noise loss.
 
         Parameters
         ----------
@@ -955,7 +953,7 @@ class TrainingWorkflow:
         y_training : torch.Tensor
             Training targets.
         hyper_params : dict
-            Hyperparameters including noise and repeats.
+            Input-noise hyperparameters in the original input units.
 
         Returns
         -------
@@ -964,27 +962,24 @@ class TrainingWorkflow:
 
         Notes
         -----
-        - Uses LinearRegression from scikit-learn.
-        - repeats training data with input noise for robustness.
+        Independent zero-mean input noise with normalized standard deviations s
+        adds n * diag(s**2) to the centered least-squares normal equations.
+        An augmented least-squares solve avoids forming those normal equations
+        and supports zero noise and rank-deficient inputs. The intercept is
+        unpenalized. This minimizes the expected loss, replacing random repeats.
         """
-        repeats = hyper_params['repeats_for_linear_regression']
-
-        x_training_np = x_training.cpu().numpy()
-        y_training_np = y_training.cpu().numpy()
-
-        x_repeated = np.concatenate([x_training_np] * repeats, axis=0)
-        y_repeated = np.concatenate([y_training_np] * repeats, axis=0)
-
+        x = x_training.cpu().numpy().astype(np.float64)
+        y = y_training.cpu().numpy().astype(np.float64)
+        x_mean, y_mean = x.mean(axis=0), y.mean(axis=0)
         std_dev = self._get_std_dev_array_from_input_noise(model, hyper_params)
-
-        x_noisy = x_repeated + np.random.randn(*x_repeated.shape) * std_dev
-
-        LR = LinearRegression()
-        LR.fit(x_noisy, y_repeated)
-
+        penalty = np.diag(np.sqrt(len(x)) * std_dev)
+        coefficients, *_ = np.linalg.lstsq(
+            np.vstack((x - x_mean, penalty)),
+            np.vstack((y - y_mean, np.zeros((x.shape[1], y.shape[1])))), rcond=None)
+        intercept = y_mean - x_mean @ coefficients
         with torch.no_grad():
-            model.stack.weight.copy_(torch.tensor(LR.coef_))
-            model.stack.bias.copy_(torch.tensor(LR.intercept_))   
+            model.stack.weight.copy_(torch.as_tensor(coefficients.T))
+            model.stack.bias.copy_(torch.as_tensor(intercept))
 
         return model
 
@@ -1128,6 +1123,8 @@ class TrainingWorkflow:
                                   'data_source': data_source, 'analysis_dataset': analysis_name,
                                   'optimization': {key: settings[key] for key in ('seed', 'score_weights', *TIME_SELECTION_KEYS) if key in settings}})
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
+        if self.model.is_MLR:
+            experiment['fitting'] = _MLR_FITTING
         previous = study.user_attrs.get('openMWR_experiment')
         if (previous is not None and previous != experiment) or (previous is None and study.trials):
             raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')

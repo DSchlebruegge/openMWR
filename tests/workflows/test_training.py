@@ -82,7 +82,6 @@ def test_one_epoch_models_train_and_evaluate(kind, mode, tmp_path):
         settings['model']['loss_weights'] = {'T': [1., .3], 'rh': .7, 'lwc': .2, 'lwp': 1., 'iwv': 1.}
         recipe.write_text(tomli_w.dumps(settings))
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
-    assert 'repeats_for_linear_regression' not in workflow.hyper_params
     initial = {key: value.clone() for key, value in workflow.model.state_dict().items()}
     model = workflow.train()
     assert any(not torch.equal(initial[key], value) for key, value in model.state_dict().items())
@@ -100,11 +99,12 @@ def test_one_epoch_models_train_and_evaluate(kind, mode, tmp_path):
 def test_python_overrides_are_saved_and_prediction_needs_no_recipe(tmp_path):
     recipe, data = retrieval_project(tmp_path, suffix='', search=False)
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
-    workflow.change_hyper_params(repeats_for_linear_regression=2)
+    workflow.change_hyper_params(seed=123)
     workflow.train()
     path = recipe.parent / 'model.pth'
     checkpoint = torch.load(path, weights_only=False)
-    assert checkpoint['training_metadata']['effective']['hyper_params']['repeats_for_linear_regression'] == 2
+    assert checkpoint['training_metadata']['effective']['hyper_params']['seed'] == 123
+    assert checkpoint['training_metadata']['setup']['fitting'] == 'least squares with expected input-noise penalty'
     checkpoint.pop('training_metadata')
     torch.save(checkpoint, path)
     recipe.unlink()
@@ -121,7 +121,7 @@ def test_manual_python_workflow_still_uses_the_same_training(tmp_path):
     model = type(configured.model)(**configured.model.structure)
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     workflow.load_training_data(['03715'], dataset='training_variant')
-    workflow.add_standard_training_hyper_params(repeats_for_linear_regression=1)
+    workflow.add_standard_training_hyper_params()
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
     checkpoint = (recipe.parent / 'model.pth').read_bytes()
     with pytest.raises(ValueError, match='Results already exist'):

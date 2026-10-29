@@ -32,7 +32,7 @@ norm_functions = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_nor
         settings += 'hidden_layer_size = 4\n'
     if mode == 'bls':
         settings += 'angles = [90.0, 30.0]\nvary_input_noise_with_angle_linear = true\n'
-    training = ('repeats_for_linear_regression = 1\n' if kind == 'mlr' else
+    training = ('' if kind == 'mlr' else
                 'epochs = 1\nbatch_size = 4\nlr_height = 0.002\nlr_low = 1e-7\nepoch_max_lr = 50\nloss_fn = "MAE"\nweight_decay = 1e-5\n')
     variant = f'dataset = "training_{suffix}"\n' if suffix else 'dataset = "training"\n'
     settings += f'''

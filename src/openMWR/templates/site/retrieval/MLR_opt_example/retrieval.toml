@@ -30,7 +30,6 @@ dataset = "training"
 [training]
 # Use an integer for repeatable training, or "random".
 seed = 42
-repeats_for_linear_regression = 10
 
 [input_noise]
 method = "standard"

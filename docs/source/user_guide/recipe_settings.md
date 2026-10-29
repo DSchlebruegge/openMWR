@@ -133,13 +133,22 @@ fitting and test period.
 | `[model].kind` | Mode | Model and training choices |
 | --- | --- | --- |
 | `nn` | `zenith` or `bls` | `hidden_layers`, `loss_weights`, optional `dropout_rate` and neural training settings |
-| `mlr` | `zenith` or `bls` | `training.seed` and `training.repeats_for_linear_regression`. Neural settings and profile loss weights are not used |
+| `mlr` | `zenith` or `bls` | `training.seed` and explicit input noise. Neural settings and profile loss weights are not used |
 | `spectral` | `zenith` | `hidden_layer_size`, at least two frequencies and neural training settings. No profile settings |
 
 Profile models specify `heights` and `additional_input_vars`, which may be empty.
 BLS models also specify `angles`. All models require `norm_functions` for every
 active input and output. Supported names are `z_norm`, `std_norm`, `log_norm` and
 `max_norm`. Dropout is off when omitted.
+
+MLR fits the expected squared error under independent, zero-mean input noise
+directly. It uses the configured noise levels without generating random noisy
+copies. In normalized coordinates, each input's noise variance penalizes its
+squared regression coefficients. The intercept is unpenalized. This is a form
+of [Tikhonov regularization](https://www.microsoft.com/en-us/research/publication/training-with-noise-is-equivalent-to-tikhonov-regularization/).
+The fit is deterministic for fixed data and noise levels. Noise searches still
+use the separate observation score below. Values selected this way are tuning
+parameters and need not represent instrument noise alone.
 
 ### Loss weights
 
@@ -233,8 +242,9 @@ Filters intersect. Date bounds include the whole end day and omitted filters
 impose no restriction. Analysis datasets themselves retain all matched dates.
 Keep final evaluation data outside fitting and tuning choices.
 
-`training.seed` controls initialization, shuffling and added noise. Use an integer
-or `"random"` for an unseeded run. `optimization.seed` controls Optuna sampling
+`training.seed` controls initialization and, for neural models, shuffling and
+added noise. Use an integer or `"random"` for an unseeded run. MLR fitting uses
+no random draws. `optimization.seed` controls Optuna sampling
 separately. With fixed seeds and the same trial history, sequential continuation
 matches an uninterrupted study, subject to the numerical backend.
 
@@ -243,6 +253,10 @@ It does not detect changed dataset contents. Keep the data unchanged or start a
 fresh study. `--fresh` replaces this retrieval's model, study and progress PDF
 after input checks. It retains recipes, logs and datasets. It does not resume
 neural network weights.
+
+MLR studies fitted with random input-noise copies require `--fresh` or a new
+retrieval name. They cannot continue with the expected-noise fitting method.
+Saved models remain usable for prediction and evaluation.
 
 ## Evaluation settings
 
