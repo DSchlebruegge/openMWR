@@ -101,8 +101,10 @@ each result.
 
 ## Download and Prepare the Training Data
 
-The tutorial uses radiosondes from the German weather service (DWD). ERA5 can
-also supply profiles. See [Using ERA5](#using-era5) below.
+The tutorial uses radiosondes from the German weather service (DWD). These
+high-resolution measured profiles are the recommended starting point, based on
+experience with Munich retrievals. ERA5 can also supply profiles. See
+[Using ERA5](#using-era5) below.
 
 ### Download radiosonde data
 
@@ -181,11 +183,16 @@ With the generated settings, preparation:
 - Completes missing upper levels using monthly means of the available profiles.
 - Adds derived quantities, including liquid water path (LWP) and integrated water vapour (IWV).
 
-Cloud estimates and monthly completion are modelling assumptions. The recipe
-states the cloud thresholds and adiabatic fraction. Its comments describe the
-available formulas. `incomplete_profiles = "filter"` instead rejects profiles
-that do not cover the required grid. Both choices reject profiles that still
-lack the fields needed for radiative transfer.
+Temperature and humidity thresholds identify possible liquid-cloud layers in
+the radiosonde profiles. A scaled adiabatic model estimates their liquid water
+content for the radiative-transfer simulation. These clouds are model estimates,
+not measured cloud-water profiles. The recipe states the cloud thresholds and
+adiabatic fraction. Its comments describe the available formulas.
+
+Monthly completion is also a modelling assumption.
+`incomplete_profiles = "filter"` instead rejects profiles that do not cover the
+required grid. Both choices reject profiles that still lack the fields needed
+for radiative transfer.
 
 `levels_208_30km` names 208 heights up to 30 km in `grids.toml`. You can add another
 named grid there or use a numeric list in the recipe. Heights are in metres.
@@ -306,6 +313,9 @@ selects a zenith neural network with hidden layers of 1024, 64 and 1024 neurons.
 Inputs are microwave and infrared brightness temperatures, surface temperature,
 pressure and relative humidity, and the sine and cosine of the day of year.
 Outputs are temperature, relative humidity and LWC profiles, plus LWP and IWV.
+Experience with Munich retrievals suggests that predicting these quantities
+jointly can improve performance. Use `output_vars` to select a different set of
+targets for your application.
 Normalization and loss weights are written explicitly in the recipe.
 The network and its training use PyTorch.
 

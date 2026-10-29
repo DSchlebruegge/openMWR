@@ -34,6 +34,9 @@ def launch(args, argv):
 
         EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
         path = evaluation_dir(args.project_dir, args.site, args.evaluation) / 'evaluation.log'
+    elif args.command == 'omb':
+        check_name(args.dataset, 'dataset')
+        path = dataset_dir(args.project_dir, args.site, args.dataset) / 'omb.log'
     else:
         check_name(args.retrieval, 'retrieval')
         from openMWR.recipes import RetrievalRecipe

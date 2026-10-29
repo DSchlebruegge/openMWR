@@ -32,10 +32,9 @@ def _dilec12(f: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 
     Notes
     -----
-    This is the torchMWRT port of ``pyrtlib.utils.dilec12`` (formerly public
-    ``dilec12`` in ``utils.py``). It keeps the same three-term structure:
+    This is the torchMWRT port of ``pyrtlib.utils.dilec12``. It uses a three-term structure:
     static dielectric behavior, Debye relaxation, and the Rosenkranz B-band
-    correction using complex logarithms. The original pyrtlib note reports
+    correction using complex logarithms. The pyrtlib note reports
     validation ranges of approximately 20-220 GHz for 248-273 K and 1-1000 GHz
     for 273-330 K.
 

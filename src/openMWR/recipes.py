@@ -159,10 +159,10 @@ class RetrievalRecipe:
         for key, value in noise.items():
             if key == "method":
                 continue
-            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor", *TIME_SELECTION_KEYS):
+            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor", "statistic", "frequency_bands", "max_lwp", *TIME_SELECTION_KEYS):
                 resolve_parameter(value, f"input_noise_{key}", f"input_noise.{key}")
         if method == "omb":
-            require_keys(noise, ('data_source', 'dataset', 'factor'), 'input_noise')
+            require_keys(noise, ('data_source', 'dataset', 'factor', 'statistic'), 'input_noise')
             check_time_selection(noise, 'input_noise')
             _check_reference(noise, 'input_noise')
             if "sources" in noise:
@@ -170,13 +170,25 @@ class RetrievalRecipe:
             if isinstance(noise["factor"], dict):
                 raise ValueError("input_noise.factor does not support a search; use a fixed OMB scaling factor.")
             check_number(noise["factor"], "input_noise.factor", 0)
+            if noise['statistic'] not in ('std', 'residual_std'):
+                raise ValueError("input_noise.statistic must be 'std' or 'residual_std'.")
+            if noise['statistic'] == 'residual_std':
+                from openMWR.omb import check_frequency_bands
+                require_keys(noise, ('frequency_bands',), 'input_noise')
+                check_frequency_bands(noise['frequency_bands'])
+            elif 'frequency_bands' in noise:
+                raise ValueError('input_noise.frequency_bands is used only by residual_std.')
+            if 'max_lwp' in noise:
+                check_number(noise['max_lwp'], 'input_noise.max_lwp', 0)
         bias = self.section("bias_correction")
-        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs", *TIME_SELECTION_KEYS), "bias_correction")
+        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs", "max_lwp", *TIME_SELECTION_KEYS), "bias_correction")
         if 'bias_correction' in self.values:
             require_keys(bias, ('data_source', 'dataset', 'factor'), 'bias_correction')
             check_time_selection(bias, 'bias_correction')
             _check_reference(bias, 'bias_correction')
-            check_number(bias["factor"], "bias_correction.factor")
+            check_number(bias["factor"], "bias_correction.factor", 0)
+            if 'max_lwp' in bias:
+                check_number(bias['max_lwp'], 'bias_correction.max_lwp', 0)
             if "sources" in bias:
                 check_strings(bias["sources"], "bias_correction.sources")
             if "specific_freqs" in bias:
@@ -232,7 +244,7 @@ class RetrievalRecipe:
     def input_noise_params(self, workflow):
         """Resolve complete fixed/search noise settings; OMB supplies TB noise."""
         settings = self.section("input_noise")
-        metadata = {"method", "data_source", "dataset", "sources", "factor", *TIME_SELECTION_KEYS} if settings["method"] == "omb" else {"method"}
+        metadata = {"method", "data_source", "dataset", "sources", "factor", "statistic", "frequency_bands", "max_lwp", *TIME_SELECTION_KEYS} if settings["method"] == "omb" else {"method"}
         noise = {key: value for key, value in settings.items() if key not in metadata}
         if "TB" in noise:
             tb = noise.pop("TB")

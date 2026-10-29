@@ -18,6 +18,16 @@ including worker processes. Create a new workflow to use edits to `site.toml`.
 Project-specific settings belong in `[custom]`. They do not control openMWR's
 scientific processing.
 
+Optional calibration dates mark the time plots in OMB reports:
+
+```toml
+calibration_dates = ["2025-03-12", "2025-09-04"]
+```
+
+Put this setting at the top level of `site.toml`, before any tables. Dates are
+quoted UTC dates. They are information only and do not filter data or change
+training. Omit the setting if the dates are unknown.
+
 ## Grids
 
 Height, frequency and elevation-angle grids accept numeric lists or names from
@@ -167,7 +177,7 @@ directly. It uses the configured noise levels without generating random noisy
 copies. In normalized coordinates, each input's noise variance penalizes its
 squared regression coefficients. The intercept is unpenalized. This is a form
 of [Tikhonov regularization](https://www.microsoft.com/en-us/research/publication/training-with-noise-is-equivalent-to-tikhonov-regularization/).
-The fit is deterministic for fixed data and noise levels. Noise searches still
+The fit is deterministic for fixed data and noise levels. Noise searches
 use the separate observation score below. Values selected this way are tuning
 parameters and need not represent instrument noise alone.
 
@@ -222,12 +232,14 @@ number or search. Other losses omit it. A search starts optimization through
 active input. `TB` applies to all selected frequencies, with entries such as
 `"TB_22.24"` taking precedence. A `TB` search samples each channel independently.
 
-The alternative `omb` method derives microwave noise from observation-minus-background
-statistics. Replace `[input_noise]` with, for example:
+The alternative `omb` method uses observed-minus-simulated TB scatter as training
+noise. It includes background, RT and sampling errors. It does not measure
+instrument noise. Replace `[input_noise]` with, for example:
 
 ```toml
 [input_noise]
 method = "omb"
+statistic = "std"
 data_source = "era5"
 dataset = "analysis_era5"
 days_of_month = { first = 1, last = 20 }
@@ -237,16 +249,41 @@ surface_T = 0.5
 
 Specify noise for every auxiliary input used by the model. Explicit TB entries
 can override the OMB estimates with numbers or searches. The OMB scaling factor
-is fixed. Optional `sources` restricts the reference stations.
+is fixed. Optional `sources` selects the reference stations. Their finite pairs
+are pooled for training noise. OMB reports keep stations separate.
+
+`statistic` is required. `std` uses total OMB standard deviation. Experimental
+`residual_std` uses the scatter left after regression on the nearest lower and
+upper frequency in each band. It additionally requires explicit bands in GHz:
+
+```toml
+# Entries within [input_noise].
+statistic = "residual_std"
+frequency_bands = [[20.0, 40.0], [50.0, 60.0]]
+```
+
+OMB reports include residual diagnostics with HATPRO groups by default. Training
+requires the explicit `statistic` and `frequency_bands` choices above.
+
+This calculation stays in kelvin and fits only finite channel pairs. Its
+in-sample residual scatter can include background errors and remove correlated
+measurement errors. It is an experimental augmentation choice.
+Optional `max_lwp` selects pairs below that LWP in both sources, in g/m².
 
 BLS models can enable `model.vary_input_noise_with_angle` or
 `model.vary_input_noise_with_angle_linear`, but not both. Their noise values or
-factor belong in `[input_noise]`.
+factor belong in `[input_noise]`. OMB-derived noise uses the zenith estimate and
+these configured angle factors. A zenith comparison must be available.
 
 Optional `[bias_correction]` requires `data_source`, `dataset` and `factor`.
 `sources` and `specific_freqs` restrict it. It shares the observation date filters
-below. Bias correction is fitted before training and its settings are recorded
-in the checkpoint.
+below and accepts `max_lwp`. The fitted mean of observed minus simulated TB is
+added to synthetic training and validation inputs. Measured prediction inputs
+are used directly. BLS corrections are estimated separately by angle.
+The fitted vector, coordinates, counts, selected data identity and dataset
+recipes are recorded in the checkpoint. Use fitting dates separate from final
+evaluation days. Review the reference and calibration period before applying
+an offset. Low LWP alone does not independently establish cloud-free conditions.
 
 ### Optimization and observation selection
 
@@ -276,10 +313,6 @@ outside the selected period do not affect it. Changed data or studies without
 recorded data identities require `--fresh` or a new retrieval name. `--fresh` replaces this retrieval's model, study and progress PDF
 after input checks. It retains recipes, logs and datasets. It does not resume
 neural network weights.
-
-MLR studies fitted with random input-noise copies require `--fresh` or a new
-retrieval name. They cannot continue with the expected-noise fitting method.
-Saved models remain usable for prediction and evaluation.
 
 ## Evaluation settings
 

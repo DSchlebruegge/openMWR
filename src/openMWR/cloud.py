@@ -219,6 +219,8 @@ class CloudColumn:
         RuntimeError
             If cloud indices are not initialized.
         """
+        # Adiabatic thermodynamics based mainly on Rogers and Yau (1989),
+        # A Short Course in Cloud Physics, 3rd ed., Pergamon Press.
         if self.i_base is None or self.i_top is None:
             raise RuntimeError("Cloud detection must be run before computing LWC.")
         

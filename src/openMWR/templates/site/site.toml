@@ -24,6 +24,9 @@
 # Optional: include the instrument's own NetCDF retrieval products in HATPRO datasets.
 # rpg_retrieval_exists = false
 
+# Optional calibration dates (UTC), shown as markers in OMB reports:
+# calibration_dates = ["2025-03-12"]
+
 # Prediction output defaults to data/sites/<site>/predictions/.
 # retrieval_output_dir = "..."
 

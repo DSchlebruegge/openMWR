@@ -5,6 +5,7 @@ Any contributions to the openMWR package are very welcome!
 ## How to Contribute
 
 You can contribute by:
+
 - Reporting bugs
 - Suggesting improvements
 - Adding new features
@@ -27,6 +28,5 @@ The build renders saved notebook outputs. It does not execute the notebooks.
 
 ## Possible features we want to add in the future
 
-- support for more ways to download radiosonde data (e.g., from the University of Wyoming)
-- compatibility with [MWRpy](https://github.com/actris-cloudnet/mwrpy) (For example, by outputting Level 2 data in the correct format)
-- support hatpro binary files as input.
+- Support more radiosonde data sources, such as the University of Wyoming.
+- Export Level 2 retrieval data in a format compatible with [MWRpy](https://github.com/actris-cloudnet/mwrpy).

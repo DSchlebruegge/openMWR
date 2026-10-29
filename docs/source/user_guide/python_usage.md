@@ -106,6 +106,11 @@ models also require loss weights. See {py:class}`openMWR.models.Model` and
 {py:class}`openMWR.train.TrainingWorkflow` for direct construction and custom
 hyperparameters. Recipe-based construction keeps more choices together in one file.
 
+For custom architectures, subclass {py:class}`openMWR.models.BaseModel` in Python.
+Use the built-in models as a reference for the training and prediction interface.
+Load custom checkpoints through your own class's `load()` method. Recipe model
+kinds and command checkpoint loading use the built-in model classes.
+
 ## Evaluate retrievals
 
 ```python

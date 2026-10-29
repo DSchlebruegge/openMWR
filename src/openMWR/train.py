@@ -148,8 +148,8 @@ class TrainingWorkflow:
 
     .. code-block:: python
 
-        workflow.make_omb_analysis(['03715'], data_source='radiosonde', days_of_month={'first': 1, 'last': 20})
-        workflow.select_omb_input_noise_hyper_params()
+        workflow.make_omb_analysis(['03715'], data_source='radiosonde', dataset='analysis_radiosonde', days_of_month={'first': 1, 'last': 20})
+        workflow.select_omb_input_noise_hyper_params(statistic='std', factor=1.0)
         workflow.train()
 
     """
@@ -193,15 +193,19 @@ class TrainingWorkflow:
         if bias:
             sources = bias.get('sources', workflow.hyper_params['station_ids'])
             workflow.make_omb_analysis(sources, data_source=bias['data_source'], dataset=bias['dataset'],
-                **{key: bias[key] for key in TIME_SELECTION_KEYS if key in bias})
+                **{key: bias[key] for key in (*TIME_SELECTION_KEYS, 'max_lwp') if key in bias})
             workflow.make_bias_correction(factor=bias['factor'], specific_freqs=bias.get('specific_freqs'))
         if method == 'omb':
             source = noise_settings['data_source']
             sources = noise_settings.get('sources', workflow.hyper_params['station_ids'])
             selection = {key: noise_settings[key] for key in TIME_SELECTION_KEYS if key in noise_settings}
-            if not hasattr(workflow, 'omb') or workflow.omb.data_source != source or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings['dataset'] or workflow.omb.selection != selection:
-                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings['dataset'], **selection)
-            workflow.select_omb_input_noise_hyper_params(factor=noise_settings['factor'])
+            if (not hasattr(workflow, 'omb') or workflow.omb.data_source != source
+                    or workflow.omb.station_ids_for_analysis != sources or workflow.omb.dataset != noise_settings['dataset']
+                    or workflow.omb.selection != selection or workflow.omb.max_lwp != noise_settings.get('max_lwp')):
+                workflow.make_omb_analysis(sources, data_source=source, dataset=noise_settings['dataset'],
+                    max_lwp=noise_settings.get('max_lwp'), **selection)
+            workflow.select_omb_input_noise_hyper_params(factor=noise_settings['factor'],
+                statistic=noise_settings['statistic'], frequency_bands=noise_settings.get('frequency_bands'))
             workflow.hyper_params.update({f'input_noise_{key}': value for key, value in noise.items()})
         workflow.validate()
         return workflow
@@ -531,7 +535,7 @@ class TrainingWorkflow:
         self.change_hyper_params(**resolved)
 
     def make_omb_analysis(self, station_ids_for_analysis, data_source='radiosonde', dataset=None, *,
-                          start_date=None, end_date=None, days_of_month=None):
+                          start_date=None, end_date=None, days_of_month=None, max_lwp=None):
         """
         Create and process an OMB (observation-minus-background) analysis.
 
@@ -559,13 +563,10 @@ class TrainingWorkflow:
             station_ids_for_analysis=station_ids_for_analysis,
             load_existing_analysis_dataset=True,
             dataset=dataset, site_config=self.site_config,
+            bls=self.model.is_bls_model, frequencies=list(self.model.freqs),
+            angles=list(self.model.angles) if self.model.is_bls_model else None,
+            max_lwp=max_lwp, **selection,
         )
-
-        self.omb.selection = selection
-        self.omb.diff = select_time(self.omb.diff, **selection)
-        if not self.omb.diff.sizes.get('time', 0):
-            raise ValueError('No OMB observations remain after time selection.')
-        self.omb.calc_mean_std()
 
     def make_bias_correction(self, specific_freqs=None, factor=None):
         """
@@ -586,35 +587,57 @@ class TrainingWorkflow:
 
         Notes
         -----
-        Subtracts the OMB mean bias from training and validation TBs.
-        Stores the bias as a list under `hyper_params['mean_bias']`.
+        Adds mean(observed − simulated) to synthetic training and validation
+        TB. Prediction uses measured TB directly. The fitted shift and its
+        provenance are stored in the checkpoint. Fit on separate dates from
+        the final observation evaluation.
         """
         if not hasattr(self, 'omb'):
             raise ValueError("Omb analysis not made yet. Call make_omb_analysis() first.")
         
-        mean_bias = self.omb.mean_diff
-
+        from openMWR.omb import omb_statistics
+        if 'mean_bias' in self.hyper_params:
+            raise ValueError('Bias correction is already applied. Start a new workflow to refit it.')
+        factor = 1.0 if factor is None else factor
+        from openMWR.config import check_number, check_coordinates
+        check_number(factor, 'bias correction factor', 0)
+        dimensions = tuple(dim for dim in ('time', 'station') if dim in self.omb.diff.dims)
+        stats = omb_statistics(self.omb.diff, sample_dims=dimensions)
+        mean_bias = stats['mean'].copy(deep=True)
         if specific_freqs is not None:
-            for freq in mean_bias.frq.values:
-                if freq not in specific_freqs:
-                    mean_bias.loc[freq] = 0.0
-
-        if factor is not None:
-            mean_bias = mean_bias * factor
-
-        self.training_data['TB'] = self.training_data['TB'] - mean_bias
-        self.validation_data['TB'] = self.validation_data['TB'] - mean_bias
-
+            check_coordinates(specific_freqs, 'bias correction frequencies')
+            if not set(specific_freqs) <= set(mean_bias.frq.values):
+                raise ValueError('Bias correction frequencies must be selected OMB channels.')
+            mean_bias = mean_bias.where(mean_bias.frq.isin(specific_freqs), 0.)
+            counts = stats['count'].where(stats.frq.isin(specific_freqs), 2)
+        else:
+            counts = stats['count']
+        if not bool(np.isfinite(mean_bias).all()) or not bool((counts >= 2).all()):
+            raise ValueError('Bias correction requires at least two finite OMB pairs per selected channel and angle.')
+        mean_bias = mean_bias * factor
+        for data in (self.training_data, self.validation_data):
+            # Simulation files can contain channels/angles unused by this model.
+            shift = mean_bias.reindex({dim: data[dim] for dim in mean_bias.dims}, fill_value=0.)
+            corrected = data['TB'] + shift
+            corrected.attrs = data['TB'].attrs.copy()
+            data['TB'] = corrected
         self.hyper_params['mean_bias'] = mean_bias.values.tolist()
+        self.hyper_params['omb_bias_correction'] = plain_value({**self.omb.metadata(),
+            'application': 'add_to_simulation', 'factor': factor, 'specific_freqs': specific_freqs,
+            'dimensions': list(mean_bias.dims), 'count': stats['count'].values})
 
-    def select_omb_input_noise_hyper_params(self, factor=None):
+    def select_omb_input_noise_hyper_params(self, *, statistic, factor, frequency_bands=None):
         """
-        Generate input-noise hyperparameters from OMB using explained variance removal.
+        Use explicit total or experimental unexplained OMB scatter for input noise.
 
         Parameters
         ----------
-        factor : float, optional
+        statistic : {'std', 'residual_std'}
+            Total OMB scatter or experimental unexplained regression scatter.
+        factor : float
             Scaling factor applied to derived noise values.
+        frequency_bands : list of [float, float], optional
+            Explicit bounds in GHz, required for residual_std.
 
         Raises
         ------
@@ -628,8 +651,10 @@ class TrainingWorkflow:
         if not hasattr(self, 'omb'):
             raise ValueError("Omb analysis not made yet. Call make_omb_analysis() first.")
 
-        self.omb.remove_explained_variance()
-        self.hyper_params.update(self.omb.create_input_noise_from_diff(self.model, factor=factor))
+        self.hyper_params.update(self.omb.create_input_noise_from_diff(self.model,
+            statistic=statistic, factor=factor, frequency_bands=frequency_bands))
+        self.hyper_params['omb_input_noise'] = {**self.omb.metadata(), 'statistic': statistic,
+            'factor': factor, 'angle_application': 'zenith estimate with configured angle factors'}
 
     def add_factor_to_input_noise_TB(self, factor):
         """
@@ -702,29 +727,8 @@ class TrainingWorkflow:
             2) Linearly angle-dependent noise (`model.vary_input_noise_with_angle_linear`).
             3) Angle-independent noise.
         """
-        frq = model.freqs
-
-        # Create a dataset for input noise
-        input_noise = xr.Dataset()
-
-        if model.is_bls_model:
-            ang = model.angles
-            if model.vary_input_noise_with_angle:
-                input_noise['TB'] = xr.DataArray([[hyper_params[f"input_noise_TB_{f}"] * hyper_params[f"input_noise_TB_{a}"] for a in ang] for f in frq],
-                                                    coords={'frq': frq, 'ang': ang}, dims=('frq', 'ang'))
-            elif model.vary_input_noise_with_angle_linear:
-                input_noise['TB'] = xr.DataArray([[hyper_params[f"input_noise_TB_{f}"] * (1 + hyper_params[f"input_noise_TB_angle_factor"] * ((90 - a) / 90)) for a in ang] for f in frq],
-                                                    coords={'frq': frq, 'ang': ang}, dims=('frq', 'ang'))
-            else:
-                input_noise['TB'] = xr.DataArray([[hyper_params[f"input_noise_TB_{f}"] for a in ang] for f in frq],
-                                                    coords={'frq': frq, 'ang': ang}, dims=('frq', 'ang'))
-        else:
-            input_noise['TB'] = xr.DataArray([hyper_params[f"input_noise_TB_{f}"] for f in frq],
-                                                coords={'frq': frq}, dims='frq')
-
-        for var in model.input_vars:
-            if var != 'TB':
-                input_noise[var] = hyper_params[f'input_noise_{var}']
+        from openMWR.omb import get_input_noise
+        input_noise = get_input_noise(model, hyper_params)
 
         # Normalize the input noise
         input_noise_nor = input_noise / model.nor.sel(stat='std', drop=True)

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 SITE_KEYS = {'gen', 'mwr_height', 'latitude', 'longitude', 'hatpro_data_dir',
              'hatpro_format', 'hatpro_time_offset_hours', 'rpg_retrieval_exists',
              'mwr_measurement_start_date', 'plot_dir', 'retrieval_output_dir',
-             'prediction', 'invalid_measurements', 'custom'}
+             'prediction', 'invalid_measurements', 'calibration_dates', 'custom'}
 _PATH_KEYS = {'hatpro_data_dir', 'plot_dir', 'retrieval_output_dir'}
 
 
@@ -66,6 +66,10 @@ def _validate_site(values):
         raise ValueError('site.rpg_retrieval_exists must be true or false.')
     if 'mwr_measurement_start_date' in values:
         check_time_selection({'start_date': values['mwr_measurement_start_date']}, 'site')
+    if 'calibration_dates' in values:
+        check_strings(values['calibration_dates'], 'site.calibration_dates')
+        for value in values['calibration_dates']:
+            check_time_selection({'start_date': value}, 'site.calibration_dates')
     if 'prediction' in values:
         prediction = values['prediction']
         check_keys(prediction, ('retrievals',), 'prediction')
@@ -158,6 +162,10 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
         mwr_measurement_start_date : str
             Start date of the MWR measurement time series  
             (format: ``"YYYY-MM-DD"``).
+
+        calibration_dates : list of str, optional
+            Instrument calibration dates (``"YYYY-MM-DD"``, UTC). Informational
+            markers in OMB reports, with no effect on data selection or training.
 
         latitude : float
             Geographic latitude of the site in decimal degrees.

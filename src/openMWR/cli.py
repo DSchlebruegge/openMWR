@@ -57,13 +57,31 @@ def main(argv=None):
     evaluate.add_argument('-r', '--retrieval', nargs='+', metavar='RETRIEVAL', help='Replace the recipe retrieval list for this run.')
     evaluate.add_argument('-D', '--device', default='auto', help='PyTorch device (default: auto).')
     evaluate.add_argument('-o', '--output-dir', type=Path, help='New directory for report.html and metrics.nc.')
-    for name in ('data', 'train', 'evaluate', 'predict'):
+    omb = commands.add_parser('omb', help='Report observed minus simulated TB from an existing analysis dataset.')
+    omb.add_argument('site', metavar='SITE')
+    omb.add_argument('dataset', metavar='DATASET', help='Named paired analysis dataset.')
+    omb.add_argument('-p', '--project-dir', type=Path, default=Path('.'))
+    omb.add_argument('-o', '--output', type=Path, help='HTML filename (default: timestamped file beside the analysis data).')
+    omb.add_argument('-r', '--retrieval', nargs='+', metavar='RETRIEVAL',
+                     help='Overlay TB training input noise from these saved retrievals at the same site.')
+    omb.add_argument('-B', '--bls', action='store_true', help='Use the paired boundary layer scans.')
+    omb.add_argument('--data-source', help='Reference source, inferred when the dataset has one background.')
+    omb.add_argument('-S', '--stations', nargs='+', help='Radiosonde station IDs. Default: all available stations, reported separately.')
+    omb.add_argument('-f', '--frequencies', type=float, nargs='+', help='Selected frequencies in GHz.')
+    omb.add_argument('-a', '--angles', type=float, nargs='+', help='Selected BLS elevation angles in degrees.')
+    omb.add_argument('-s', '--start-date', help='First UTC day, YYYY-MM-DD.')
+    omb.add_argument('-e', '--end-date', help='Last UTC day, YYYY-MM-DD (inclusive).')
+    omb.add_argument('--days-of-month', type=int, nargs=2, metavar=('FIRST', 'LAST'))
+    omb.add_argument('-l', '--max-lwp', type=float, help='Keep pairs below this LWP in both sources, in g/m².')
+    omb.add_argument('-F', '--frequency-band', type=float, nargs=2, action='append', metavar=('LOW', 'HIGH'),
+                     help='Override the neighboring-channel regression groups in GHz (default: 20 40 and 50 60). Repeat for each group.')
+    for name in ('data', 'train', 'evaluate', 'predict', 'omb'):
         commands.choices[name].add_argument('-b', '--background', action='store_true',
             help='Run detached from the terminal and append console output to the task log.')
     args = parser.parse_args(argv)
     if args.command == 'data' and args.background and args.dry_run:
         parser.error('--background cannot be combined with --dry-run.')
-    if args.command == 'train':
+    if args.command in ('train', 'omb'):
         selection = {key: getattr(args, key) for key in ('start_date', 'end_date') if getattr(args, key) is not None}
         if args.days_of_month is not None:
             selection['days_of_month'] = dict(zip(('first', 'last'), args.days_of_month))
@@ -136,6 +154,15 @@ def main(argv=None):
             recipe = EvaluationRecipe.load(args.project_dir, args.site, args.evaluation)
             result = evaluate(recipe, retrievals=args.retrieval, device=args.device)
             print(save_evaluation(result, args.output_dir))
+        elif args.command == 'omb':
+            from openMWR.omb import Omb_Analysis
+            if args.output is not None and args.output.exists():
+                raise FileExistsError(f'OMB output already exists: {args.output}. Choose a new filename.')
+            analysis = Omb_Analysis(args.site, args.project_dir, dataset=args.dataset,
+                data_source=args.data_source, station_ids_for_analysis=args.stations,
+                bls=args.bls, frequencies=args.frequencies, angles=args.angles,
+                max_lwp=args.max_lwp, **selection)
+            print(analysis.save(args.output, retrievals=args.retrieval, frequency_bands=args.frequency_band))
         else:
             from openMWR.train import TrainingWorkflow
             workflow = TrainingWorkflow.from_recipe(args.project_dir, args.site, args.retrieval, args.device)

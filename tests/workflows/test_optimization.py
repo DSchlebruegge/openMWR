@@ -311,13 +311,11 @@ def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
     DatasetWorkflow(tmp_path, 'test').record('training_variant')
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     np.testing.assert_allclose(workflow.hyper_params['mean_bias'], [1.5, 1.5])
-    np.testing.assert_allclose(workflow.training_data.TB.isel(station=0), zenith.TB - 1.5)
+    np.testing.assert_allclose(workflow.training_data.TB.isel(station=0), zenith.TB + 1.5)
 
 
 def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     recipe, data = retrieval_project(tmp_path, search=False)
-    # Use the normal 14-channel grid so the existing neighbor-based OMB method
-    # has channels on both sides of its K/V-band split.
     from openMWR.config import load_grid
     import tomli_w
     import tomllib
@@ -336,7 +334,7 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     settings = tomllib.loads(recipe.read_text())
     settings['model']['freqs'] = 'hatpro'
     settings.pop('optimization')
-    settings['input_noise'] = {'method': 'omb', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0,
+    settings['input_noise'] = {'method': 'omb', 'statistic': 'std', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0,
                                'start_date': '2024-01-11', 'end_date': '2024-01-21',
                                'days_of_month': {'first': 1, 'last': 20}}
     recipe.write_text(tomli_w.dumps(settings))

@@ -3,7 +3,7 @@
 ## Install openMWR
 
 Use Python 3.11 or newer. Keep the package checkout separate from the working
-project that will contain your site settings, datasets and retrievals:
+project containing your site settings, datasets and retrievals:
 
 ```bash
 git clone https://github.com/DSchlebruegge/openMWR.git
@@ -39,7 +39,7 @@ from the checkout directly. Check the installation:
 openMWR --help
 ```
 
-Your directories now look like this:
+The directory layout is:
 
 ```text
 openMWR/            package checkout

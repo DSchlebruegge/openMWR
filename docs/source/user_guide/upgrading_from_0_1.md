@@ -153,5 +153,16 @@ parameter values, but may omit other training choices, search ranges or bias/OMB
 Keep the original scripts and Optuna database as reference. Version 0.1 studies
 cannot be continued through the new optimization workflow.
 
+MLR studies fitted with random input-noise copies require `--fresh` or a new
+retrieval name. They cannot continue with the expected-noise fitting method.
+Saved models remain usable for prediction and evaluation.
+
+OMB experiments also need a fresh fit. Bias adjustment now adds the mean
+observed-minus-simulated TB to synthetic training inputs. Regression residuals
+are calculated in kelvin. OMB noise recipes require an explicit `statistic`
+and regression requires `frequency_bands`. See the
+[recipe settings](recipe_settings.md#input-noise-and-bias-correction).
+Saved models retain their fitted behavior after migration.
+
 Use a new retrieval name for a new experiment. `--fresh` on an existing name
 deletes its saved model and optimization database.

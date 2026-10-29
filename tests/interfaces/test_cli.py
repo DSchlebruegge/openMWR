@@ -20,7 +20,7 @@ def test_installed_console_and_module_entry_points():
     console = Path(sys.executable).with_name('openMWR')
     for invocation in ([str(console)], [sys.executable, '-m', 'openMWR']):
         result = subprocess.run([*invocation, '-h'], capture_output=True, text=True, check=True)
-        assert all(name in result.stdout for name in ('create-site', 'migrate', 'data', 'train', 'evaluate', 'predict'))
+        assert all(name in result.stdout for name in ('create-site', 'migrate', 'data', 'train', 'evaluate', 'predict', 'omb'))
 
 
 def test_data_flags_and_multiple_targets_reach_workflow(tmp_path, monkeypatch):
@@ -118,6 +118,7 @@ def test_data_dry_run_and_diagnostic_are_read_only(dataset_project):
     ('train', True, [], 'sites/test/retrieval/example/optimization.log'),
     ('evaluate', False, [], 'sites/test/evaluations/example/evaluation.log'),
     ('predict', False, ['-d', '2024-01-01', '-o', 'output with spaces'], 'output with spaces/prediction.log'),
+    ('omb', False, [], 'data/sites/test/example/omb.log'),
 ])
 def test_background_launch_uses_current_environment_and_existing_task_logs(tmp_path, monkeypatch, command, search, extra, log):
     from openMWR.background import LOG_ENV

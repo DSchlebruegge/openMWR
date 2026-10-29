@@ -74,8 +74,7 @@ def goff_gratch_saturation_vapor_pressure(T: torch.Tensor, ice: bool = False) ->
     T : torch.Tensor
         Temperature in K.
     ice : bool, optional
-        If ``True``, apply the ice branch below 263.16 K, matching legacy
-        behavior.
+        If ``True``, apply the ice branch below 263.16 K.
 
     Returns
     -------
@@ -84,7 +83,7 @@ def goff_gratch_saturation_vapor_pressure(T: torch.Tensor, ice: bool = False) ->
 
     Notes
     -----
-    This implementation mirrors the legacy pyrtlib ``RTEquation.vapor``
+    This implementation follows the pyrtlib ``RTEquation.vapor``
     formulation.
     """
     y = 373.16 / T
