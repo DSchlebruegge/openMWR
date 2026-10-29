@@ -9,8 +9,9 @@ from openMWR.config import (TRAINING_PARAMETERS, check_keys,
                             check_number, check_name, check_strings, check_coordinates,
                             validate_parameter_usage, resolve_parameter, input_noise_parameters,
                             require_keys, load_grid, apply_seed, check_seed, check_time_selection, TIME_SELECTION_KEYS,
-                            check_score_weights)
+                            check_score_weights, check_output_vars)
 from openMWR.paths import project_root, retrieval_dir, site_config_file
+from openMWR.site import SiteConfig, load_site_config
 
 
 def load_retrieval_template(name):
@@ -36,6 +37,7 @@ class RetrievalRecipe:
     site: str
     name: str
     values: dict
+    site_config: SiteConfig | None = None
 
     @classmethod
     def load(cls, project_dir, site, retrieval):
@@ -45,13 +47,12 @@ class RetrievalRecipe:
         config = site_config_file(root, site)
         if not config.is_file():
             raise FileNotFoundError(f"Missing site configuration: {config}")
-        with config.open("rb") as stream:
-            tomllib.load(stream)
+        site_config = load_site_config(site, root)
         path = retrieval_dir(root, site, retrieval) / "retrieval.toml"
         if not path.is_file():
             raise FileNotFoundError(f"Missing retrieval recipe: {path}")
         with path.open("rb") as stream:
-            recipe = cls(root, site, retrieval, tomllib.load(stream))
+            recipe = cls(root, site, retrieval, tomllib.load(stream), site_config=site_config)
         recipe._validate()
         return recipe
 
@@ -76,7 +77,7 @@ class RetrievalRecipe:
                     if isinstance(value, dict) and key not in ('days_of_month', 'score_weights') and (section, key) not in (("model", "norm_functions"), ("model", "loss_weights")):
                         raise ValueError(f"Search definitions are supported only in training and input_noise; {section}.{key} does not support a search.")
         model = self.section("model")
-        check_keys(model, ("kind", "mode", "freqs", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "norm_functions", "loss_weights", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"), "model")
+        check_keys(model, ("kind", "mode", "freqs", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "output_vars", "norm_functions", "loss_weights", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"), "model")
         require_keys(model, ('kind', 'mode', 'freqs', 'norm_functions'), 'model')
         if model["kind"] not in ("nn", "mlr", "spectral"):
             raise ValueError("model.kind must be 'nn', 'mlr', or 'spectral'.")
@@ -115,7 +116,12 @@ class RetrievalRecipe:
         elif "hidden_layer_size" in model:
             raise ValueError("model.hidden_layer_size is only used by spectral models.")
         if model['kind'] in ('nn', 'mlr'):
-            require_keys(model, ('heights', 'additional_input_vars'), 'model')
+            require_keys(model, ('output_vars', 'additional_input_vars'), 'model')
+            check_output_vars(model['output_vars'])
+            if set(model['output_vars']) & {'T', 'rh', 'lwc'}:
+                require_keys(model, ('heights',), 'model')
+            elif 'heights' in model:
+                raise ValueError('model.heights applies only to profile outputs.')
         if model['kind'] == 'nn':
             require_keys(model, ('hidden_layers', 'loss_weights'), 'model')
         if model['mode'] == 'bls':
@@ -186,7 +192,7 @@ class RetrievalRecipe:
             check_seed(optimization['seed'], 'optimization.seed')
         check_time_selection(optimization, 'optimization')
         if 'score_weights' in optimization:
-            check_score_weights(optimization['score_weights'], ('TB',) if model['kind'] == 'spectral' else ('T', 'rh', 'lwc', 'lwp', 'iwv'))
+            check_score_weights(optimization['score_weights'], ('TB',) if model['kind'] == 'spectral' else model['output_vars'])
         return settings
 
     def create_model(self):
@@ -200,7 +206,7 @@ class RetrievalRecipe:
         inherited = {}
         if any(settings.get(key) == 'dataset' for key in ('freqs', 'heights', 'angles')):
             from openMWR.datasets import DatasetWorkflow
-            inherited = DatasetWorkflow(self.project_dir, self.site).coordinates(self.section('data')['dataset'])
+            inherited = DatasetWorkflow(self.project_dir, self.site, site_config=self.site_config).coordinates(self.section('data')['dataset'])
         for key in ('freqs', 'heights', 'angles'):
             if key in settings:
                 coordinate_kind = 'frequencies' if key == 'freqs' else key
@@ -213,6 +219,7 @@ class RetrievalRecipe:
         else:
             if kind == 'nn':
                 settings.setdefault('dropout_rate', 0.0)
+            settings.setdefault('heights', None)
             model = Model(self.name, is_MLR=kind == 'mlr', is_bls_model=mode == 'bls', **settings)
         require_keys(model.norm_functions, set(model.input.data_vars) | set(model.output.data_vars), 'model.norm_functions')
         return model

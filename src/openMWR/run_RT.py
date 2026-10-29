@@ -14,7 +14,7 @@ from openMWR.libRadtran import get_libradtran_paths, libRadtran
 from openMWR.utils import remove_files_in_dir
 from openMWR.parallel import run_pool
 from openMWR.config import check_infrared
-from openMWR.site import get_config_parameter
+from openMWR.site import load_site_config
 from openMWR.paths import libRadtran_dir
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ warnings.filterwarnings(
     module="pyrtlib.rt_equation"
 ) #only important for cloud radiating temperature, which is not used here
 
-def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, ang=np.array([90])):
+def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, *, ang, site_config=None):
     """
     Calculate band-integrated infrared brightness temperatures with libRadtran.
 
@@ -69,6 +69,7 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     removed after execution. The wavelength band is selected based on the
     site's Hatpro generation.
     """
+    gen = load_site_config(site, project_dir, config=site_config).require('gen')
     _, installation_data_dir = get_libradtran_paths()
     atmosphere_file = installation_data_dir / "atmmod" / "afglus.dat"
     if not atmosphere_file.is_file():
@@ -103,8 +104,6 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     df.to_csv(wc_file, index=False, columns=['z_km', 'lwc_gpm3', 'effective_droplet_radius_mum'], sep=' ', header=False)
 
     umu = np.cos(np.radians(90 + ang))
-
-    gen = get_config_parameter(site, 'gen', project_dir)
 
     if gen == 'G5':
         wavelengths = '9600 11500'
@@ -179,7 +178,7 @@ def _effective_droplet_radius_mum(lwc_gpm3: np.ndarray, *, droplet_number_densit
         raise ValueError("Calculated droplet effective radii must be below 60 micrometres for libRadtran's Hu-Stamnes cloud optics. Check droplet_number_density and liquid water content.")
     return effective_droplet_radius_mum
 
-def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str, infrared: dict) -> xr.DataArray:
+def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str, infrared: dict, site_config) -> xr.DataArray:
     """
     Calculate infrared brightness temperature for one profile.
 
@@ -207,10 +206,10 @@ def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str, infrared: dic
     lwc_gpm3 = ds_date.lwc.values
 
     effective_droplet_radius_mum = _effective_droplet_radius_mum(lwc_gpm3, **infrared)
-    TB_IR = calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum)
+    TB_IR = calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, ang=np.array([90.]), site_config=site_config)
     return xr.DataArray(TB_IR)
 
-def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared):
+def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config):
     """
     Run radiative transfer for a single time slice of radiosonde data.
 
@@ -230,7 +229,7 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
         Elevation angles in degrees.
     freq_shift : numpy.ndarray, optional
         Frequency offsets to subtract from ``freqs`` before the calculation.
-    absmdl : str, optional
+    absmdl : str
         Absorption model passed to pyrtlib.
 
     Returns
@@ -279,11 +278,11 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
     ds_date['TB'] = xr.DataArray(df_tb.values, dims=['frq', 'ang'], coords={"frq": freqs, "ang": angles})
 
     #IR with libRadtran    
-    ds_date['TB_IR'] = _run_IR_date(ds_date, site, project_dir, infrared)
+    ds_date['TB_IR'] = _run_IR_date(ds_date, site, project_dir, infrared, site_config)
 
     return ds_date
 
-def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared):
+def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, site_config=None):
     """
     Run pyrtlib-based radiative transfer for one or many profiles.
 
@@ -315,14 +314,16 @@ def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num
         Dataset with added ``TB`` and ``TB_IR``.
     """
 
+    site_config = load_site_config(site, project_dir, config=site_config)
+    site_config.require('gen')
     if 'time' in ds_RS.dims and ds_RS.sizes['time'] > 1:
-        ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared)
+        ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config)
     else:
-        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, infrared)
+        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config)
 
     return ds_new
 
-def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared):
+def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, site_config=None):
     """
     Run torchMWRT for microwave TB and libRadtran for infrared TB.
 
@@ -353,6 +354,8 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
         Copy of ``ds_RS`` with added ``TB`` and ``TB_IR``.
     """
 
+    site_config = load_site_config(site, project_dir, config=site_config)
+    site_config.require('gen')
     used_freqs = freqs - np.asarray(freq_shift, dtype=float) if freq_shift is not None else freqs
 
     if np.any(ds_RS["rh"].values < 0):
@@ -395,7 +398,7 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     n_proc = max(1, min(int(num_of_processes), n_times))
 
     logger.info(f"Running IR calculation in parallel with {n_proc} processes")
-    TB_IR = run_pool(ds_RS, n_proc, _run_IR_date, site, project_dir, infrared)
+    TB_IR = run_pool(ds_RS, n_proc, _run_IR_date, site, project_dir, infrared, site_config)
 
     logger.info("Finished IR calculation")
     
@@ -403,8 +406,8 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
 
     return ds_new
 
-def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), num_of_processes: int = 12,
-           freq_shift: np.ndarray = None, absmdl: str = 'R20', RT_model: str = 'torchMWRT', *, infrared):
+def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray, num_of_processes: int = 12,
+           freq_shift: np.ndarray = None, *, absmdl: str, RT_model: str, infrared, site_config=None):
     """
     Run forward radiative transfer with the selected backend.
 
@@ -421,15 +424,15 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
-    angles : numpy.ndarray, optional
+    angles : numpy.ndarray
         Elevation angles in degrees.
     num_of_processes : int, optional
         Number of worker processes for parallel parts of the workflow.
     freq_shift : numpy.ndarray, optional
         Per-channel frequency offsets to subtract from ``freqs``.
-    absmdl : str, optional
+    absmdl : str
         Absorption model name used by the selected RT backend.
-    RT_model : {"torchMWRT", "pyrtlib"}, optional
+    RT_model : {"torchMWRT", "pyrtlib"}
         Radiative transfer backend.
     infrared : dict
         Explicit droplet_number_density (m^-3) and min_effective_radius
@@ -450,9 +453,9 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
     logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')
 
     if RT_model == 'pyrtlib':
-        ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared)
+        ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, site_config=site_config)
     elif RT_model == 'torchMWRT':
-        ds_new = run_torchMWRT(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared)
+        ds_new = run_torchMWRT(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, site_config=site_config)
     else:
         raise ValueError(f"Unknown RT model: {RT_model}")
     

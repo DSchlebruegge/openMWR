@@ -15,7 +15,7 @@ from openMWR.train import TrainingWorkflow
 ])
 def test_mlr_expected_noise_solution_and_unpenalized_intercept(tmp_path, noise, duplicate):
     model = Model('linear', heights=[0.], freqs=[22.24, 31.4],
-                  is_MLR=True, additional_input_vars=[]).double()
+                  is_MLR=True, additional_input_vars=[], output_vars=["T", "rh", "lwc", "lwp", "iwv"]).double()
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     # Physical noise is converted to normalized units by the real noise helper.
     scales = np.array([2., 5.])
@@ -63,7 +63,7 @@ def test_mlr_expected_noise_solution_and_unpenalized_intercept(tmp_path, noise, 
 def test_loss_weight_choices_and_exact_band_boundaries(scheme, bls, expected):
     model = Model('weighted', heights=[0., 2000., 2001., 10000., 10001.],
                   freqs=[22.24], is_bls_model=bls, hidden_layers=[4],
-                  additional_input_vars=[], loss_weights=scheme, angles=[90.] if bls else None)
+                  additional_input_vars=[], loss_weights=scheme, angles=[90.] if bls else None, output_vars=["T", "rh", "lwc", "lwp", "iwv"])
     np.testing.assert_array_equal(model.loss_weights.T, expected)
 
 
@@ -83,4 +83,4 @@ def test_loss_weight_choices_and_exact_band_boundaries(scheme, bls, expected):
 def test_invalid_loss_weights_are_rejected(weights):
     with pytest.raises(ValueError, match='loss_weights'):
         Model('invalid', heights=np.array([0., 1000.]), freqs=np.array([22.24]),
-              hidden_layers=[4], additional_input_vars=[], loss_weights=weights)
+              hidden_layers=[4], additional_input_vars=[], loss_weights=weights, output_vars=["T", "rh", "lwc", "lwp", "iwv"])

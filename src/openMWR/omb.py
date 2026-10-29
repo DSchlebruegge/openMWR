@@ -45,7 +45,8 @@ class Omb_Analysis:
         data_source: str = 'radiosonde',
         station_ids_for_analysis: Optional[Sequence[str]] = None,
         load_existing_analysis_dataset: bool = False,
-        dataset: str = None
+        dataset: str = None,
+        *, site_config=None,
     ) -> None:
         self.site = site
         self.project_dir = project_dir
@@ -62,7 +63,7 @@ class Omb_Analysis:
         if not load_existing_analysis_dataset:
             from openMWR.datasets import DatasetWorkflow
             DatasetWorkflow(project_dir, site).build(self.dataset)
-        self.an_data = load_analysis_dataset(project_dir, site, self.dataset)
+        self.an_data = load_analysis_dataset(project_dir, site, self.dataset, site_config=site_config)
         if data_source == 'radiosonde':
             self.an_data = self.an_data.sel(station=self.station_id_for_analysis, drop=True)
 

@@ -69,7 +69,7 @@ def comparison_project(root):
                                      ('new', 2, False, []), ('scan', 3, True, [])]:
         model = Model(name, heights, frequencies, is_MLR=True, is_bls_model=bls,
                       angles=angles if bls else None, additional_input_vars=extra,
-                      norm_functions={name: 'z_norm' for name in truth.data_vars})
+                      norm_functions={name: 'z_norm' for name in truth.data_vars}, output_vars=["T", "rh", "lwc", "lwp", "iwv"])
         with torch.no_grad():
             model.stack.weight.zero_()
             model.stack.bias.copy_(torch.tensor([280+offset, 280+offset, 50+offset, 50+offset, 1, 1, 20+offset, 10]))
@@ -254,7 +254,7 @@ def test_baseline_is_optional_and_separate_grids_need_no_cross_mode_alignment(tm
     data.to_netcdf(path)
     model = Model('scan', np.array([0., 2000.]), np.array([22.24, 31.4]),
                   is_MLR=True, is_bls_model=True, angles=[90., 30.], additional_input_vars=[],
-                  norm_functions={name: 'z_norm' for name in data.data_vars})
+                  norm_functions={name: 'z_norm' for name in data.data_vars}, output_vars=["T", "rh", "lwc", "lwp", "iwv"])
     with torch.no_grad():
         model.stack.weight.zero_()
         model.stack.bias.copy_(torch.tensor([283., 283., 53., 53., 1., 1., 20., 10.]))

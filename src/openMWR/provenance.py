@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import json
 from importlib.metadata import version, PackageNotFoundError
 import logging
 from pathlib import Path
@@ -59,6 +60,36 @@ def software_identity():
 def checkpoint_id(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def dataset_id(data):
+    """Hash in-memory values and coordinates, independent of files and attributes.
+
+    Callers select the data used by their experiment before hashing. This also
+    records custom Python preprocessing without hashing unrelated source caches.
+    """
+    digest = hashlib.sha256()
+
+    def record(value):
+        encoded = json.dumps(value, ensure_ascii=False, default=str).encode('utf-8')
+        digest.update(len(encoded).to_bytes(8, 'little'))
+        digest.update(encoded)
+
+    for name in sorted(data.variables):
+        variable = data[name]
+        values = np.asarray(variable.values)
+        # NetCDF string encodings can load as either object or Unicode arrays.
+        if values.dtype.kind in 'OUS':
+            record([name, variable.dims, values.shape, 'text'])
+            record(values.astype(str).tolist())
+        else:
+            dtype = values.dtype.newbyteorder('<')
+            record([name, variable.dims, values.shape, dtype.str])
+            values = np.asarray(values, dtype=dtype)
+            if values.dtype.kind in 'fc' and np.isnan(values).any():
+                values = np.where(np.isnan(values), np.nan, values)
+            digest.update(np.ascontiguousarray(values))
+    return digest.hexdigest()
 
 
 def utc_now():

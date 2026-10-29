@@ -6,7 +6,7 @@ import cdsapi
 import tempfile
 from pathlib import Path
 
-from openMWR.site import get_config_parameter, get_invalid_measurements
+from openMWR.site import load_site_config, get_invalid_measurements
 from openMWR.run_RT import run_RT
 from openMWR.xr_utils import change_coord_of_ds, add_time_data, match_analysis_data
 from openMWR.parallel import run_pool
@@ -43,13 +43,14 @@ class ERA5Processor:
 
     def __init__(self, site, project_dir, start_date=None, end_date=None,
                  update_only=True, hour_interval=6, profiles_dataset='profiles_era5',
-                 simulation_dataset='simulation_era5'):
+                 simulation_dataset='simulation_era5', *, site_config=None):
         self.site, self.project_dir = site, project_dir
         self.update_only, self.hour_interval = update_only, hour_interval
         self.logger = logging.getLogger(__name__)
-        self.lat, self.lon, site_start = get_config_parameter(
-            site, ['latitude', 'longitude', 'mwr_measurement_start_date'], project_dir)
-        self.start_date = pd.Timestamp(start_date or site_start)
+        self.site_config = load_site_config(site, project_dir, config=site_config)
+        self.lat = self.site_config.require('latitude')
+        self.lon = self.site_config.require('longitude')
+        self.start_date = pd.Timestamp(start_date or self.site_config.require('mwr_measurement_start_date'))
         self.end_date = pd.Timestamp(end_date) if end_date else pd.Timestamp.now().normalize() - pd.Timedelta(days=5)
         self.lat_round, self.lon_round = round(self.lat * 4) / 4, round(self.lon * 4) / 4
         self.raw_data_file = era5_cache_file(project_dir, self.lat, self.lon, hour_interval)
@@ -173,7 +174,7 @@ class ERA5Processor:
             if old is not None:
                 return old
             raise ValueError('No ERA5 profiles in the selected source coverage.')
-        raw['height'] = raw['height'] - get_config_parameter(self.site, 'mwr_height', self.project_dir)
+        raw['height'] = raw['height'] - self.site_config.require('mwr_height')
         new = run_pool(raw, num_of_processes, _change_height_coord_for_forward_calc, new_heights)
         new['rh'] = new['rh'].where(new['rh'] > 0.1, 0.1)
         new = add_derived_data(new)
@@ -187,7 +188,7 @@ class ERA5Processor:
         return new
 
     def create_forward_calc_dataset(self, freqs, angles, num_of_processes=10,
-                                    freq_shift=None, absmdl='R17', RT_model='torchMWRT', *, infrared):
+                                    freq_shift=None, *, absmdl, RT_model, infrared):
         """Run RT only for prepared profiles missing from this simulation."""
         if not self.profile_file.is_file():
             raise FileNotFoundError(f'ERA5 prepared profiles missing: {self.profile_file}')
@@ -201,7 +202,7 @@ class ERA5Processor:
             raise ValueError('No prepared ERA5 profiles available for RT.')
         new = run_RT(profiles, self.site, self.project_dir, freqs, angles,
                      num_of_processes=num_of_processes, freq_shift=freq_shift,
-                     absmdl=absmdl, RT_model=RT_model, infrared=infrared)
+                     absmdl=absmdl, RT_model=RT_model, infrared=infrared, site_config=self.site_config)
         if old is not None:
             new = xr.concat([old, new], dim='time').sortby('time')
         self.forward_calc_file.parent.mkdir(parents=True, exist_ok=True)
@@ -247,8 +248,8 @@ class ERA5Processor:
         ds_era5 = xr.load_dataset(self.forward_calc_file).dropna(dim='time')
 
         # Select closest times
-        ds_hatpro_sel, ds_era5_sel = match_analysis_data(ds_hatpro, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir))
-        ds_hatpro_bls_sel, ds_era5_bls_sel = match_analysis_data(ds_hatpro_bls, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir))
+        ds_hatpro_sel, ds_era5_sel = match_analysis_data(ds_hatpro, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir, site_config=self.site_config))
+        ds_hatpro_bls_sel, ds_era5_bls_sel = match_analysis_data(ds_hatpro_bls, ds_era5, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(self.site, self.project_dir, site_config=self.site_config))
 
         # Select only 90 degree angle
         ds_era5_sel = ds_era5_sel.sel(ang=90.0, drop=True)

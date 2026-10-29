@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from openMWR.config import check_number
-from openMWR.site import get_config_parameter
+from openMWR.config import check_hatpro_format
+from openMWR.site import load_site_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +46,6 @@ _PRODUCT_COORDS = {
     'LPR': ('height_lwc',), 'TPC': ('height',),
     'HPC': ('height',), 'TPB': ('height',),
 }
-
-
-def check_hatpro_format(format, time_offset_hours=None):
-    """Validate the site-wide input choice used by datasets and prediction."""
-    if format not in ('auto', 'netcdf', 'binary'):
-        raise ValueError('hatpro_format must be "auto", "netcdf" or "binary".')
-    if time_offset_hours is not None:
-        check_number(time_offset_hours, 'hatpro_time_offset_hours')
-        if abs(time_offset_hours) > 24:
-            raise ValueError('hatpro_time_offset_hours must be between -24 and 24.')
 
 
 def _validate_netcdf(data, path, product):
@@ -189,7 +179,7 @@ def read_hatpro_file(path, *, time_offset_hours=None):
     return _netcdf(path, product) if netcdf else _binary(path, product, time_offset_hours)
 
 
-def load_hatpro_day(date, site, project_dir, products):
+def load_hatpro_day(date, site, project_dir, products, *, site_config=None):
     """Load daily observations and available auxiliary/comparison products.
 
     BRT and BLB are required when requested. Missing or unreadable auxiliary
@@ -199,12 +189,10 @@ def load_hatpro_day(date, site, project_dir, products):
     overlaps and local-to-UTC shifts. The interval boundaries are included.
     Retain the first duplicate and sort timestamps for matching and averaging.
     """
-    root, format, offset = get_config_parameter(site,
-        ['hatpro_data_dir', 'hatpro_format', 'hatpro_time_offset_hours'], project_dir)
-    format = 'auto' if format is None else format
-    check_hatpro_format(format, offset)
-    if root is None:
-        raise ValueError('Set hatpro_data_dir in site.toml before reading HATPRO observations.')
+    config = load_site_config(site, project_dir, config=site_config)
+    root = config.require('hatpro_data_dir')
+    format = config.get('hatpro_format', 'auto')
+    offset = config.get('hatpro_time_offset_hours')
     base = Path(root) / date.strftime('Y%Y/M%m/D%d/%y%m%d')
     day = np.datetime64(date.strftime('%Y-%m-%d'))
     earliest, latest = day - np.timedelta64(1, 'D'), day + np.timedelta64(2, 'D')

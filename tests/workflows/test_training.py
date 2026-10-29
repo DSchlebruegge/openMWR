@@ -4,14 +4,79 @@
 import numpy as np
 import pytest
 import torch
+import tomllib
+import tomli_w
+import xarray as xr
 
 from openMWR.evaluation import EvaluationRecipe, evaluate
 from openMWR.models import load_model
 from openMWR.train import TrainingWorkflow
+from openMWR.predict import PredictionWorkflow, run_model
 
 
 from tests.fixtures.retrievals import retrieval_project
 from tests.fixtures.cli import run_cli
+
+
+@pytest.mark.parametrize(('kind', 'outputs'), [
+    ('nn', ['T']), ('nn', ['rh', 'T']), ('nn', ['lwc']),
+    ('mlr', ['lwp']), ('mlr', ['iwv', 'T']),
+])
+def test_selected_outputs_control_training_prediction_and_evaluation(tmp_path, kind, outputs):
+    recipe, data = retrieval_project(tmp_path, kind=kind, search=False)
+    settings = tomllib.loads(recipe.read_text())
+    settings['model']['output_vars'] = outputs
+    profiles = bool(set(outputs) & {'T', 'rh', 'lwc'})
+    if not profiles:
+        settings['model'].pop('heights')
+    if kind == 'nn':
+        settings['model']['loss_weights'] = {name: 1. for name in outputs}
+    settings['optimization']['score_weights'] = {outputs[0]: 1.}
+    recipe.write_text(tomli_w.dumps(settings))
+    # Missing unselected targets must not exclude training samples or be required.
+    for path in (tmp_path / 'data/sites/test/training_variant').glob('*.nc'):
+        xr.load_dataset(path).drop_vars([name for name in ('T', 'rh', 'lwc', 'lwp', 'iwv')
+                                       if name not in outputs]).to_netcdf(path)
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    assert workflow.model.output_vars == outputs
+    model = workflow.train()
+    restored = load_model('example', 'test', tmp_path)
+    assert restored.output_vars == outputs
+    assert set(restored.nor.data_vars) == set(outputs) | {'TB'}
+    prediction = run_model(restored, data, device='cpu', include_input_vars=False)
+    assert list(prediction.data_vars) == outputs
+    assert np.isfinite(prediction.to_array()).all()
+    if not profiles:
+        assert 'height' not in prediction.dims
+    daily = data.sel(time=slice('2024-01-10', '2024-01-10')).sel(ang=90., drop=True)
+    result = PredictionWorkflow(tmp_path, 'test', ['example'], smooth=False).predict(
+        '2024-01-10', observations=daily)
+    expected = set(outputs)
+    if 'T' in outputs:
+        expected.add('T_grad')
+    if {'T', 'rh'} <= set(outputs):
+        expected.update(('ah', 'TD', 'iwv_from_ah'))
+    if 'lwc' in outputs:
+        expected.add('lwp_from_lwc')
+    assert set(result.zenith.data_vars) == expected | {'TB'}
+    evaluation = EvaluationRecipe.load(tmp_path, 'test', 'example')
+    for section in ('observations', 'test'):
+        evaluation.values[section]['variables'] = outputs
+        if not profiles:
+            evaluation.values[section].pop('height_range')
+    metrics = evaluate(evaluation)
+    assert all(set(case.metrics['errors'].data_vars) == set(outputs) for case in metrics.evaluations)
+    # Scoring unavailable variables must fail with the model's name.
+    evaluation.values['test']['variables'] = ['iwv'] if 'iwv' not in outputs else ['lwp']
+    evaluation.values['test'].pop('height_range', None)
+    with pytest.raises(ValueError, match='example does not predict requested variables'):
+        evaluate(evaluation)
+    if outputs == ['rh', 'T']:
+        settings['training']['lr_height'] = {'low': 0.001, 'high': 0.002}
+        recipe.write_text(tomli_w.dumps(settings))
+        study = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='fresh')
+        assert len(study.trials) == 1
+        assert load_model('example', 'test', tmp_path).output_vars == outputs
 
 
 def command(retrieval_project, action, *extra, check=True):

@@ -49,7 +49,7 @@ def valid_observation_times(data, variables):
     return valid
 
 
-def load_analysis_dataset(project_dir, site, dataset, *, bls=False):
+def load_analysis_dataset(project_dir, site, dataset, *, bls=False, site_config=None):
     """Read paired data with current site validity and recipe sample requirements.
 
     Custom Python comparison files can omit a recipe. Named analysis recipes
@@ -72,7 +72,7 @@ def load_analysis_dataset(project_dir, site, dataset, *, bls=False):
         exclude_rain = recipe.values['analysis']['exclude_rain']
         if exclude_rain:
             required = [*required, 'rain_flag']
-    rules = get_invalid_measurements(site, project_dir)
+    rules = get_invalid_measurements(site, project_dir, site_config=site_config)
     measured = mask_invalid_measurements(data.sel(data_source='hatpro', drop=True), rules)
     if 'old_time' in measured:
         measured = mask_invalid_measurements(measured, rules, time='old_time')

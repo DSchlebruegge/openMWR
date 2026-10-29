@@ -21,7 +21,7 @@ freqs = [22.24, 31.4]
 norm_functions = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_norm' if kind == 'mlr' else 'log_norm'}", lwp = "{'max_norm' if kind == 'mlr' else 'log_norm'}", iwv = "z_norm" }}
 '''
     if kind != 'spectral':
-        settings += 'heights = [0.0, 1000.0]\nadditional_input_vars = []\n'
+        settings += 'output_vars = ["T", "rh", "lwc", "lwp", "iwv"]\nheights = [0.0, 1000.0]\nadditional_input_vars = []\n'
         if kind == 'nn':
             bounds = '[2000, 10000]' if mode == 'bls' else '[10000]'
             values = '[1.0, 0.5, 0.25]' if mode == 'bls' else '[1.0, 0.5]'

@@ -11,6 +11,7 @@ import tomllib
 import tomli_w
 
 from openMWR.config import check_name
+from openMWR.site import SITE_KEYS, _validate_site
 from openMWR.paths import checkpoint_file, project_root, site_config_file, site_root
 
 logger = logging.getLogger(__name__)
@@ -19,13 +20,15 @@ logger = logging.getLogger(__name__)
 def _convert_checkpoint(path, name):
     import torch
     import xarray as xr
-    from openMWR.models import CHECKPOINT_VERSION, Model, SpectralConsistencyModel
+    from openMWR.models import CHECKPOINT_VERSION, Model, SpectralConsistencyModel, _checkpoint_payload, _read_checkpoint
+    from openMWR.config import PROFILE_OUTPUTS
 
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
     version = checkpoint.get('format_version')
     if version == CHECKPOINT_VERSION:
+        _read_checkpoint(path)
         return None
-    if version is not None:
+    if version not in (None, 1):
         raise ValueError(f'Unsupported checkpoint format {version!r}.')
     structure = checkpoint['structure']
     kind = checkpoint.get('model_class')
@@ -34,6 +37,9 @@ def _convert_checkpoint(path, name):
     classes = {'Model': Model, 'SpectralConsistencyModel': SpectralConsistencyModel}
     if kind not in classes:
         raise ValueError(f'Cannot convert custom checkpoint model class {kind!r}.')
+    if kind == 'Model':
+        # Both older formats always predicted these five variables in this order.
+        structure['output_vars'] = list(PROFILE_OUTPUTS)
     if structure.get('is_bls_model') and structure.get('angles') is None:
         normalization = xr.Dataset.from_dict(checkpoint['normalization'])
         if 'ang' not in normalization.coords:
@@ -53,16 +59,15 @@ def _convert_checkpoint(path, name):
     checkpoint['structure'] = model.checkpoint_structure()
     checkpoint['model_class'] = kind
     checkpoint['format_version'] = CHECKPOINT_VERSION
-    return checkpoint
+    return _checkpoint_payload(checkpoint)
 
 
-def _write_checkpoint(source, target, checkpoint, modified):
+def _write_checkpoint(source, target, checkpoint, modified, backup):
     import torch
 
     if source.stat().st_mtime_ns != modified:
         raise RuntimeError(f'Checkpoint changed during migration: {source}. Retry after its writer has stopped.')
     target.parent.mkdir(parents=True, exist_ok=True)
-    backup = target.with_name('model.pth.bak')
     saved = backup.open('xb')
     try:
         with saved, source.open('rb') as original:
@@ -125,6 +130,10 @@ def migrate_project(project_dir, *, dry_run=False):
                     raise ValueError('site configuration must be a JSON object.')
                 settings = {key: value for key, value in settings.items() if value is not None}
                 settings.setdefault('hatpro_format', 'netcdf')
+                extra = {key: settings.pop(key) for key in list(settings) if key not in SITE_KEYS}
+                if extra:
+                    settings['custom'] = {**extra, **settings.get('custom', {})}
+                _validate_site(settings)
                 text = tomli_w.dumps(settings)
             except (OSError, ValueError, TypeError) as exc:
                 raise ValueError(f'Cannot convert {source}: {exc}') from exc
@@ -150,9 +159,14 @@ def migrate_project(project_dir, *, dry_run=False):
             if checkpoint is None:
                 continue
             backup = target.with_name('model.pth.bak')
+            if path == target:
+                index = 1
+                while backup.exists() or backup.is_symlink():
+                    backup = target.with_name(f'model.pth.bak.{index}')
+                    index += 1
             if backup.exists() or backup.is_symlink():
                 raise FileExistsError(f'Checkpoint backup already exists: {backup}. Keep it and choose another name before retrying.')
-            conversions.append((path, target, checkpoint, modified))
+            conversions.append((path, target, checkpoint, modified, backup))
         sites.append(site)
 
     if not sites:
@@ -164,7 +178,7 @@ def migrate_project(project_dir, *, dry_run=False):
     elif not grids.is_file():
         raise FileExistsError(f'Not a grids file: {grids}. Existing paths are never overwritten.')
     directories = [site_root(root, site) / name for site in sites for name in ('datasets', 'retrieval')]
-    for path in [*documents, *(target for _, target, _, _ in conversions), *directories]:
+    for path in [*documents, *(target for _, target, _, _, _ in conversions), *directories]:
         parent = path if path in directories else path.parent
         while parent != root:
             if (parent.exists() or parent.is_symlink()) and not parent.is_dir():
@@ -172,17 +186,17 @@ def migrate_project(project_dir, *, dry_run=False):
             parent = parent.parent
     for destination in documents:
         logger.info('%s %s', 'Would create' if dry_run else 'Create', destination.relative_to(root))
-    for source, target, _, _ in conversions:
+    for source, target, _, _, backup in conversions:
         logger.info('%s %s -> %s (original: %s)', 'Would convert' if dry_run else 'Convert',
-                    source.relative_to(root), target.relative_to(root), target.with_name('model.pth.bak').relative_to(root))
+                    source.relative_to(root), target.relative_to(root), backup.relative_to(root))
     if not dry_run:
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
         for destination, text in documents.items():
             with destination.open('x', encoding='utf-8') as stream:
                 stream.write(text)
-        for source, target, checkpoint, modified in conversions:
-            _write_checkpoint(source, target, checkpoint, modified)
+        for source, target, checkpoint, modified, backup in conversions:
+            _write_checkpoint(source, target, checkpoint, modified, backup)
     configurations = sum(path.name == 'site.toml' for path in documents)
     logger.info('%s: %d sites checked, %d site configurations %s, %d checkpoints %s.',
                 'Preview' if dry_run else 'Migration complete', len(sites), configurations,

@@ -4,18 +4,61 @@ import json
 from pathlib import Path
 import tomllib
 
+import numpy as np
 import pytest
 import torch
 import tomli_w
+import xarray as xr
 
 from openMWR.models import load_model
-from openMWR.site import get_config_parameter
+from openMWR.site import get_config_parameter, create_site
+from openMWR.predict import run_model
+from tests.fixtures.prediction import checkpoint
 from tests.fixtures.cli import run_cli
 
 
 def snapshot(project):
     return {path.relative_to(project): path.read_bytes() if path.is_file() else None
             for path in project.rglob('*')}
+
+
+def test_format_one_upgrade_preserves_predictions_metadata_and_existing_backups(tmp_path):
+    create_site('test', tmp_path)
+    checkpoint(tmp_path, 'example', weather=False)
+    original_model = load_model('example', 'test', tmp_path)
+    inputs = xr.ones_like(original_model.input).expand_dims(time=[np.datetime64('2024-01-01')])
+    expected = run_model(original_model, inputs, 'cpu', include_input_vars=False)
+    path = tmp_path / 'sites/test/retrieval/example/model.pth'
+    old = torch.load(path, weights_only=True)
+    old['format_version'] = 1
+    old['structure'].pop('output_vars')
+    for name in ('heights', 'freqs'):
+        old['structure'][name] = np.asarray(old['structure'][name])
+    old['training_metadata'] = {'scores': np.array([1., 2.])}
+    torch.save(old, path)
+    original = path.read_bytes()
+    earlier = path.with_name('model.pth.bak')
+    earlier.write_bytes(b'original archive from an earlier migration')
+    before = snapshot(tmp_path)
+    preview = run_cli('migrate', '-p', str(tmp_path), '--dry-run')
+    assert preview.returncode == 0, preview.stderr
+    assert snapshot(tmp_path) == before
+    assert 'model.pth.bak.1' in preview.stderr
+    applied = run_cli('migrate', '-p', str(tmp_path))
+    assert applied.returncode == 0, applied.stderr
+    model = load_model('example', 'test', tmp_path)
+    xr.testing.assert_identical(run_model(model, inputs, 'cpu', include_input_vars=False), expected)
+    assert model.output_vars == ['T', 'rh', 'lwc', 'lwp', 'iwv']
+    assert model.training_metadata == {'scores': [1., 2.]}
+    assert earlier.read_bytes() == before[earlier.relative_to(tmp_path)]
+    assert path.with_name('model.pth.bak.1').read_bytes() == original
+    converted = torch.load(path, weights_only=True)
+    for name, values in old['model_state_dict'].items():
+        assert torch.equal(converted['model_state_dict'][name], values)
+    migrated = snapshot(tmp_path)
+    repeated = run_cli('migrate', '-p', str(tmp_path))
+    assert repeated.returncode == 0, repeated.stderr
+    assert snapshot(tmp_path) == migrated
 
 
 def legacy_site(project, name):
@@ -55,6 +98,7 @@ def test_migrate_legacy_project_preview_application_and_repeat(tmp_path, custom_
     existing = project / 'sites/second/site.toml'
     existing.parent.mkdir(parents=True)
     converted = {key: value for key, value in settings.items() if value is not None}
+    converted['custom'] = {key: converted.pop(key) for key in ('frequency_shift', 'cut_off_at_mwr_height')}
     converted['hatpro_format'] = 'netcdf'
     existing.write_text('# User comment\n' + tomli_w.dumps(converted))
     before = snapshot(project)

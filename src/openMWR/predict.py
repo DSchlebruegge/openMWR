@@ -10,7 +10,7 @@ import numpy as np
 import logging
 from openMWR.models import BaseModel, load_model
 from openMWR.paths import project_root
-from openMWR.site import get_config_parameter, prediction_output_dir, get_invalid_measurements
+from openMWR.site import load_site_config, prediction_output_dir, get_invalid_measurements
 from openMWR.devices import resolve_device
 
 logger = logging.getLogger(__name__)
@@ -221,8 +221,7 @@ def denormalize(ds_norm: xr.Dataset, model: BaseModel) -> xr.Dataset:
             ds[var] = np.exp(ds[var]) - 1
 
     if 'rh' in ds.data_vars:
-        ds['rh'] = ds['rh'].where(ds['rh'] > 1, 1)
-        ds['rh'] = ds['rh'].where(ds['rh'] < 100, 100)
+        ds['rh'] = ds['rh'].clip(min=1, max=100)
 
     return ds
 
@@ -371,7 +370,7 @@ def run_model_list(
 
         pred_list.append(pred.expand_dims(model=[model.name]))
 
-    ds_predicted = xr.concat(pred_list, dim='model')
+    ds_predicted = xr.concat(pred_list, dim='model', coords='minimal', join='outer')
 
     if add_not_predicted_vars:
         # Add all variables which are not predicted by any model
@@ -432,11 +431,10 @@ class PredictionWorkflow:
                  output_dir=None, smooth=True, import_retrieval_data=False):
         self.project_dir = project_root(project_dir)
         self.site = site
+        self.site_config = load_site_config(site, self.project_dir)
         self.device = resolve_device(device)
         if retrievals is None:
-            settings = get_config_parameter(site, 'prediction', self.project_dir) or {}
-            if not isinstance(settings, dict) or set(settings) - {'retrievals'}:
-                raise ValueError('[prediction] supports only a retrievals list.')
+            settings = self.site_config.get('prediction', {})
             retrievals = settings.get('retrievals')
         if isinstance(retrievals, str):
             retrievals = [retrievals]
@@ -450,7 +448,7 @@ class PredictionWorkflow:
         self.models = tuple(load_model(name, site, self.project_dir) for name in retrievals)
         self._zenith_models = tuple(model for model in self.models if not model.is_bls_model)
         self._bls_models = tuple(model for model in self.models if model.is_bls_model)
-        self.output_dir = prediction_output_dir(self.project_dir, site, output_dir)
+        self.output_dir = prediction_output_dir(self.project_dir, site, output_dir, site_config=self.site_config)
         self.smooth = smooth
         self.import_retrieval_data = import_retrieval_data
         logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), self.device)
@@ -482,7 +480,7 @@ class PredictionWorkflow:
 
         if not models:
             return None, None, None
-        periods = get_invalid_measurements(self.site, self.project_dir)
+        periods = get_invalid_measurements(self.site, self.project_dir, site_config=self.site_config)
         group = 'bls' if bls else 'zenith'
         logger.info('Predict %s %s %s: %s', self.site, date.date(), group,
                     ', '.join(model.name for model in models))
@@ -493,10 +491,10 @@ class PredictionWorkflow:
                     raise ValueError('Observations must belong to the requested UTC day.')
             elif bls:
                 observations = import_hatpro_data_bls(date, self.site, self.project_dir,
-                    import_retrieval_data=self.import_retrieval_data)
+                    import_retrieval_data=self.import_retrieval_data, site_config=self.site_config)
             else:
                 observations = import_hatpro_data(date, self.site, self.project_dir,
-                    import_retrieval_data=self.import_retrieval_data, mean_one_min=True)
+                    import_retrieval_data=self.import_retrieval_data, mean_one_min=True, site_config=self.site_config)
             observations = mask_invalid_measurements(observations, periods)
             for model in models:
                 validate_model_data(model.input, observations, f'{group} observations for {model.name}')
@@ -512,9 +510,10 @@ class PredictionWorkflow:
         predicted = run_model_list(models, observations, self.device)
         # Surface pressure is needed for derived profile quantities even when a
         # custom model did not use it as an input. Spectral outputs need no profiles.
-        if {'T', 'rh', 'lwc'} <= set(predicted):
-            if 'surface_p' not in predicted and 'surface_p' in observations:
-                predicted['surface_p'] = observations.surface_p.sel(time=predicted.time)
+        if {'T', 'rh', 'lwc'} & set(predicted):
+            if 'surface_p' in observations:
+                pressure = observations.surface_p.sel(time=predicted.time)
+                predicted['surface_p'] = predicted.surface_p.fillna(pressure) if 'surface_p' in predicted else pressure
             predicted = calc_derived_quantities(predicted)
         if 'rain_flag' in observations:
             predicted['rain_flag'] = observations.rain_flag.sel(time=predicted.time)

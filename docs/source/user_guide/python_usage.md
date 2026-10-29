@@ -23,6 +23,11 @@ This is the Python equivalent of `openMWR data my_site training --with-dependenc
 the selected outputs. `datasets.files("profiles")` returns the prepared file paths
 for inspection with xarray.
 
+Direct RT calls also require explicit `angles`, `absmdl` and `RT_model`.
+For example, choose `absmdl="R24"` and `RT_model="torchMWRT"`. The named dataset
+workflow reads these choices from the simulation recipe. `torchMWRT.RTModel`
+requires `angles` and `absmdl` too.
+
 ## Train from a recipe
 
 Copy the tutorial recipe to a new retrieval name to keep the existing model:
@@ -78,6 +83,7 @@ from openMWR.train import TrainingWorkflow
 apply_seed(42)
 model = Model(
     "MLR_python",
+    output_vars=["T", "rh", "lwc", "lwp", "iwv"],
     heights=load_grid(".", "heights", "levels_208_30km"),
     freqs=load_grid(".", "frequencies", "hatpro"),
     is_MLR=True,
@@ -88,6 +94,11 @@ workflow.add_standard_training_hyper_params(seed=42)
 workflow.add_input_noise_params()
 model = workflow.train()
 ```
+
+`output_vars` is explicit in Python too. Use `output_vars=["T", "rh"]` to select
+temperature and humidity. A column-only model uses `heights=None`. Neural models
+supply loss weights for exactly their selected outputs. Custom optimization
+scores must select predicted variables.
 
 The recommendation helpers read the bundled example recipes. Extra inputs absent
 from those examples need explicit noise values or search ranges. Neural profile

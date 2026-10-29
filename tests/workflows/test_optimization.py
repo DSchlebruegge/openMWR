@@ -14,6 +14,54 @@ from openMWR.train import TrainingWorkflow
 from tests.fixtures.retrievals import retrieval_project, training_workflow
 
 
+@pytest.mark.parametrize('changed', ['training', 'validation', 'observations', 'reference'])
+def test_continuation_rejects_changed_selected_data_without_replacing_results(tmp_path, changed):
+    recipe, _ = retrieval_project(tmp_path)
+    original = training_workflow(tmp_path).optimize(n_trials=1)
+    fingerprint = original.user_attrs['openMWR_experiment']['data']
+    before = (recipe.parent / 'model.pth').read_bytes()
+    workflow = training_workflow(tmp_path)
+    if changed in ('training', 'validation'):
+        # Python preprocessing must be checked too, without changing any file.
+        getattr(workflow, changed + '_data')['T'] += 0.25
+    else:
+        path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
+        data = xr.load_dataset(path)
+        source, variable = ('hatpro', 'TB') if changed == 'observations' else ('radiosonde', 'T')
+        data[variable].loc[{'data_source': source}] += 0.25
+        data.to_netcdf(path)
+    with pytest.raises(ValueError, match=f'Optimization data changed .*{changed}'):
+        workflow.optimize(n_trials=1, run_mode='continue')
+    assert (recipe.parent / 'model.pth').read_bytes() == before
+    reloaded = optuna.load_study(study_name=original.study_name, storage=f"sqlite:///{recipe.parent / 'optimization.db'}")
+    assert len(reloaded.trials) == 1
+    assert reloaded.user_attrs['openMWR_experiment']['data'] == fingerprint
+    fresh = workflow.optimize(n_trials=1, run_mode='fresh')
+    assert len(fresh.trials) == 1
+    assert fresh.user_attrs['openMWR_experiment']['data'][changed] != fingerprint[changed]
+
+
+def test_continuation_uses_selected_values_instead_of_file_encoding_or_unrelated_dates(tmp_path):
+    recipe, _ = retrieval_project(tmp_path)
+    first = training_workflow(tmp_path).optimize(n_trials=1)
+    path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
+    data = xr.load_dataset(path)
+    # Dates 21-31 and unselected variables do not rank these trials.
+    data['T'].loc[{'time': slice('2024-01-21', None)}] += 50
+    data['unrelated'] = data.T * 2
+    data.attrs['comment'] = 'Rewritten without changing selected inputs or reference values'
+    data.to_netcdf(path)
+    training = tmp_path / 'data/sites/test/training_variant/training_03715.nc'
+    fitting = xr.load_dataset(training)
+    fitting.attrs['comment'] = 'Re-encoded input file'
+    fitting.to_netcdf(training)
+    workflow = training_workflow(tmp_path)
+    workflow.training_data['debug'] = xr.full_like(workflow.training_data.T, np.nan)
+    continued = workflow.optimize(n_trials=1, run_mode='continue')
+    assert len(continued.trials) == 2
+    assert continued.user_attrs['openMWR_experiment']['data'] == first.user_attrs['openMWR_experiment']['data']
+
+
 @pytest.mark.parametrize(('heights', 'error'), [
     ([0.0], None),
     ([0.0, 2000.0], 'optimization reference.T coordinates do not match the model'),
@@ -59,6 +107,11 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     definition = continued.user_attrs['openMWR_experiment']
     # Recorded settings are compared exactly, including obsolete fields.
     continued.set_user_attr('openMWR_experiment', {**definition, 'bias_correction': {'factor': 1.0}})
+    with pytest.raises(ValueError, match='different or unrecorded experiment'):
+        training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
+    continued.set_user_attr('openMWR_experiment', definition)
+    # Earlier studies must not infer data identities from today's files.
+    continued.set_user_attr('openMWR_experiment', {key: value for key, value in definition.items() if key != 'data'})
     with pytest.raises(ValueError, match='different or unrecorded experiment'):
         training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
     continued.set_user_attr('openMWR_experiment', definition)

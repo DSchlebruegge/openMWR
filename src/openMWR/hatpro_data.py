@@ -14,7 +14,7 @@ from openMWR.utils import (
 from openMWR.parallel import run_pool_date_range
 from openMWR.xr_utils import change_coord_of_ds, mean_n_min, calc_gradient, integrate, add_time_data, add_variables_at_closest_time
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity, calc_pressure
-from openMWR.site import get_config_parameter, get_invalid_measurements
+from openMWR.site import load_site_config, get_invalid_measurements
 from openMWR.paths import dataset_dir, dataset_file
 from openMWR.observations import mask_invalid_measurements
 from openMWR.hatpro_io import load_hatpro_day
@@ -64,45 +64,39 @@ def calc_derived_quantities(ds: xr.Dataset) -> xr.Dataset:
     Returns
     -------
     xr.Dataset
-        The input dataset with added variables: `ah` (absolute humidity,
+        The input dataset with available derived variables: `ah` (absolute humidity,
         g/m^3), `TD` (dew point, K), `T_grad` (temperature gradient, K/km),
         `p` (pressure, hPa), `lwp_from_lwc` (g/m^2), and `iwv_from_ah`
         (kg/m^2).
 
     Notes
     -----
+    - Each quantity requires its corresponding predicted inputs.
     - The dataset is modified in place and returned for convenience.
     - Relative humidity values below 0.1% are clipped to 0.1% before calculations.
     - Pressure is derived from hydrostatic equilibrium when a finite surface
       pressure is available. Other derived products do not require pressure.
     """
-    # Compute absolute humidity
-    rh = ds['rh'].where(ds['rh'] > 0.1, 0.1)
+    if 'T' in ds:
+        ds['T_grad'] = calc_gradient(ds.T) * 1000
+        ds['T_grad'].attrs['units'] = 'K/km'
+        if 'surface_p' in ds and bool(np.isfinite(ds.surface_p).any()):
+            ds['p'] = calc_pressure(ds.surface_p, ds.T, ds.height).where(np.isfinite(ds.T).all('height'))
+            ds['p'].attrs['units'] = 'hPa'
 
-    ds['ah'] = calc_absolute_humidity(ds.T, rh) * 1000
-    ds['ah'].attrs["units"] = "g/m^3"
-    # ds['ah'] = ds['ah'].where(ds['ah'] != 0, 0.1)  # Set zeros to a small value so dew point calculation works
+    if {'T', 'rh'} <= set(ds):
+        # Preserve missing outputs when different retrievals share one dataset.
+        rh = ds.rh.clip(min=0.1)
+        ds['ah'] = calc_absolute_humidity(ds.T, rh) * 1000
+        ds['ah'].attrs['units'] = 'g/m^3'
+        ds['TD'] = dewpoint_from_absolute_humidity(ds.T, ds.ah / 1000)
+        ds['TD'].attrs['units'] = 'K'
+        ds['iwv_from_ah'] = (integrate(ds.ah, 'height') / 1000).where(np.isfinite(ds.ah).all('height'))
+        ds['iwv_from_ah'].attrs['units'] = 'kg/m^2'
 
-    # Compute dew point temperature
-    ds['TD'] = dewpoint_from_absolute_humidity(ds.T, ds.ah / 1000)
-    ds['TD'].attrs["units"] = "K"
-
-    # Compute temperature gradient
-    ds['T_grad'] = calc_gradient(ds.T) * 1000
-    ds['T_grad'].attrs["units"] = "K/km"
-
-    # Compute pressure from hydrostatic equilibrium
-    if 'surface_p' in ds and bool(np.isfinite(ds.surface_p).any()):
-        ds['p'] = calc_pressure(ds.surface_p, ds.T, ds.height)
-        ds['p'].attrs["units"] = "hPa"
-
-    # Compute LWP from LWC
-    ds['lwp_from_lwc'] = integrate(ds.lwc, 'height')
-    ds['lwp_from_lwc'].attrs["units"] = "g/m^2"
-
-    # Compute IWV from absolute humidity
-    ds['iwv_from_ah'] = integrate(ds.ah, 'height') / 1000
-    ds['iwv_from_ah'].attrs["units"] = "kg/m^2"
+    if 'lwc' in ds:
+        ds['lwp_from_lwc'] = integrate(ds.lwc, 'height').where(np.isfinite(ds.lwc).all('height'))
+        ds['lwp_from_lwc'].attrs['units'] = 'g/m^2'
 
     return ds
 
@@ -113,6 +107,7 @@ def import_hatpro_data(
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
+    *, site_config=None,
 ) -> Optional[xr.Dataset]:
     """
     Load and assemble zenith-mode Hatpro measurements for a single day.
@@ -159,11 +154,12 @@ def import_hatpro_data(
     - IR brightness temperatures are converted to Kelvin.
     - A standard frequency grid is enforced if unexpected values are found.
     """
-    periods = get_invalid_measurements(site, project_dir)
+    site_config = load_site_config(site, project_dir, config=site_config)
+    periods = get_invalid_measurements(site, project_dir, site_config=site_config)
     products = ['BRT', 'MET', 'IRT']
     if import_retrieval_data:
         products += ['LWP', 'LPR', 'TPC', 'HPC', 'IWV']
-    datasets = load_hatpro_day(date, site, project_dir, products)
+    datasets = load_hatpro_day(date, site, project_dir, products, site_config=site_config)
     ds_BRT = datasets['BRT']
     ds_BRT['rain_flag'] = ds_BRT.rain_flag.astype('float64')
     ds_BRT['frq'] = ds_BRT.frq.astype('float64').round(2)
@@ -219,6 +215,7 @@ def import_hatpro_data_bls(
     mean_one_min: bool = False,
     import_retrieval_data: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
+    *, site_config=None,
 ) -> Optional[xr.Dataset]:
     """
     Load and assemble boundary layer scan (BLS) Hatpro measurements for a day.
@@ -265,9 +262,10 @@ def import_hatpro_data_bls(
     - The reader excludes the NetCDF surface-temperature channel from scan angles.
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     """
-    periods = get_invalid_measurements(site, project_dir)
+    site_config = load_site_config(site, project_dir, config=site_config)
+    periods = get_invalid_measurements(site, project_dir, site_config=site_config)
     products = ['MET', 'BLB'] + (['TPB'] if import_retrieval_data else [])
-    datasets = load_hatpro_day(date, site, project_dir, products)
+    datasets = load_hatpro_day(date, site, project_dir, products, site_config=site_config)
     ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
     if ds_MET is not None and mean_one_min:
         ds_MET = mean_n_min(ds_MET, 1)
@@ -315,6 +313,7 @@ def _create_hatpro_day_file(
     project_dir: str,
     hatpro_out_dir: Union[str, os.PathLike],
     import_retrieval_data: bool,
+    site_config,
 ) -> None:
 
     daily_file = hatpro_out_dir / f'hatpro_data{bls_attribute}_{date:%Y%m%d}.nc'
@@ -326,7 +325,7 @@ def _create_hatpro_day_file(
                 site,
                 project_dir,
                 import_retrieval_data=import_retrieval_data,
-                out_file=daily_file,
+                out_file=daily_file, site_config=site_config,
             )
         else:
             import_hatpro_data(
@@ -335,7 +334,7 @@ def _create_hatpro_day_file(
                 project_dir,
                 mean_one_min=True,
                 import_retrieval_data=import_retrieval_data,
-                out_file=daily_file,
+                out_file=daily_file, site_config=site_config,
             )
     except FileNotFoundError as e:
         logger.info(f"Date skipped due to missing file: {date} – {e}")
@@ -355,6 +354,7 @@ def create_hatpro_dataset(
     dataset: str = 'hatpro',
     start_date: str = None,
     end_date: str = None,
+    *, site_config=None,
 ) -> None:
     """
     Build site-level Hatpro datasets from daily RPG files.
@@ -389,11 +389,11 @@ def create_hatpro_dataset(
     - Combined-build failures are logged and re-raised to the caller.
     """
 
+    site_config = load_site_config(site, project_dir, config=site_config)
+    site_config.require('hatpro_data_dir')
     if import_retrieval_data is None:
-        import_retrieval_data = get_config_parameter(site, 'rpg_retrieval_exists', project_dir)
-
-    mwr_measurement_start_date = get_config_parameter(site, 'mwr_measurement_start_date', project_dir)
-    start_date = pd.Timestamp(start_date or mwr_measurement_start_date)
+        import_retrieval_data = site_config.get('rpg_retrieval_exists', False)
+    start_date = pd.Timestamp(start_date or site_config.require('mwr_measurement_start_date'))
     end_date = pd.Timestamp(end_date or pd.Timestamp.now().normalize())
     dr_full = pd.date_range(start_date, end_date)
     hatpro_out_dir = dataset_dir(project_dir, site, dataset)
@@ -444,7 +444,7 @@ def create_hatpro_dataset(
                         site,
                         project_dir,
                         hatpro_out_dir,
-                        import_retrieval_data,
+                        import_retrieval_data, site_config,
                     )
             else:
                 run_pool_date_range(
@@ -456,7 +456,7 @@ def create_hatpro_dataset(
                     site,
                     project_dir,
                     hatpro_out_dir,
-                    import_retrieval_data,
+                    import_retrieval_data, site_config,
                 )
 
             logger.info(f'Finished creating daily files for Hatpro data with BLS: {bls}')

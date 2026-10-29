@@ -4,6 +4,7 @@ schema_version = 1
 
 [model]
 kind = "mlr"
+output_vars = ["T", "rh", "lwc", "lwp", "iwv"]
 mode = "zenith"
 freqs = "dataset"
 heights = "dataset"

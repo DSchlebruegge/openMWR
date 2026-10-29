@@ -9,7 +9,7 @@ from openMWR.cloud import CloudColumn, CloudModelConfig
 from openMWR.config import check_cloud, check_profile_quality
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity
 from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, match_analysis_data
-from openMWR.site import get_config_parameter, get_invalid_measurements
+from openMWR.site import load_site_config, get_invalid_measurements
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.paths import dataset_file, radiosonde_station_dir
@@ -196,6 +196,7 @@ def create_radiosonde_dataset_for_RT(
     cloud: dict,
     quality: dict,
     incomplete_profiles: str,
+    site_config=None,
 ) -> None:
     """
     Creates a processed radiosonde dataset for the radiative transfer (RT) calculation for a given site and station.
@@ -276,7 +277,8 @@ def create_radiosonde_dataset_for_RT(
     if last_year is not None:
         raw_data_files = [f for f in raw_data_files if int(os.path.basename(f).split('_')[-1].split('.')[0]) <= last_year]
     
-    mwr_height = get_config_parameter(site, 'mwr_height', project_dir)
+    site_config = load_site_config(site, project_dir, config=site_config)
+    mwr_height = site_config.require('mwr_height')
 
     ds_list = []
 
@@ -431,9 +433,9 @@ def create_radiosonde_dataset_for_RT(
     ds_new.to_netcdf(target_file)
     logger.info(f"Radiosonde dataset saved to {target_file}")
 
-def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray = np.array([90.]), save: bool = True, num_of_processes: int = 12,
-           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, absmdl: str = 'R20', profiles_dataset: str = 'profiles',
-           RT_model: str = 'torchMWRT', *, dataset: str, infrared):
+def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray, save: bool = True, num_of_processes: int = 12,
+           freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, profiles_dataset: str = 'profiles',
+           *, absmdl: str, RT_model: str, dataset: str, infrared, site_config=None):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -447,7 +449,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         Working-project root containing data/ and sites/.
     freqs : numpy.ndarray
         Microwave channel frequencies.
-    angles : numpy.ndarray, optional
+    angles : numpy.ndarray
         Elevation angles in degrees.
     save : bool, optional
         If True, write the output dataset to disk.
@@ -459,13 +461,13 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         If True, process only times not yet present in the output file.
     test : bool, optional
         If True, limit processing to the first ``num_of_processes`` profiles.
-    absmdl : str, optional
+    absmdl : str
         Absorption model passed to the selected RT backend.
     profiles_dataset : str, optional
         Name of the prepared-profile input dataset.
     dataset : str
         Name of the output simulation dataset.
-    RT_model : {"torchMWRT", "pyrtlib"}, optional
+    RT_model : {"torchMWRT", "pyrtlib"}
         RT backend used in :func:`openMWR.run_RT.run_RT`.
 
     Returns
@@ -510,7 +512,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         freq_shift=freq_shift,
         absmdl=absmdl,
         RT_model=RT_model,
-        infrared=infrared,
+        infrared=infrared, site_config=site_config,
     )
 
     ds_new = ds_new.expand_dims(station=[station_id])
@@ -537,7 +539,7 @@ def create_analysis_dataset(
     save: bool = True,
     observations_dataset: str = 'hatpro',
     dataset: str = 'analysis_radiosonde',
-    *, reference_dataset: str, max_time_difference_minutes, exclude_rain, height_range, required_observations,
+    *, reference_dataset: str, max_time_difference_minutes, exclude_rain, height_range, required_observations, site_config=None,
 ) -> Optional[tuple[xr.Dataset, xr.Dataset]]:
     """
     Create analysis datasets pairing Hatpro measurements with radiosonde data.
@@ -583,6 +585,8 @@ def create_analysis_dataset(
     - Adds a `data_source` dimension with entries `radiosonde` and `hatpro`.
     """
 
+    site_config = load_site_config(site, project_dir, config=site_config)
+    periods = get_invalid_measurements(site, project_dir, site_config=site_config)
     logger.info(f'Creating analysis dataset for site {site} from radiosonde and hatpro data')
 
     # Hatpro data
@@ -617,8 +621,8 @@ def create_analysis_dataset(
         raso_data = raso_data.rename({'starttime': 'time'})   
 
         # Select matching times
-        ds_hatpro_sel, raso_data_sel = match_analysis_data(ds_hatpro, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(site, project_dir))
-        ds_hatpro_bls_sel, raso_data_bls_sel = match_analysis_data(ds_hatpro_bls, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=get_invalid_measurements(site, project_dir))
+        ds_hatpro_sel, raso_data_sel = match_analysis_data(ds_hatpro, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=periods)
+        ds_hatpro_bls_sel, raso_data_bls_sel = match_analysis_data(ds_hatpro_bls, raso_data, max_time_difference_minutes=max_time_difference_minutes, exclude_rain=exclude_rain, height_range=height_range, required_observations=required_observations, invalid_measurements=periods)
 
         if from_forward_calc:
             raso_data_sel = raso_data_sel.sel(ang=90.0, drop=True)

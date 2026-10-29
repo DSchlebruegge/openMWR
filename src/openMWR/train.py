@@ -1,4 +1,5 @@
 from openMWR.observations import load_analysis_dataset
+from openMWR.site import load_site_config
 import torch
 from torch import nn
 import numpy as np
@@ -21,7 +22,7 @@ from openMWR.devices import resolve_device, device_name
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, SpectralConsistencyModel, load_model
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
-from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now
+from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now, dataset_id
 from openMWR.config import (TRAINING_PARAMETERS, check_keys, check_name, require_keys,
                             training_parameters, input_noise_parameters, resolve_parameter,
                             validate_training_settings, validate_parameter_usage,
@@ -103,6 +104,7 @@ class TrainingWorkflow:
         profile_weights = {'upper_bounds': [10000], 'values': [1., .5]}
         model = Model('NN_1', load_grid('.', 'heights', 'levels_208_30km'),
                       load_grid('.', 'frequencies', 'hatpro'),
+                      output_vars=['T', 'rh', 'lwc', 'lwp', 'iwv'],
                       loss_weights={'T': profile_weights, 'rh': profile_weights,
                                     'lwc': profile_weights, 'lwp': 1., 'iwv': 1.})
         workflow = TrainingWorkflow(model, site='munich', device='cuda', project_dir='.')
@@ -159,6 +161,7 @@ class TrainingWorkflow:
 
         self.hyper_params = {}
         self.recipe = None
+        self.site_config = None
 
         self.logger = logging.getLogger(__name__)
 
@@ -178,6 +181,7 @@ class TrainingWorkflow:
         recipe = RetrievalRecipe.load(project_dir, site, retrieval)
         workflow = cls(recipe.create_model(), site, device, recipe.project_dir)
         workflow.recipe = recipe
+        workflow.site_config = recipe.site_config
         workflow.change_hyper_params(**recipe.training_params(workflow))
         noise_settings = recipe.section('input_noise')
         method = noise_settings['method']
@@ -304,6 +308,8 @@ class TrainingWorkflow:
                    'seed': seed, 'start_date': start_date, 'end_date': end_date,
                    'days_of_month': days_of_month, 'score_weights': score_weights}
         settings = dict(self.recipe.section('optimization') if self.recipe is not None else self._standard_recipe(optimization=True)['optimization'])
+        if self.recipe is None:
+            settings['score_weights'] = {key: value for key, value in settings['score_weights'].items() if key in self.model.output}
         settings.update({key: value for key, value in options.items() if value is not None})
         if not self.requires_optimization:
             raise ValueError('Optimization needs a search definition in training or input_noise: use low/high or choices on a parameter.')
@@ -319,7 +325,8 @@ class TrainingWorkflow:
         path = dataset_file(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
         if not path.is_file():
             raise FileNotFoundError(f'Missing optimization analysis dataset: {path}. Prepare it before optimization.')
-        data = load_analysis_dataset(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model)
+        self.site_config = load_site_config(self.site, self.project_dir, config=self.site_config)
+        data = load_analysis_dataset(self.project_dir, self.site, analysis_name, bls=self.model.is_bls_model, site_config=self.site_config)
         data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
         if not self.model.is_bls_model and 'ang' in data.dims:
             data = data.sel(ang=90, drop=True)
@@ -355,7 +362,8 @@ class TrainingWorkflow:
         - Stores datasets in `training_data` and `validation_data`.
         """
         from openMWR.datasets import DatasetWorkflow
-        datasets = DatasetWorkflow(self.project_dir, self.site)
+        self.site_config = load_site_config(self.site, self.project_dir, config=self.site_config)
+        datasets = DatasetWorkflow(self.project_dir, self.site, site_config=self.site_config)
         datasets.require(dataset, sources=sources, splits=('training', 'validation'))
         if sources is None:
             sources = datasets.sources(dataset)
@@ -543,13 +551,14 @@ class TrainingWorkflow:
 
         selection = {key: value for key, value in dict(start_date=start_date, end_date=end_date, days_of_month=days_of_month).items() if value is not None}
         check_time_selection(selection, 'OMB selection')
+        self.site_config = load_site_config(self.site, self.project_dir, config=self.site_config)
         self.omb = Omb_Analysis(
             self.site,
             self.project_dir,
             data_source=data_source,
             station_ids_for_analysis=station_ids_for_analysis,
             load_existing_analysis_dataset=True,
-            dataset=dataset,
+            dataset=dataset, site_config=self.site_config,
         )
 
         self.omb.selection = selection
@@ -653,8 +662,9 @@ class TrainingWorkflow:
         self.model.nor = create_stats(self.model, self.training_data)
         self.logger.info('Created normalization dataset')
 
-        self.training_data = normalize(self.training_data, self.model)
-        self.validation_data = normalize(self.validation_data, self.model)
+        variables = list(set(self.model.input_vars + self.model.output_vars))
+        self.training_data = normalize(self.training_data[variables], self.model)
+        self.validation_data = normalize(self.validation_data[variables], self.model)
         
         # Stack the data to create a single dimension for station and time
         # This is necessary to create a 2D tensor for training
@@ -1113,6 +1123,15 @@ class TrainingWorkflow:
                 label = f'input_noise.{key.removeprefix("input_noise_")}' if key.startswith('input_noise_') else f'training.{key}'
                 self.logger.info('Search %s: %s', label, value)
 
+        variables = list(set(self.model.input_vars + self.model.output_vars))
+        scored = [key for key, weight in settings['score_weights'].items() if weight > 0]
+        data_identity = {
+            'training': dataset_id(self.training_data[variables]),
+            'validation': dataset_id(self.validation_data[variables]),
+            'observations': dataset_id(an_data.sel(data_source='hatpro', drop=True)[self.model.input_vars]),
+            'reference': dataset_id(an_data.sel(data_source=data_source, drop=True)[scored]),
+        }
+        self._run_record['data'] = data_identity
         storage = self._prepare_run(run_mode, optimization=True)
         retrieval_dir(self.project_dir, self.site, self.model.name).mkdir(parents=True, exist_ok=True)
         sampler = optuna.samplers.TPESampler(seed=None if settings['seed'] == 'random' else settings['seed'])
@@ -1125,9 +1144,16 @@ class TrainingWorkflow:
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
         if self.model.is_MLR:
             experiment['fitting'] = _MLR_FITTING
+        experiment['data'] = data_identity
         previous = study.user_attrs.get('openMWR_experiment')
-        if (previous is not None and previous != experiment) or (previous is None and study.trials):
+        definition = {key: value for key, value in experiment.items() if key != 'data'}
+        previous_definition = {key: value for key, value in previous.items() if key != 'data'} if previous is not None else None
+        if ((previous is None and study.trials) or
+                (previous is not None and ('data' not in previous or previous_definition != definition))):
             raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
+        if previous is not None and previous['data'] != data_identity:
+            changed = ', '.join(key for key, value in data_identity.items() if previous['data'].get(key) != value)
+            raise ValueError(f'Optimization data changed ({changed}). Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
         try:
             best_trial = study.best_trial
         except ValueError:

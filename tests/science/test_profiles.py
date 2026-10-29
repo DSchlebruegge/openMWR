@@ -90,7 +90,7 @@ def test_monthly_completion_rejects_profiles_without_upper_level_reference(datas
 def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dataset_project, monkeypatch, backend):
     import openMWR.run_RT as rt
 
-    monkeypatch.setattr(rt, 'calculate_IR_band_TB', lambda *args: float(np.mean(args[-1])))
+    monkeypatch.setattr(rt, 'calculate_IR_band_TB', lambda *args, **kwargs: float(np.mean(args[-1])))
     profiles = xr.Dataset({
         'T': (('time', 'height'), [[285., 282., 279.], [285., 282., 279.]]),
         'p': (('time', 'height'), [[1000., 950., 900.], [1000., 950., 900.]]),

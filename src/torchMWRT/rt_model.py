@@ -75,7 +75,7 @@ class RTModel:
         self,
         freqs,
         angles,
-        absmdl: str = "R98",
+        absmdl: str,
         ray_tracing: bool = False,
         from_sat: bool = False,
         dtype: torch.dtype = torch.float64,

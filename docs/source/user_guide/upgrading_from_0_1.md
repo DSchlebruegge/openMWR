@@ -26,17 +26,23 @@ The command converts every `data/sites/<site>/config.json` to
 `sites/<site>/retrieval/<name>/model.pth`. It makes the saved model class, grids,
 loss weights and dataset name explicit. Model weights, normalization and names
 stay the same. Each original checkpoint is retained as `model.pth.bak` beside
-the converted file. Original JSON files, datasets, scripts and optimization
+the converted file. Further upgrades of that file use numbered backups such as
+`model.pth.bak.1`, preserving earlier originals. Original JSON files, datasets, scripts and optimization
 databases stay in place. A shared `grids.toml` is added if missing. No dataset or
-training recipes are generated.
+training recipes are generated. Extra historical site fields are retained under
+`[custom]`. Scientific processing choices now belong in dataset recipes.
 
 The command also converts older checkpoints already in the new directories.
 Run it again if you used the earlier layout-only migration. Current-format
 checkpoints and matching site TOML files are kept on repeated runs.
 
 All conversions and destinations are checked before any changes. Conflicting
-site settings, occupied destinations for old-layout files and existing
-checkpoint backups stop conversion. Original backups are never overwritten.
+site settings, occupied destinations for old-layout files and occupied backups
+for those files stop conversion. Original backups are never overwritten.
+
+Current checkpoints contain tensors and plain metadata and use restricted
+loading. Older formats require this explicit conversion. Migration reads older
+Python objects, so migrate only checkpoints you trust.
 
 Check paths in the converted site TOML files. Relative paths now start at the
 working-project root. `hatpro_format = "netcdf"` keeps the reader choice of 0.1.
@@ -75,7 +81,15 @@ argument. For example, replace `data_dir="data"` with `project_dir="."`.
 
 [Using Python](python_usage.md) shows prediction, plotting and custom training
 with the new workflows. Direct neural profile construction now requires explicit
-`loss_weights`. BLS models also require explicit `angles`.
+`loss_weights` and `output_vars`. Existing models retain all five profile/column
+outputs during conversion. Existing profile recipes need an explicit
+`output_vars = ["T", "rh", "lwc", "lwp", "iwv"]` entry in `[model]`.
+BLS models also require explicit `angles`. Direct RT calls
+require an explicit absorption model, backend and angle grid.
+
+Site settings are validated when loaded. Put project-specific fields in
+`[custom]`. Unknown top-level fields are rejected, with suggestions for misspelled
+settings.
 
 ## Keep or rebuild processed datasets
 

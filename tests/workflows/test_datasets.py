@@ -288,6 +288,10 @@ def test_build_keeps_one_date_snapshot_and_refreshes_next_time(dataset_project, 
     def download(self, start, end, h_freq=6):
         requested.append((start, end))
         Clock.current = date(2020, 1, 7)  # The download crosses midnight.
+        config = dataset_project / 'sites/test/site.toml'
+        settings = tomllib.loads(config.read_text())
+        settings['mwr_height'] = 1550
+        config.write_text(tomli_w.dumps(settings))
         times = pd.date_range(start, end + pd.Timedelta(days=1), freq=f'{h_freq}h', inclusive='left')
         return xr.Dataset({name: (('time', 'p'), np.broadcast_to(values, (len(times), 3)).copy())
             for name, values in {'height': [550., 1550., 2550.], 'T': [280., 274., 268.],
@@ -304,6 +308,9 @@ def test_build_keeps_one_date_snapshot_and_refreshes_next_time(dataset_project, 
     assert profiles['coverage']['inputs']['source']['range']['end_date'] == '2020-01-01'
     output = dataset_file(dataset_project, 'test', 'era5_profiles', 'era5')
     assert xr.load_dataset(output).time.size == 4
+    # Source metadata and preparation use the original 550 m instrument height.
+    np.testing.assert_allclose(xr.load_dataset(output).T.sel(height=0), 280.)
+    assert DatasetWorkflow(dataset_project, 'test').site_settings.require('mwr_height') == 1550
     assert workflow.settings('era5')['end_date'] == '2020-01-02'
     workflow.build('era5_profiles', with_dependencies=True)
     assert xr.load_dataset(output).time.size == 8

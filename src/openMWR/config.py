@@ -13,6 +13,14 @@ INTEGER_TRAINING = ("epochs", "batch_size", "epoch_max_lr")
 _NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
 TRAINING_PARAMETERS = _NN_TRAINING | {"seed", "bias_weight"}
 TIME_SELECTION_KEYS = ('start_date', 'end_date', 'days_of_month')
+PROFILE_OUTPUTS = ('T', 'rh', 'lwc', 'lwp', 'iwv')
+
+
+def check_output_vars(values):
+    """Select an ordered, nonempty subset of the profile retrieval outputs."""
+    check_strings(values, 'model.output_vars')
+    if not values or set(values) - set(PROFILE_OUTPUTS):
+        raise ValueError(f'model.output_vars must select from {list(PROFILE_OUTPUTS)}.')
 
 
 def training_parameters(is_mlr, loss_fn=None):
@@ -156,6 +164,16 @@ def select_height_range(data, height_range):
     if not selected.sizes['height']:
         raise ValueError(f'No heights in the selected height_range {height_range}.')
     return selected
+
+
+def check_hatpro_format(format, time_offset_hours=None):
+    """Validate both site settings and standalone HATPRO file reads."""
+    if format not in ('auto', 'netcdf', 'binary'):
+        raise ValueError('hatpro_format must be "auto", "netcdf" or "binary".')
+    if time_offset_hours is not None:
+        check_number(time_offset_hours, 'hatpro_time_offset_hours')
+        if abs(time_offset_hours) > 24:
+            raise ValueError('hatpro_time_offset_hours must be between -24 and 24.')
 
 
 def check_analysis(settings):

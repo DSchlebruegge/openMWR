@@ -27,6 +27,7 @@ from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.devices import resolve_device, device_name
 from openMWR.models import load_model
 from openMWR.observations import load_analysis_dataset
+from openMWR.site import load_site_config
 from openMWR.paths import (project_root, site_config_file, dataset_file, checkpoint_file,
                            dataset_recipe_file, evaluation_dir, evaluation_recipe_file)
 from openMWR.plot import plot_scatter_lwp
@@ -237,7 +238,7 @@ def _rpg_predictions(mode, settings, models, observations, reference):
     return predictions
 
 
-def _predict_cases(recipe, section, settings, groups, device, inputs):
+def _predict_cases(recipe, section, settings, groups, device, inputs, site_config):
     variables = settings['variables']
     logger.info('%s: dataset %s, variables %s.', section, settings['dataset'], ', '.join(variables))
     cases = {}
@@ -250,7 +251,7 @@ def _predict_cases(recipe, section, settings, groups, device, inputs):
                 continue
             path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls')
             inputs[path] = checkpoint_id(path)
-            data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls')
+            data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls', site_config=site_config)
             data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
             if settings['data_source'] == 'radiosonde':
                 data = _select_station(data, settings.get('station_id'), path)
@@ -367,6 +368,7 @@ def _model_notes(model, recipe):
 
 def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
     """Evaluate a named comparison without training, downloading or saving results."""
+    site_config = load_site_config(recipe.site, recipe.project_dir)
     settings = deepcopy(recipe.values)
     if retrievals is not None:
         settings['retrievals'] = list(retrievals)
@@ -400,7 +402,7 @@ def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
             if section not in settings:
                 continue
             selection = settings[section]
-            cases = _predict_cases(recipe, section, selection, groups, device, inputs)
+            cases = _predict_cases(recipe, section, selection, groups, device, inputs, site_config)
             for mode, group in groups.items():
                 if not group:
                     continue

@@ -53,19 +53,23 @@ def raw_day(prediction_project, date, *, bls=True):
         data.to_netcdf(directory / f'{date:%y%m%d}.{suffix}.NC')
 
 
-def checkpoint(prediction_project, name, *, bls=False, spectral=False, weather=True):
+def checkpoint(prediction_project, name, *, bls=False, spectral=False, weather=True,
+               outputs=('T', 'rh', 'lwc', 'lwp', 'iwv')):
     torch.manual_seed(2)
     if spectral:
         model = SpectralConsistencyModel(name, FREQUENCIES[:2], hidden_layer_size=3)
     else:
-        model = Model(name, np.array([0., 1000., 2000.]), FREQUENCIES[:2],
+        heights = np.array([0., 1000., 2000.]) if set(outputs) & {'T', 'rh', 'lwc'} else None
+        model = Model(name, heights, FREQUENCIES[:2],
             is_bls_model=bls, is_MLR=True, angles=[90., 30.] if bls else None,
             additional_input_vars=(['surface_T', 'surface_rh', 'surface_p', 'doy_cos', 'doy_sin']
-                                   if weather else ['TB_IR', 'doy_cos', 'doy_sin']))
+                                   if weather else ['TB_IR', 'doy_cos', 'doy_sin']), output_vars=list(outputs))
         with torch.no_grad():
             model.stack.weight.zero_()
             model.stack.weight[0, 0] = 0.1
-            model.stack.bias.copy_(torch.tensor([290., 283., 276., 50., 50., 50., .01, .01, .01, 20., 10.]))
+            values = {'T': [290., 283., 276.], 'rh': [50., 50., 50.],
+                      'lwc': [.01, .01, .01], 'lwp': [20.], 'iwv': [10.]}
+            model.stack.bias.copy_(torch.tensor([value for variable in outputs for value in values[variable]]))
     specification = xr.merge([model.input, model.output])
     model.nor = xr.Dataset({name: xr.ones_like(values).expand_dims(stat=['mean', 'std', 'max'])
                             for name, values in specification.items()})

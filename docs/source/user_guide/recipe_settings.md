@@ -5,6 +5,19 @@ examples. This page describes further choices when editing those recipes.
 Scientific settings must be explicit. Optional processing is off unless enabled.
 Use `openMWR COMMAND --help` for command options and their short aliases.
 
+## Site settings
+
+`site.toml` contains instrument and location settings. openMWR checks their names,
+types and ranges when loading a workflow. Required settings depend on the task.
+For example, downloading radiosondes needs no instrument coordinates, while ERA5
+needs latitude and longitude. Fill in the commented settings created by
+`create-site` before the relevant step.
+
+A workflow keeps one validated copy of these settings throughout processing,
+including worker processes. Create a new workflow to use edits to `site.toml`.
+Project-specific settings belong in `[custom]`. They do not control openMWR's
+scientific processing.
+
 ## Grids
 
 Height, frequency and elevation-angle grids accept numeric lists or names from
@@ -136,10 +149,18 @@ fitting and test period.
 | `mlr` | `zenith` or `bls` | `training.seed` and explicit input noise. Neural settings and profile loss weights are not used |
 | `spectral` | `zenith` | `hidden_layer_size`, at least two frequencies and neural training settings. No profile settings |
 
-Profile models specify `heights` and `additional_input_vars`, which may be empty.
+Profile retrievals specify an ordered `output_vars` list selecting from `T`, `rh`,
+`lwc`, `lwp` and `iwv`. For example, edit a recipe to use
+`output_vars = ["T", "rh"]` and keep only those entries in `[model.loss_weights]`
+for a neural model. Only the selected targets are required in training data.
+
+`heights` is required for T, rh or lwc profiles. Omit it for a retrieval predicting
+only lwp or iwv. `additional_input_vars` lists auxiliary inputs and may be empty.
 BLS models also specify `angles`. All models require `norm_functions` for every
 active input and output. Supported names are `z_norm`, `std_norm`, `log_norm` and
-`max_norm`. Dropout is off when omitted.
+`max_norm`. Dropout is off when omitted. Optimization score weights and evaluation
+variables must refer to outputs the retrieval predicts. Derived quantities are
+calculated when their required inputs are available.
 
 MLR fits the expected squared error under independent, zero-mean input noise
 directly. It uses the configured noise levels without generating random noisy
@@ -248,9 +269,11 @@ no random draws. `optimization.seed` controls Optuna sampling
 separately. With fixed seeds and the same trial history, sequential continuation
 matches an uninterrupted study, subject to the numerical backend.
 
-`--continue` requires compatible experiment settings and the saved best model.
-It does not detect changed dataset contents. Keep the data unchanged or start a
-fresh study. `--fresh` replaces this retrieval's model, study and progress PDF
+`--continue` requires matching experiment settings, the saved best model, and the
+same selected fitting, validation, observation and reference values. The check
+includes custom Python preprocessing. File attributes, file locations and data
+outside the selected period do not affect it. Changed data or studies without
+recorded data identities require `--fresh` or a new retrieval name. `--fresh` replaces this retrieval's model, study and progress PDF
 after input checks. It retains recipes, logs and datasets. It does not resume
 neural network weights.
 

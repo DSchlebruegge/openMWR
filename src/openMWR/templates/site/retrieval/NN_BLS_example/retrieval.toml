@@ -4,6 +4,7 @@ schema_version = 1
 
 [model]
 kind = "nn"
+output_vars = ["T", "rh", "lwc", "lwp", "iwv"]
 mode = "bls"
 freqs = "dataset"
 heights = "dataset"

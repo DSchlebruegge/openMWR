@@ -22,7 +22,7 @@ def workflow(project, family, **overrides):
                       angles=[90., 30.] if family == 'NN_BLS' else None,
                       hidden_layers=[4], additional_input_vars=overrides.pop('inputs', []),
                       loss_weights=None if family == 'MLR' else
-                      {name: 1. for name in ('T', 'rh', 'lwc', 'lwp', 'iwv')}, **overrides)
+                      {name: 1. for name in ('T', 'rh', 'lwc', 'lwp', 'iwv')}, **overrides, output_vars=["T", "rh", "lwc", "lwp", "iwv"])
     return TrainingWorkflow(model, 'test', 'cpu', project)
 
 

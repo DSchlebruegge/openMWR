@@ -105,7 +105,7 @@ def main(argv=None):
             sites = migrate_project(args.project_dir, dry_run=args.dry_run)
             if sites:
                 print('Original JSON files, datasets, scripts and optimization databases stay in place.')
-                print('Original checkpoints are kept as model.pth.bak beside each converted model.pth.')
+                print('Original checkpoints are kept beside model.pth as model.pth.bak or numbered model.pth.bak.N files.')
                 print('Check paths in sites/<site>/site.toml. Relative paths start at the project root.')
                 print('Choose a saved retrieval explicitly for prediction. No retrieval.toml is required:')
                 print('  openMWR predict SITE RETRIEVAL --date YYYY-MM-DD --output-dir data/migration_prediction')

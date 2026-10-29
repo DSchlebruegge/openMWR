@@ -23,8 +23,9 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            era5_cache_file, project_root, radiosonde_station_dir,
                            radiosonde_year_file, site_config_file)
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
-                            require_keys, load_grid, check_cloud, check_profile_quality, check_invalid_measurements,
+                            require_keys, load_grid, check_cloud, check_profile_quality,
                             check_analysis, check_infrared, check_time_selection, check_split_days, TIME_SELECTION_KEYS)
+from openMWR.site import load_site_config
 from openMWR.background import task_log_handler
 
 logger = logging.getLogger(__name__)
@@ -229,11 +230,10 @@ class DatasetWorkflow:
     remain accessible through ``recipe(name)`` for Python inspection/custom work.
     """
 
-    def __init__(self, project_dir, site):
+    def __init__(self, project_dir, site, *, site_config=None):
         check_name(site, 'site')
         self.project_dir, self.site = project_root(project_dir), site
-        with site_config_file(self.project_dir, site).open('rb') as stream:
-            self.site_settings = tomllib.load(stream)
+        self.site_settings = load_site_config(site, self.project_dir, config=site_config)
         self._recipes = {}
         self._settings_cache = None
         self._settings_date = None
@@ -314,8 +314,7 @@ class DatasetWorkflow:
         required = {'profiles': ('mwr_height',), 'simulation': ('gen',),
                     'hatpro': ('hatpro_data_dir', 'gen')}.get(kind, ())
         for key in required:
-            if self.site_settings.get(key) in (None, ''):
-                raise ValueError(f'{name}: set {key} in {site_config_file(self.project_dir, self.site)} before building this dataset.')
+            self.site_settings.require(key)
         settings = {'kind': kind, 'inputs': recipe.inputs, 'sources': self.sources(name)}
         if kind == 'radiosonde':
             settings.update(start_year=values['start_year'],
@@ -325,29 +324,23 @@ class DatasetWorkflow:
                 raise ValueError(f'{name}: start_year is after end_year.')
         elif kind in ('era5', 'hatpro'):
             delay = values.get('delay_days', 5) if kind == 'era5' else 0
-            settings.update(start_date=self.site_settings.get('mwr_measurement_start_date') if values['start_date'] == 'site' else values['start_date'],
+            settings.update(start_date=self.site_settings.require('mwr_measurement_start_date') if values['start_date'] == 'site' else values['start_date'],
                             end_date=str(today - pd.Timedelta(days=delay)) if values['end_date'] == 'today' else values['end_date'])
-            if not settings['start_date']:
-                raise ValueError(f'{name}: provide start_date or the site mwr_measurement_start_date.')
             if pd.Timestamp(settings['start_date']) > pd.Timestamp(settings['end_date']):
                 raise ValueError(f'{name}: start_date is after end_date.')
             if kind == 'era5':
                 settings.update(hour_interval=values['hour_interval'],
-                                latitude=round(self.site_settings['latitude'] * 4) / 4,
-                                longitude=round(self.site_settings['longitude'] * 4) / 4)
+                                latitude=round(self.site_settings.require('latitude') * 4) / 4,
+                                longitude=round(self.site_settings.require('longitude') * 4) / 4)
             else:
-                from openMWR.hatpro_io import check_hatpro_format
-
                 format = self.site_settings.get('hatpro_format', 'auto')
                 offset = self.site_settings.get('hatpro_time_offset_hours')
-                check_hatpro_format(format, offset)
                 settings.update(import_retrieval_data=values.get('observations', {}).get('import_retrieval_data', self.site_settings.get('rpg_retrieval_exists', False)),
                                 hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'),
                                 hatpro_format=format)
                 if offset is not None:
                     settings['hatpro_time_offset_hours'] = offset
                 periods = self.site_settings.get('invalid_measurements', [])
-                check_invalid_measurements(periods)
                 if periods:
                     settings['invalid_measurements'] = periods
         elif kind == 'profiles':
@@ -675,13 +668,13 @@ class DatasetWorkflow:
             return {'source_years_checked': sorted(checked)}
         elif kind == 'era5':
             from openMWR.era5 import ERA5Processor
-            processor = ERA5Processor(self.site, self.project_dir, start_date=settings['start_date'],
+            processor = ERA5Processor(self.site, self.project_dir, site_config=self.site_settings, start_date=settings['start_date'],
                                       end_date=settings['end_date'], update_only=not rebuilding,
                                       hour_interval=settings['hour_interval'])
             processor.create_original_dataset()
         elif kind == 'hatpro':
             from openMWR.hatpro_data import create_hatpro_dataset
-            create_hatpro_dataset(self.site, self.project_dir, dataset=name, update_only=True,
+            create_hatpro_dataset(self.site, self.project_dir, site_config=self.site_settings, dataset=name, update_only=True,
                                   import_retrieval_data=settings['import_retrieval_data'],
                                   start_date=settings['start_date'], end_date=settings['end_date'], num_of_processes=processes)
         elif kind == 'profiles':
@@ -694,11 +687,11 @@ class DatasetWorkflow:
                                'cloud', 'quality', 'incomplete_profiles')}
                 for station in self.sources(name):
                     create_radiosonde_dataset_for_RT(self.site, station, self.project_dir, np.asarray(settings['heights']),
-                        dataset=name, update_only=True, first_year=source_settings['start_year'],
+                        dataset=name, site_config=self.site_settings, update_only=True, first_year=source_settings['start_year'],
                         last_year=source_settings['end_year'], **preparation)
             else:
                 from openMWR.era5 import ERA5Processor
-                processor = ERA5Processor(self.site, self.project_dir, start_date=source_settings['start_date'],
+                processor = ERA5Processor(self.site, self.project_dir, site_config=self.site_settings, start_date=source_settings['start_date'],
                     end_date=source_settings['end_date'], hour_interval=source_settings['hour_interval'], profiles_dataset=name)
                 processor.create_profile_dataset(np.asarray(settings['heights']), num_of_processes=processes)
         elif kind == 'simulation':
@@ -712,10 +705,10 @@ class DatasetWorkflow:
                 from openMWR.radiosonde import create_radiosonde_dataset_with_RT
                 for station in self.sources(name):
                     create_radiosonde_dataset_with_RT(station, self.site, self.project_dir,
-                        profiles_dataset=profiles, dataset=name, update_only=True, **options)
+                        profiles_dataset=profiles, dataset=name, update_only=True, site_config=self.site_settings, **options)
             else:
                 from openMWR.era5 import ERA5Processor
-                processor = ERA5Processor(self.site, self.project_dir, profiles_dataset=profiles, simulation_dataset=name)
+                processor = ERA5Processor(self.site, self.project_dir, site_config=self.site_settings, profiles_dataset=profiles, simulation_dataset=name)
                 processor.create_forward_calc_dataset(**options)
         elif kind == 'split':
             from openMWR.train import separate_training_data
@@ -729,10 +722,10 @@ class DatasetWorkflow:
             if self.source_kind(name) == 'radiosonde':
                 from openMWR.radiosonde import create_analysis_dataset
                 create_analysis_dataset(self.site, self.sources(name), self.project_dir,
-                    observations_dataset=observations, reference_dataset=reference, dataset=name,
+                    observations_dataset=observations, reference_dataset=reference, dataset=name, site_config=self.site_settings,
                     **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations')})
             else:
                 from openMWR.era5 import ERA5Processor
-                processor = ERA5Processor(self.site, self.project_dir, simulation_dataset=reference)
+                processor = ERA5Processor(self.site, self.project_dir, site_config=self.site_settings, simulation_dataset=reference)
                 processor.create_analysis_dataset_from_forward_calc(observations_dataset=observations, dataset=name,
                     **{key: settings[key] for key in ('max_time_difference_minutes', 'exclude_rain', 'height_range', 'required_observations')})

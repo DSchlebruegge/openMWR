@@ -17,7 +17,7 @@ from openMWR import hatpro_data
 from openMWR.hatpro_data import import_hatpro_data, import_hatpro_data_bls
 from openMWR.hatpro_io import load_hatpro_day, read_hatpro_file
 from openMWR.predict import PredictionWorkflow
-from openMWR.site import create_site
+from openMWR.site import create_site, load_site_config
 from tests.fixtures.prediction import checkpoint
 
 DATA = Path(__file__).resolve().parents[1] / 'data/hatpro'
@@ -175,7 +175,7 @@ def test_auto_selects_each_product_and_never_hides_a_broken_selected_file(tmp_pa
         import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
     config = tmp_path / 'sites/test/site.toml'
     config.write_text('hatpro_format = "auto"\n')
-    with pytest.raises(ValueError, match='Set hatpro_data_dir'):
+    with pytest.raises(ValueError, match='set hatpro_data_dir'):
         import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
 
 
@@ -195,7 +195,7 @@ def test_incompatible_scans_are_skipped_with_the_missing_and_measured_angles(tmp
         import_hatpro_data_bls(date, 'test', tmp_path, import_retrieval_data=False,
                               out_file=output / 'rejected.nc')
     with caplog.at_level('INFO', logger='openMWR.hatpro_data'):
-        hatpro_data._create_hatpro_day_file(date, True, '_bls', 'test', tmp_path, output, False)
+        hatpro_data._create_hatpro_day_file(date, True, '_bls', 'test', tmp_path, output, False, load_site_config('test', tmp_path))
     assert f'Skipping HATPRO BLS for test {date:%Y-%m-%d}' in caplog.text
     assert '4.2' in caplog.text and f'Measured angles: {angles}' in caplog.text
     assert not any(record.levelname == 'ERROR' or record.exc_info for record in caplog.records)
@@ -232,11 +232,11 @@ def test_empty_zenith_selection_skips_averaging_and_preserves_independent_scans(
     output = tmp_path / 'processed'
     output.mkdir()
     with caplog.at_level('INFO', logger='openMWR.hatpro_data'):
-        hatpro_data._create_hatpro_day_file(date, False, '', 'test', tmp_path, output, False)
+        hatpro_data._create_hatpro_day_file(date, False, '', 'test', tmp_path, output, False, load_site_config('test', tmp_path))
     assert 'Skipping HATPRO zenith' in caplog.text and 'No zenith observations remain' in caplog.text
     assert not any(record.levelname == 'ERROR' or record.exc_info for record in caplog.records)
     assert not list(output.iterdir())
-    hatpro_data._create_hatpro_day_file(date, True, '_bls', 'test', tmp_path, output, False)
+    hatpro_data._create_hatpro_day_file(date, True, '_bls', 'test', tmp_path, output, False, load_site_config('test', tmp_path))
     assert (output / f'hatpro_data_bls_{date:%Y%m%d}.nc').is_file()
 
     # A day with both target and sky views retains the sky portion.

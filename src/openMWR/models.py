@@ -3,25 +3,72 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import pickle
 from functools import wraps
+from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 import numpy as np
 import torch
 import xarray as xr
 from torch import nn
-from openMWR.config import check_coordinates, check_keys, check_number, require_keys
+from openMWR.config import check_coordinates, check_keys, check_number, require_keys, check_output_vars
 from openMWR.paths import checkpoint_file
 
 logger = logging.getLogger(__name__)
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
+
+
+def _plain_metadata(value, label):
+    """Lower checkpoint metadata to ordinary Python values, rejecting objects."""
+    if isinstance(value, np.ndarray):
+        return _plain_metadata(value.tolist(), label)
+    if isinstance(value, np.generic):
+        return _plain_metadata(value.item(), label)
+    if value is None or type(value) in (bool, int, float):
+        return value
+    if isinstance(value, (str, Path)):
+        return str(value)
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError(f'{label} must have string keys.')
+        return {str(key): _plain_metadata(item, f'{label}.{key}') for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_metadata(item, f'{label}[{index}]') for index, item in enumerate(value)]
+    raise ValueError(f'{label}: unsupported metadata type {type(value).__name__}. Use strings, numbers, lists or dictionaries.')
+
+
+def _checkpoint_payload(checkpoint):
+    """Validate the current envelope and keep Python objects out of metadata."""
+    required = ('format_version', 'model_state_dict', 'hyper_params', 'normalization', 'structure', 'model_class')
+    check_keys(checkpoint, (*required, 'training_metadata'), 'checkpoint')
+    require_keys(checkpoint, required, 'checkpoint')
+    if type(checkpoint['format_version']) is not int or checkpoint['format_version'] != CHECKPOINT_VERSION:
+        raise ValueError(f'Checkpoint format_version must be {CHECKPOINT_VERSION}.')
+    for key in ('model_state_dict', 'hyper_params', 'normalization', 'structure'):
+        if not isinstance(checkpoint[key], dict):
+            raise ValueError(f'checkpoint.{key} must be a dictionary.')
+    if not isinstance(checkpoint['model_class'], str) or not checkpoint['model_class']:
+        raise ValueError('checkpoint.model_class must be a nonempty class name.')
+    if 'training_metadata' in checkpoint and not isinstance(checkpoint['training_metadata'], dict):
+        raise ValueError('checkpoint.training_metadata must be a dictionary.')
+    state = checkpoint['model_state_dict']
+    if any(not isinstance(key, str) or not isinstance(value, torch.Tensor) for key, value in state.items()):
+        raise ValueError('checkpoint.model_state_dict must map parameter names to tensors.')
+    return {key: state if key == 'model_state_dict' else _plain_metadata(value, f'checkpoint.{key}')
+            for key, value in checkpoint.items()}
 
 
 def _read_checkpoint(path):
-    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    try:
+        checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+    except pickle.UnpicklingError as exc:
+        raise ValueError(f'Cannot read checkpoint {path} in the current format. Run openMWR migrate --project-dir <project> for older checkpoints.') from exc
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f'Checkpoint {path} must be a dictionary.')
     if checkpoint.get('format_version') != CHECKPOINT_VERSION:
         raise ValueError(f'Checkpoint {path} requires conversion. Run openMWR migrate --project-dir <project> for older checkpoints.')
-    return checkpoint
+    return _checkpoint_payload(checkpoint)
 
 def _capture_init_args(init):
     sig = inspect.signature(init)
@@ -122,13 +169,13 @@ class BaseModel(nn.Module):
 
         file = checkpoint_file(project_dir, site, self.name)
         os.makedirs(file.parent, exist_ok=True)
-        torch.save(checkpoint, file)
+        torch.save(_checkpoint_payload(checkpoint), file)
         logger.info(f'saved model under {file}')
 
     def checkpoint_structure(self):
         """Return constructor settings with mutable library defaults resolved."""
         structure = dict(self.structure)
-        for key in ('hidden_layers', 'angles', 'additional_input_vars', 'norm_functions'):
+        for key in ('hidden_layers', 'angles', 'additional_input_vars', 'norm_functions', 'output_vars'):
             if key in structure and hasattr(self, key):
                 structure[key] = getattr(self, key)
         if 'loss_weights' in structure and hasattr(self, 'loss_weights'):
@@ -187,10 +234,10 @@ class BaseModel(nn.Module):
             if name != checkpoint['structure']['name']:
                 logger.warning(f"Model name '{name}' does not match the name stored in the checkpoint '{checkpoint['structure']['name']}'. Using the provided name.")
             
-        checkpoint['structure']['name'] = name
+        structure = {**checkpoint['structure'], 'name': name}
         normalization = xr.Dataset.from_dict(checkpoint['normalization'])
 
-        model = cls(**checkpoint['structure'])
+        model = cls(**structure)
 
         model.load_state_dict(checkpoint['model_state_dict'])
         model.nor = normalization
@@ -283,9 +330,10 @@ class Model(BaseModel):
     def __init__(
             self,
             name: str,
-            heights: np.ndarray,
+            heights: np.ndarray | None,
             freqs: np.ndarray,
             *, 
+            output_vars: list[str],
             is_bls_model: bool = False,
             is_MLR: bool = False,
 
@@ -312,6 +360,9 @@ class Model(BaseModel):
             Height grid (meters) for profile outputs (T, rh, lwc).
         freqs : array-like
             Microwave channel frequencies (GHz) for TB inputs.
+        output_vars : list of str
+            Ordered, nonempty selection of T, rh, lwc, lwp and iwv.
+            Supply heights=None for a retrieval with only column outputs.
         is_bls_model : bool, default=False
             If ``True``, creates a Boundary-Layer-Scan (BLS) model and
             creates TB inputs with ``ang`` and ``frq`` dimensions.
@@ -344,8 +395,8 @@ class Model(BaseModel):
 
         Notes
         -----
-        - Defines ``self.input`` (TB + auxiliary inputs) and ``self.output``
-          (T, rh, lwc profiles plus scalar lwp/iwv) datasets used by training and
+        - Defines ``self.input`` (TB + auxiliary inputs) and the selected
+          ``self.output`` profile/column variables used by training and
           inference helpers in ``openMWR.predict``.
         - Initializes height-dependent ``loss_weights`` for profile variables
           when using the MLP.
@@ -354,7 +405,13 @@ class Model(BaseModel):
         """
         super().__init__(name)
 
-        self.heights = np.asarray(heights)
+        check_output_vars(output_vars)
+        profiles = bool(set(output_vars) & {'T', 'rh', 'lwc'})
+        if profiles and heights is None:
+            raise ValueError('Profile outputs require model.heights.')
+        if not profiles and heights is not None:
+            raise ValueError('model.heights applies only to profile outputs. Use heights=None for column outputs.')
+        self.heights = np.asarray(heights) if profiles else None
         self.freqs = np.asarray(freqs)
         self.is_bls_model = is_bls_model
         self.is_MLR = is_MLR
@@ -403,12 +460,9 @@ class Model(BaseModel):
 
         self.input = xr.Dataset({'TB': freq_da, **{var: 1 for var in self.additional_input_vars}})
 
-        heights_da = xr.DataArray(np.zeros(self.heights.shape), dims='height', coords={'height': self.heights})
-        self.output = xr.Dataset({'T': heights_da, 
-                                  'rh': heights_da, 
-                                  'lwc': heights_da, 
-                                  'lwp': 1, 
-                                  'iwv': 1})
+        heights_da = (xr.DataArray(np.zeros(self.heights.shape), dims='height', coords={'height': self.heights})
+                      if profiles else None)
+        self.output = xr.Dataset({name: heights_da if name in ('T', 'rh', 'lwc') else 1 for name in output_vars})
         
         if not is_MLR or loss_weights is not None:
             self.set_loss_weights(loss_weights)
@@ -509,8 +563,9 @@ class Model(BaseModel):
         y = self.stack(x)
 
         if not self.is_MLR or not self.training:
-            y[:, self.output_slices['lwc']] = self.relu(y[:, self.output_slices['lwc']])
-            y[:, self.output_slices['lwp']] = self.relu(y[:, self.output_slices['lwp']])
+            for name in ('lwc', 'lwp'):
+                if name in self.output_slices:
+                    y[:, self.output_slices[name]] = self.relu(y[:, self.output_slices[name]])
 
         return y
 
@@ -554,7 +609,7 @@ class SpectralConsistencyModel(BaseModel):
         ):
         super().__init__(name)
 
-        self.freqs = freqs
+        self.freqs = np.asarray(freqs)
         self.hidden_layer_size = hidden_layer_size
 
         self.norm_functions = dict(norm_functions) if norm_functions is not None else {'TB': 'z_norm'}

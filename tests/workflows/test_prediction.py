@@ -15,6 +15,29 @@ from tests.fixtures.cli import run_cli
 def command(prediction_project, *args):
     return run_cli("predict", "test", *args, "-p", str(prediction_project))
 
+
+def test_mixed_outputs_preserve_missing_quantities_and_derive_only_available_products(prediction_project):
+    selections = {'temperature': ['T'], 'thermodynamic': ['T', 'rh'],
+                  'water': ['lwc'], 'column': ['lwp']}
+    for name, outputs in selections.items():
+        checkpoint(prediction_project, name, weather=False, outputs=outputs)
+    workflow = PredictionWorkflow(prediction_project, 'test', list(selections), smooth=False)
+    result = workflow.predict('2024-01-01')
+    assert not result.errors
+    profiles = result.zenith
+    for name, outputs in selections.items():
+        selected = profiles.sel(model=name)
+        for variable in ('T', 'rh', 'lwc', 'lwp'):
+            assert bool(np.isfinite(selected[variable]).all()) == (variable in outputs)
+        if {'T', 'rh'} <= set(outputs):
+            assert np.isfinite(selected.ah).all() and np.isfinite(selected.iwv_from_ah).all()
+        else:
+            assert selected.ah.isnull().all() and selected.iwv_from_ah.isnull().all()
+        assert bool(np.isfinite(selected.lwp_from_lwc).all()) == ('lwc' in outputs)
+        assert bool(np.isfinite(selected.p).all()) == ('T' in outputs)
+    path, = workflow.save(result)
+    xr.testing.assert_allclose(xr.load_dataset(path), profiles.drop_vars(['doy_cos', 'doy_sin']))
+
 def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project, monkeypatch):
     workflow = PredictionWorkflow(prediction_project, 'test')
     assert workflow.device == 'cpu'
@@ -132,7 +155,7 @@ def test_spectral_prediction_and_unsmoothed_python_override(prediction_project):
 
 def test_configuration_and_checkpoint_selection_before_writing(prediction_project):
     config = prediction_project / 'sites/test/site.toml'
-    config.write_text(config.read_text().replace('[prediction]', '[unused]'))
+    config.write_text(config.read_text().split('[prediction]')[0])
     with pytest.raises(ValueError, match='Select retrieval names'):
         PredictionWorkflow(prediction_project, 'test')
     with pytest.raises(ValueError, match='only once'):
@@ -203,5 +226,7 @@ reason = "Station unavailable"
         config.write_text(tomli_w.dumps(values))
         with pytest.raises(ValueError, match='array of tables'):
             import_hatpro_data(datetime(2024, 1, 1), 'test', prediction_project)
+        # An existing workflow keeps its validated settings. New workflows see edits.
+        assert workflow.predict('2024-01-01', observations=observations).zenith is not None
         with pytest.raises(ValueError, match='array of tables'):
-            workflow.predict('2024-01-01', observations=observations)
+            PredictionWorkflow(prediction_project, 'test', ['without_weather'])
