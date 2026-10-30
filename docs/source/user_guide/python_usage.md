@@ -100,6 +100,19 @@ temperature and humidity. A column-only model uses `heights=None`. Neural models
 supply loss weights for exactly their selected outputs. Custom optimization
 scores must select predicted variables.
 
+To use prepared xarray datasets without dataset recipes, replace
+`load_training_data()` with:
+
+```python
+workflow.set_training_data(training, validation)
+```
+
+Supply unnormalized data with a `time` dimension and optional `station` dimension.
+The method keeps model variables, selects 90° for zenith models and checks both
+datasets before replacing the current data. A missing station dimension becomes
+one source. It clears previous dataset-selection and applied bias-correction
+records. Apply bias correction after setting the data.
+
 The recommendation helpers read the bundled example recipes. Extra inputs absent
 from those examples need explicit noise values or search ranges. Neural profile
 models also require loss weights. See {py:class}`openMWR.models.Model` and
@@ -111,9 +124,12 @@ Use the built-in models as a reference for the training and prediction interface
 Load custom checkpoints through the custom class's `load()` method. Recipe model
 kinds and command checkpoint loading use the built-in model classes.
 
-For custom models without bundled recommendations, supply training and input-noise
-parameters explicitly through `change_hyper_params()`. Optimization also requires
-the trial count, analysis dataset, sampler seed and score weights:
+For custom models without bundled recommendations, supply training parameters
+through `change_hyper_params()` and noise values or search ranges through
+`add_input_noise_params()`. Specify noise for every active input. `TB` applies to
+all microwave channels. Complete explicit noise settings do not read an example.
+Optimization also requires the trial count, analysis dataset, sampler seed and
+score weights:
 
 ```python
 study = workflow.optimize(

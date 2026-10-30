@@ -9,13 +9,46 @@ import tomli_w
 import xarray as xr
 
 from openMWR.evaluation import EvaluationRecipe, evaluate
-from openMWR.models import load_model
+from openMWR.models import Model, load_model
 from openMWR.train import TrainingWorkflow
 from openMWR.predict import PredictionWorkflow, run_model
 
 
-from tests.fixtures.retrievals import retrieval_project
+from tests.fixtures.retrievals import retrieval_project, retrieval_samples
 from tests.fixtures.cli import run_cli
+
+
+@pytest.mark.parametrize('bls', [False, True])
+def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_path, bls):
+    model = Model('python', [0., 1000.], [22.24, 31.4], output_vars=['T'],
+                  is_MLR=True, is_bls_model=bls, additional_input_vars=[],
+                  angles=[90., 30.] if bls else None)
+    times = np.arange('2024-01-01', '2024-01-07', dtype='datetime64[D]').astype('datetime64[ns]')
+    data = retrieval_samples(times)
+    data['unused'] = xr.full_like(data.T, np.nan)
+    original = data.copy(deep=True)
+    workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
+    assert workflow.set_training_data(data.isel(time=slice(0, 4)), data.isel(time=slice(4, None))) is workflow
+    assert workflow.training_data.sizes['station'] == 1
+    assert set(workflow.training_data.data_vars) == {'TB', 'T'}
+    expected = data.isel(time=slice(0, 4))[['TB', 'T']]
+    if not bls:
+        expected = expected.sel(ang=90., drop=True)
+    xr.testing.assert_identical(workflow.training_data.isel(station=0, drop=True), expected)
+    before = workflow.training_data, workflow.validation_data
+    with pytest.raises(ValueError, match="validation_data is missing variable 'T'"):
+        workflow.set_training_data(data, data.drop_vars('T'))
+    assert workflow.training_data is before[0]
+    assert workflow.validation_data is before[1]
+    workflow.add_standard_training_hyper_params()
+    workflow.add_input_noise_params(TB=0.)
+    workflow.train()
+    restored = load_model('python', 'test', tmp_path)
+    assert restored.training_dataset is None
+    prediction = run_model(restored, data, 'cpu', include_input_vars=False)
+    assert np.isfinite(prediction.T).all()
+    xr.testing.assert_identical(data, original)
+    assert not list(tmp_path.rglob('*.toml'))
 
 
 @pytest.mark.parametrize(('kind', 'outputs'), [
@@ -188,6 +221,11 @@ def test_manual_python_workflow_still_uses_the_same_training(tmp_path):
     model = type(configured.model)(**configured.model.structure)
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     workflow.load_training_data(['03715'], dataset='training_variant')
+    workflow.change_hyper_params(mean_bias=[0.1, 0.1], omb_bias_correction={'factor': 1.})
+    workflow.set_training_data(workflow.training_data, workflow.validation_data)
+    assert workflow.hyper_params['training_dataset'] is None
+    assert not {'training_selection', 'sources', 'station_ids', 'mean_bias', 'omb_bias_correction'} & workflow.hyper_params.keys()
+    np.testing.assert_array_equal(workflow.training_data.station, ['03715'])
     workflow.add_standard_training_hyper_params()
     workflow.add_input_noise_params(**{f'TB_{f}': 0 for f in model.freqs})
     checkpoint = (recipe.parent / 'model.pth').read_bytes()

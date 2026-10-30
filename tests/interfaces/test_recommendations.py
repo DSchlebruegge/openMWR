@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import tomli_w
 
-from openMWR.models import Model, SpectralConsistencyModel
+from openMWR.models import BaseModel, Model, SpectralConsistencyModel
 from openMWR.train import TrainingWorkflow
 
 
@@ -62,6 +62,10 @@ def test_python_helpers_observe_template_values_and_overrides(tmp_path, monkeypa
     training.add_input_noise_params(optimization=True)
     assert training.hyper_params['input_noise_TB_31.4'] == spaces['input_noise_TB_31.4']
     assert training.requires_optimization
+    for suffix in ('', '_opt'):
+        (package / f'templates/site/retrieval/{family}{suffix}_example/retrieval.toml').unlink()
+    training.add_input_noise_params(TB=0.3)
+    assert training.hyper_params['input_noise_TB_31.4'] == 0.3
     assert not project.exists()
 
 
@@ -83,3 +87,23 @@ def test_angle_noise_without_a_recommendation_requires_explicit_values(tmp_path)
         training.add_input_noise_params()
     training.add_input_noise_params(TB_angle_factor=3.0)
     assert training.hyper_params['input_noise_TB_angle_factor'] == 3.0
+
+
+def test_custom_model_noise_uses_explicit_values_and_ranges_without_examples(tmp_path):
+    model = BaseModel('custom')
+    model.freqs = np.array([22.24, 31.4])
+    model.input_vars = ['TB', 'custom_sensor']
+    model.is_bls_model = False
+    training = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
+    with pytest.raises(ValueError, match='Missing input_noise settings: custom_sensor'):
+        training.add_input_noise_params(TB=0.2)
+    assert training.hyper_params == {}
+    training.add_input_noise_params(TB={'low': 0.1, 'high': 0.4}, custom_sensor=0.1,
+                                   **{'TB_22.24': 0.15})
+    assert training.hyper_params['input_noise_TB_22.24'] == 0.15
+    assert training.hyper_params['input_noise_TB_31.4'] == training.suggest_float(0.1, 0.4)
+    assert training.hyper_params['input_noise_custom_sensor'] == 0.1
+    assert training.requires_optimization
+    training.add_input_noise_params(TB=0.2, custom_sensor=0.1)
+    assert not training.requires_optimization
+    assert not list(tmp_path.iterdir())

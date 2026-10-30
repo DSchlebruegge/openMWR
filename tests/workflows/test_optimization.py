@@ -41,8 +41,8 @@ def test_custom_python_model_optimizes_and_continues_without_retrieval_recipe(tm
         workflow.load_training_data(dataset='training_variant')
         workflow.change_hyper_params(seed=42, epochs=1, batch_size=4,
                                     lr_height=workflow.suggest_float(0.001, 0.002),
-                                    lr_low=1e-7, epoch_max_lr=1, loss_fn='MSE', weight_decay=0.,
-                                    **{'input_noise_TB_22.24': 0., 'input_noise_TB_31.4': 0.})
+                                    lr_low=1e-7, epoch_max_lr=1, loss_fn='MSE', weight_decay=0.)
+        workflow.add_input_noise_params(TB=0.)
         return workflow
 
     options = dict(n_trials=1, dataset='analysis_radiosonde', seed=42, score_weights={'lwp': 1.})

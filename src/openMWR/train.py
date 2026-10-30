@@ -392,6 +392,9 @@ class TrainingWorkflow:
         if sources is None:
             sources = datasets.sources(dataset)
         settings = datasets.settings(dataset)
+        training = load_combined_dataset(self.site, self.project_dir, 'training', sources, dataset=dataset)
+        validation = load_combined_dataset(self.site, self.project_dir, 'validation', sources, dataset=dataset)
+        self.set_training_data(training, validation)
         self.hyper_params.update({
             'training_selection': {key: settings[key] for key in (*TIME_SELECTION_KEYS, 'test_days_of_month', 'validation_days_of_month') if key in settings},
             'sources': sources,
@@ -399,21 +402,36 @@ class TrainingWorkflow:
             'station_ids': [s for s in sources if s != 'era5']
         })
 
-        self.training_data = load_combined_dataset(self.site, self.project_dir, 'training', sources, dataset=dataset)
-        self.validation_data = load_combined_dataset(self.site, self.project_dir, 'validation', sources, dataset=dataset)
+    def set_training_data(self, training: xr.Dataset, validation: xr.Dataset):
+        """Prepare supplied, unnormalized data without dataset recipes.
 
-        #self.training_data = add_negativ_lwp(self.training_data)
-        #self.validation_data = add_negativ_lwp(self.validation_data)
+        Keep model variables and select zenith for non-BLS models. Each dataset
+        needs a time dimension. A missing station dimension becomes one source.
+        Both datasets are checked before replacing the current data. Dataset
+        selection and applied bias-correction records are cleared on replacement.
+        Apply bias correction after setting data. Returns this workflow.
+        """
+        expected = xr.merge([self.model.input, self.model.output], compat='override')
 
-        # Select only the relevant variables
-        vars = list(set(self.model.input.data_vars) | set(self.model.output.data_vars))
-        self.training_data = self.training_data[vars]
-        self.validation_data = self.validation_data[vars]
+        def prepare(data, label):
+            if not isinstance(data, xr.Dataset):
+                raise TypeError(f'{label} must be an xarray.Dataset.')
+            if not self.model.is_bls_model and 'ang' in data.dims:
+                if 'ang' not in data.coords or 90. not in data.ang:
+                    raise ValueError(f'{label} must contain the zenith angle (90 degrees).')
+                data = data.sel(ang=90., drop=True)
+            if 'station' not in data.dims:
+                data = data.expand_dims('station') if 'station' in data.coords else data.expand_dims(station=[0])
+            validate_model_data(expected, data, label)
+            return data[list(expected.data_vars)].copy(deep=False)
 
-        #If model is not a BLS model, select only the 90 degree angle
-        if not self.model.is_bls_model and 'ang' in self.training_data.dims:
-            self.training_data = self.training_data.sel(ang = 90, drop=True)
-            self.validation_data = self.validation_data.sel(ang = 90, drop=True)
+        training = prepare(training, 'training_data')
+        validation = prepare(validation, 'validation_data')
+        self.training_data, self.validation_data = training, validation
+        for key in ('training_selection', 'sources', 'station_ids', 'mean_bias', 'omb_bias_correction'):
+            self.hyper_params.pop(key, None)
+        self.hyper_params['training_dataset'] = None
+        return self
 
     def _standard_recipe(self, optimization=False):
         """Read applicable recommendations from a bundled example recipe."""
@@ -538,21 +556,25 @@ class TrainingWorkflow:
                 if isinstance(value, dict)}
 
     def add_input_noise_params(self, optimization=False, **kwargs):
-        """Use example noise recommendations and apply explicit overrides.
+        """Set explicit noise values/ranges, filling omissions from examples.
 
         optimization=True selects the matching optimization example's ranges.
         TB applies to every frequency; per-frequency overrides take precedence.
-        Active inputs absent from the example require explicit values/ranges.
+        Custom models and inputs absent from an example require explicit
+        values/ranges. Complete explicit settings do not read an example.
         """
-        parameters = {key.removeprefix('input_noise_'): value
-                      for key, value in self._standard_parameters(optimization).items()
-                      if key.startswith('input_noise_')}
         required = input_noise_parameters(self.model)
         check_keys(kwargs, required | {'TB'}, 'input_noise')
+        parameters = {}
         if 'TB' in kwargs:
             tb = kwargs.pop('TB')
             parameters.update({f'TB_{frequency}': tb for frequency in self.model.freqs})
         parameters.update(kwargs)
+        if required - parameters.keys() and isinstance(self.model, (Model, SpectralConsistencyModel)):
+            defaults = {key.removeprefix('input_noise_'): value
+                        for key, value in self._standard_parameters(optimization).items()
+                        if key.startswith('input_noise_')}
+            parameters = defaults | parameters
         require_keys(parameters, required, 'input_noise')
         resolved = {f'input_noise_{key}': resolve_parameter(value, f'input_noise_{key}', f'input_noise.{key}', self)
                     for key, value in parameters.items()}

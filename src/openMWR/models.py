@@ -185,7 +185,7 @@ class BaseModel(nn.Module):
 
     @property
     def training_dataset(self):
-        """Named training input, defaulting to the ordinary training dataset."""
+        """Named training input, or None for data supplied directly in Python."""
         return self.hyper_params.get('training_dataset', 'training')
     
     @classmethod
