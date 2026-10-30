@@ -12,6 +12,7 @@ import io
 import math
 import xarray as xr
 from datetime import timedelta
+from textwrap import fill
 
 import metpy.calc as mpcalc
 from metpy.plots import SkewT as metpy_SkewT
@@ -48,7 +49,8 @@ class SkewT(metpy_SkewT):
     retrievals and radiosonde profiles. The class encapsulates figure creation,
     axis scaling (rotation and aspect adjustments), plotting convenience methods for
     radiosonde and retrieval profiles, and finalization routines to annotate and
-    export the plot.
+    export the plot. The canvas, diagram position and legend column are fixed
+    independently of the number of plotted profiles.
 
     Parameters
     ----------
@@ -66,8 +68,9 @@ class SkewT(metpy_SkewT):
     T_range : float, optional
         Temperature range in degrees Celsius for the x-axis span. Default is 70 °C.
     station_alt : float, optional
-        Station altitude in meters. Used to compute and label height tick marks on
-        the y-axis. Default is 550 m.
+        Station altitude above sea level in meters. Height ticks use the first
+        plotted retrieval's local pressure profile. Radiosonde-only plots use
+        the sounding's absolute heights. Default is 550 m.
     
     Examples
     --------
@@ -91,7 +94,7 @@ class SkewT(metpy_SkewT):
         self.T_range = T_range
         self.station_alt = station_alt
 
-        fig = plt.figure(figsize=(10, 9), constrained_layout=True)
+        fig = plt.figure(figsize=(10.2, 7.8), layout='none')
 
         #rotation, aspect
         scale_fac = np.log10(1000/100) / np.log10(max_pressure/min_pressure) * T_range / 70
@@ -101,12 +104,15 @@ class SkewT(metpy_SkewT):
         rotation_0 = 45
         self.rotation_new = 90 - np.rad2deg (np.arctan( np.tan(np.deg2rad(90-rotation_0)) * scale_fac))
 
-        super().__init__(fig, rotation=self.rotation_new, aspect=self.aspect_new)
+        # Match the compact sounding layout while keeping the diagram fixed.
+        super().__init__(fig, rotation=self.rotation_new, aspect=self.aspect_new,
+                         rect=(0.06, 0.07, 0.72, 0.875))
 
         self.retrieval_time = self.date
         self.synop_time = self.date
 
         self.retrievals = []
+        self._height_reference = None
 
         self.radiosonde_plotted = False
 
@@ -258,7 +264,8 @@ class SkewT(metpy_SkewT):
             raso_variables["u"][ix],
             raso_variables["v"][ix],
             plot_units=units.knot,
-            length=6
+            length=6,
+            y_clip_radius=0,
         )
 
         self.raso_station_id = raso_station_id
@@ -291,6 +298,8 @@ class SkewT(metpy_SkewT):
             self.plot(retrieval_data["p"].values * units.hPa, retrieval_data["TD"].values * units.kelvin, color, linestyle='--', label="Dewpoint MWR\n"+label)
 
         self.retrievals.append(retrieval_data)
+        if self._height_reference is None:
+            self._height_reference = retrieval_data
 
     def finalize(self):
         """
@@ -324,9 +333,6 @@ class SkewT(metpy_SkewT):
 
         self.ax.grid(linewidth=0.5)
 
-        #Min, Max
-        self.ax.set_ylim(self.max_pressure, self.min_pressure)
-
         self.ax.set_xlim(Tmin, Tmax)
 
         # Achsenbeschriftung
@@ -346,37 +352,44 @@ class SkewT(metpy_SkewT):
             fontsize=10, color="gray", va="bottom", ha="center", rotation='vertical'
         )
 
-        # height_array = np.array([1000, 3000, 5000, 7000, 9000, 11000, 13000, 15000]) #raso_data.station_alt
-
-        # if min_pressure == 500:
-        #     height_array = np.array([1000, 2000, 3000, 4000, 5000])
-
         height_min = round_up(self.station_alt, 1000)
+        height_array = np.r_[self.station_alt, np.arange(height_min, 17000, 1000)]
 
-        height_array = np.arange(height_min, 17000, 1000)
-
-        retrieval_data = self.retrievals[0]
-
-        if self.radiosonde_plotted:
-            p_array = self.raso_data.sel(height=height_array, method="nearest").p.values
+        # Local profiles use height above the radiometer and measured surface
+        # pressure. Adding a radiosonde must not change this height reference.
+        if self._height_reference is not None:
+            pressure = self._height_reference.p
+            profile_heights = height_array - self.station_alt
         else:
-            p_array = retrieval_data.sel(height=height_array-self.station_alt, method="nearest").p.values
+            pressure = self.raso_data.p
+            profile_heights = height_array
+        p_array = pressure.interp(height=profile_heights).values
 
         indices = np.where((p_array > self.min_pressure) & (p_array < self.max_pressure))[0]
         p_array = p_array[indices]
         height_array = height_array[indices]
 
-        ylabels = [f"{self.station_alt/1000:5.2f}"] + [f"{height/1000:<5.1f}" for height in height_array]
-        p_array = np.insert(p_array, 0, retrieval_data.p.values[0])
-
+        ylabels = [f"{height/1000:5.2f}" if height == self.station_alt else f"{height/1000:<5.1f}"
+                   for height in height_array]
 
         self.ax.set_yticks(ticks=p_array, minor=True)
         self.ax.set_yticklabels(labels=ylabels, minor=True, color="gray")
+        # Matplotlib expands limits to include ticks. Keep the requested zoom.
+        self.ax.set_ylim(self.max_pressure, self.min_pressure)
         self.ax.tick_params(direction='in', axis="y", which="minor", color="gray", pad=-22, length=3, labelsize=7) #pad=25, length=5,
 
         self.ax.tick_params(labelsize=9)
 
-        self.ax.legend(fontsize="medium", loc="upper left", bbox_to_anchor=(1, 1), frameon=False) #, loc=3
+        handles, labels = self.ax.get_legend_handles_labels()
+        # Wrap long model labels instead of changing the diagram size.
+        labels = ["\n".join(fill(line, 24, break_long_words=False, break_on_hyphens=False)
+                            for line in label.split("\n")) for label in labels]
+        # Keep a fixed left edge for both full and lower-atmosphere views.
+        self.ax.legend(handles, labels, fontsize="medium", loc="upper left",
+                       bbox_to_anchor=(0.785, 1),
+                       bbox_transform=transforms.blended_transform_factory(
+                           self._fig.transFigure, self.ax.transAxes),
+                       frameon=False, borderpad=0)
 
         raso_locations = {'03715': 'Oberschleißheim', '02290': 'Hohenpeißenberg'}
 
@@ -398,7 +411,8 @@ class SkewT(metpy_SkewT):
             The path to the file where the plot will be saved.
         """
 
-        self._fig.savefig(filename, bbox_inches="tight") #, dpi=150
+        # Export the complete canvas even if a caller enables tight cropping globally.
+        self._fig.savefig(filename, bbox_inches=self._fig.bbox_inches)
         plt.close(self._fig)
         logger.info(f"{filename} plotted")
 

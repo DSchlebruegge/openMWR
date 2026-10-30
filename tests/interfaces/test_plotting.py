@@ -1,9 +1,11 @@
 """Analysis figures can be embedded while existing notebook calls still work."""
 
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.quiver import Barbs
 import numpy as np
 import pandas as pd
 import pytest
@@ -122,5 +124,79 @@ def test_radiosonde_selection_and_reusing_a_profile_without_file_reads(tmp_path)
                 assert skew.retrieval_time == pd.Timestamp('2024-01-01T12:05')
                 pressure = skew.ax.lines[0].get_ydata().to('hPa').magnitude
                 np.testing.assert_array_equal(pressure, profile.p.values)
+                skew.finalize()
+                np.testing.assert_array_equal(skew.ax.get_ylim(), [1000, top])
             finally:
                 plt.close(skew._fig)
+
+
+@pytest.mark.parametrize(('station_alt', 'surface_p', 'limits'),
+                         [(2656, 745.5, (800, 400)), (550, 963.7, (1000, 500))])
+@pytest.mark.parametrize('zoomed', [False, True])
+def test_skewt_layout_and_height_reference_are_independent_of_sounding(tmp_path, station_alt, surface_p, limits, zoomed):
+    if not zoomed:
+        limits = (1000, 100)
+    day = pd.Timestamp('2024-01-01T12:05')
+    heights = np.arange(0., 6001., 500.)
+    local = xr.Dataset({
+        'T': (('time', 'height'), (280 - .006 * heights)[None, :]),
+        'TD': (('time', 'height'), (275 - .006 * heights)[None, :]),
+        'p': (('time', 'height'), (surface_p - .06 * heights)[None, :]),
+    }, coords={'time': [day], 'height': heights})
+    sonde = xr.Dataset({
+        'T': ('height', 290 - .006 * heights),
+        'TD': ('height', 280 - .006 * heights),
+        'p': ('height', 914 - .06 * heights),
+        'wind_speed': ('height', np.full(heights.size, 5.)),
+        'wind_dir': ('height', np.full(heights.size, 90.)),
+        'starttime': day, 'endtime': day + pd.Timedelta(minutes=45),
+    }, coords={'height': heights + 977, 'synop': day.normalize()})
+    ticks = []
+    layouts = []
+    legend_positions = []
+    dimensions = []
+    for sounding in (False, True):
+        skew = SkewT(day, tmp_path, station_alt=station_alt,
+                     max_pressure=limits[0], min_pressure=limits[1], T_range=40 if zoomed else 70)
+        try:
+            if sounding:
+                skew.plot_radiosonde('02290', data=sonde)
+            label = 'MIM-Retrieval'
+            if zoomed:
+                label += ' (NN_opt_era5_no_met)\nPressure: UFS +1.50 hPa'
+            skew.plot_retrieval(local, label)
+            if zoomed:
+                skew.plot_retrieval(local, 'MIM-Retrieval\nBoundary Layer Scan', color='purple')
+            skew.finalize()
+            skew._fig.canvas.draw()
+            np.testing.assert_array_equal(skew.ax.get_ylim(), limits)
+            if sounding:
+                barbs, = (artist for artist in skew.ax.collections if isinstance(artist, Barbs))
+                np.testing.assert_allclose(barbs.get_clip_box().intervaly, skew.ax.bbox.intervaly)
+            positions = skew.ax.get_yticks(minor=True)
+            labels = [tick.get_text().strip() for tick in skew.ax.get_yticklabels(minor=True)]
+            assert positions[labels.index(f'{station_alt/1000:.2f}')] == pytest.approx(surface_p)
+            for position, label in zip(positions, labels):
+                height = station_alt if label == f'{station_alt/1000:.2f}' else float(label) * 1000
+                assert position == pytest.approx(surface_p - .06 * (height - station_alt))
+                assert station_alt <= height <= station_alt + heights[-1]
+                assert limits[1] < position < limits[0]
+            assert len(set(positions)) == len(positions)
+            ticks.append(positions)
+            legend = skew.ax.get_legend().get_window_extent()
+            assert legend.x0 > skew.ax.bbox.x1
+            assert legend.x1 < skew._fig.bbox.x1
+            assert legend.y0 >= 0
+            legend_positions.append((legend.x0, legend.y1))
+            layouts.append(skew.ax.get_position().bounds)
+            path = tmp_path / f'skew-{sounding}.svg'
+            with plt.rc_context({'savefig.bbox': 'tight'}):
+                skew.save(path)
+            root = ET.parse(path).getroot()
+            dimensions.append(tuple(root.get(key) for key in ('width', 'height', 'viewBox')))
+        finally:
+            plt.close(skew._fig)
+    np.testing.assert_array_equal(*ticks)
+    np.testing.assert_allclose(*layouts, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(*legend_positions, rtol=0, atol=1e-12)
+    assert dimensions[0] == dimensions[1] == ('734.4pt', '561.6pt', '0 0 734.4 561.6')
