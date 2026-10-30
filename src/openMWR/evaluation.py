@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
+from importlib.resources import files
 from io import BytesIO
 import json
 import logging
@@ -717,7 +718,7 @@ def render_report(analysis):
             selection = 'full model grid' if heights == 'model' else f'{heights[0]}-{heights[1]} m'
             filter_text += f' {label} profile heights: {selection}.'
     title = f"Retrieval evaluation · {meta['site']} · {meta['evaluation']}"
-    template = Template(Path(__file__).with_name("evaluation.html").read_text(encoding="utf-8"))
+    template = Template(files('openMWR').joinpath('templates', 'evaluation.html').read_text(encoding='utf-8'))
     return template.substitute(
         title=escape(title),
         source=escape(observations['data_source'] if observations else 'Simulated test data'),
