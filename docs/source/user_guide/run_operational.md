@@ -20,7 +20,7 @@ normalization. Training data is not needed.
 
 Files are saved under `data/sites/my_site/predictions/YYYY/MM/` as
 `YYYYMMDD_retrieval.nc` and, for scans, `YYYYMMDD_retrieval_bls.nc`.
-Set `retrieval_output_dir` in `site.toml` or pass `--output-dir` to choose another
+Set `output_dir` under `[prediction]` in `site.toml` or pass `--output-dir` to choose another
 root. Relative paths resolve from the working project.
 
 List several retrieval names to process them together. Omitting them uses

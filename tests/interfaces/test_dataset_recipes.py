@@ -14,12 +14,18 @@ from tests.fixtures.datasets import dataset_project, recipe
     ({'kind': 'simulation', 'inputs': {'profiles': 'source'}}, 'incompatible kind'),
     ({'kind': 'simulation', 'inputs': {'profiles': 'missing'}}, 'Missing dataset recipe'),
     ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'absorpton_model': 'R17'}}, 'Unknown'),
-    ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'stations': ['02290']}, 'subset'),
+    ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'sources': ['02290']}, 'subset'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'preparation': {'heights': [100, 0]}}, 'must be increasing'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'execution': {'processes': 2}}, 'preparation is serial'),
     ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 15, 'last': 18}}}, 'must not overlap'),
     ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 0, 'last': 3}}}, 'at least 1'),
     ({'kind': 'split', 'inputs': {'simulation': 'r17'}, 'split': {'test_days_of_month': {'first': 1, 'last': 14}, 'validation_days_of_month': {'first': 15, 'last': 31}}}, 'leave days for training'),
+    ({'kind': 'era5', 'start_date': '20200101'}, 'quoted ISO date'),
+    ({'kind': 'hatpro', 'end_date': '2020-W01-1'}, 'quoted ISO date'),
+    ({'kind': 'era5', 'start_date': '2020-01-02', 'end_date': '2020-01-01'}, 'must not be after'),
+    ({'kind': 'era5', 'end_date': '2020-01-01', 'delay_days': 5}, 'delay_days applies only'),
+    ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'frequency_shift': [0.01]}}, 'nonempty table'),
+    ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'frequency_shift': {'999': 0.01}}}, 'selected frequencies'),
 ])
 def test_invalid_graphs_fail_before_output_creation(dataset_project, values, message):
     recipe(dataset_project, 'bad', **values)
@@ -49,10 +55,10 @@ def test_missing_scientific_choices_fail_before_processing(dataset_project, name
 
 
 @pytest.mark.parametrize(('cloud', 'message'), [
-    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'a': 0.7, 'b': 2.3}, 'Missing .*adiabatic_fraction'),
-    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'unknown'}, "must be 'power_law', 'karstens' or 'none'"),
-    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7}, 'Missing .*b'),
-    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'karstens', 'a': 0.7}, 'remove them for karstens'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'a': 0.7, 'b': 2.3}, 'Missing .*adiabatic_fraction_method'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'unknown'}, 'must be power_law, karstens or fully_adiabatic'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'power_law', 'a': 0.7}, 'Missing .*b'),
+    ({'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'karstens', 'a': 0.7}, 'remove them for this method'),
 ])
 def test_cloud_method_choices_fail_before_processing(dataset_project, cloud, message):
     path = dataset_project / 'sites/test/datasets/profiles.toml'

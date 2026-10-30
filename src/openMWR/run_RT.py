@@ -69,7 +69,7 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     removed after execution. The wavelength band is selected based on the
     site's Hatpro generation.
     """
-    gen = load_site_config(site, project_dir, config=site_config).require('gen')
+    gen = load_site_config(site, project_dir, config=site_config).require('instrument_generation')
     _, installation_data_dir = get_libradtran_paths()
     atmosphere_file = installation_data_dir / "atmmod" / "afglus.dat"
     if not atmosphere_file.is_file():
@@ -315,7 +315,7 @@ def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num
     """
 
     site_config = load_site_config(site, project_dir, config=site_config)
-    site_config.require('gen')
+    site_config.require('instrument_generation')
     if 'time' in ds_RS.dims and ds_RS.sizes['time'] > 1:
         ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config)
     else:
@@ -355,7 +355,7 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     """
 
     site_config = load_site_config(site, project_dir, config=site_config)
-    site_config.require('gen')
+    site_config.require('instrument_generation')
     used_freqs = freqs - np.asarray(freq_shift, dtype=float) if freq_shift is not None else freqs
 
     if np.any(ds_RS["rh"].values < 0):

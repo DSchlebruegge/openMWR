@@ -3,7 +3,45 @@
 import numpy as np
 import xarray as xr
 
-from openMWR.config import check_invalid_measurements
+from openMWR.config import check_invalid_measurements, check_strings, check_name
+
+
+def reference_source(data, data_source=None):
+    """Select a background, inferring it only when the paired data has one."""
+    if 'data_source' not in data.coords or 'hatpro' not in data.data_source.values:
+        raise ValueError('Analysis data must contain HATPRO observations and reference data_source coordinates.')
+    references = [str(value) for value in data.data_source.values if value != 'hatpro']
+    if not references or len(set(references)) != len(references):
+        raise ValueError('Analysis data must contain distinct reference sources.')
+    if data_source is None:
+        if len(references) != 1:
+            raise ValueError(f'Select data_source when an analysis contains multiple references: {references}.')
+        return references[0]
+    if data_source not in references:
+        raise ValueError(f'Background {data_source!r} is absent from the analysis dataset. Available references: {references}.')
+    return data_source
+
+
+def select_reference_sources(data, data_source, sources=None):
+    """Select members of a reference dataset without pooling their samples."""
+    if sources is None:
+        return data
+    check_strings(sources, 'sources')
+    if not sources:
+        raise ValueError('sources must not be empty.')
+    for source in sources:
+        check_name(source, 'sources')
+    if data_source == 'radiosonde':
+        if 'station' not in data.coords:
+            raise ValueError('Missing radiosonde station coordinates in the reference dataset.')
+        available = [str(value) for value in data.station.values]
+    else:
+        available = ['era5'] if data_source == 'era5' else []
+    if len(set(available)) != len(available):
+        raise ValueError('Duplicate reference source IDs.')
+    if set(sources) - set(available):
+        raise ValueError(f'sources must be a subset of the reference sources {available}.')
+    return data.assign_coords(station=available).sel(station=sources) if data_source == 'radiosonde' else data
 
 
 def mask_invalid_measurements(data, rules, *, time='time'):

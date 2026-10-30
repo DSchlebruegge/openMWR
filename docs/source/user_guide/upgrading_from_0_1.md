@@ -91,6 +91,11 @@ Site settings are validated when loaded. Put project-specific fields in
 `[custom]`. Unknown top-level fields are rejected, with suggestions for misspelled
 settings.
 
+Migration renames `gen` to `instrument_generation` and moves
+`retrieval_output_dir` to `[prediction].output_dir`. Plot settings and the old
+RPG availability flag are retained under `[custom]`. Dataset recipes select
+RPG product import explicitly with `[observations].include_rpg`.
+
 ## Keep or rebuild processed datasets
 
 Dataset recipes live in `sites/my_site/datasets/`. Set their scientific choices

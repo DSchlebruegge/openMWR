@@ -26,6 +26,8 @@ def test_selected_outputs_control_training_prediction_and_evaluation(tmp_path, k
     recipe, data = retrieval_project(tmp_path, kind=kind, search=False)
     settings = tomllib.loads(recipe.read_text())
     settings['model']['output_vars'] = outputs
+    settings['model']['normalization'] = {key: value for key, value in settings['model']['normalization'].items()
+                                          if key in {'TB', *outputs}}
     profiles = bool(set(outputs) & {'T', 'rh', 'lwc'})
     if not profiles:
         settings['model'].pop('heights')
@@ -72,7 +74,7 @@ def test_selected_outputs_control_training_prediction_and_evaluation(tmp_path, k
     with pytest.raises(ValueError, match='example does not predict requested variables'):
         evaluate(evaluation)
     if outputs == ['rh', 'T']:
-        settings['training']['lr_height'] = {'low': 0.001, 'high': 0.002}
+        settings['training']['learning_rate_max'] = {'low': 0.001, 'high': 0.002}
         recipe.write_text(tomli_w.dumps(settings))
         study = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='fresh')
         assert len(study.trials) == 1

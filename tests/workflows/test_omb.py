@@ -171,7 +171,7 @@ def test_bias_uses_selected_channel_and_angle_offsets_without_mutating_diagnosti
     normalized = workflow._get_std_dev_array_from_input_noise(workflow.model, workflow.hyper_params)
     np.testing.assert_allclose(normalized, physical.TB.transpose('ang', 'frq').values.ravel() / 2)
     # Correcting a model's smaller grid must preserve unused simulation channels.
-    recipe.write_text(recipe.read_text().replace('freqs = [22.24, 31.4]', 'freqs = [22.24]'))
+    recipe.write_text(recipe.read_text().replace('frequencies = [22.24, 31.4]', 'frequencies = [22.24]'))
     subset = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example', 'cpu')
     unused = subset.training_data.TB.sel(frq=31.4).copy(deep=True)
     subset.make_omb_analysis(['03715'], dataset='analysis_radiosonde')
@@ -192,16 +192,23 @@ def test_omb_training_choices_are_explicit_and_persist_in_checkpoint(tmp_path):
     paired['TB'].loc[{'data_source': 'hatpro'}] += xr.DataArray(np.arange(6.), dims='time', coords={'time': paired.time})
     paired.to_netcdf(paired_path)
     settings = tomllib.loads(recipe.read_text())
-    settings['input_noise'] = dict(method='omb', data_source='radiosonde', dataset='analysis_radiosonde',
+    grids_path = tmp_path / 'grids.toml'
+    grids = tomllib.loads(grids_path.read_text())
+    grids['frequencies']['bias_channels'] = [22.24]
+    grids_path.write_text(tomli_w.dumps(grids))
+    settings['input_noise'] = dict(method='omb', dataset='analysis_radiosonde',
                                    factor=1., statistic='residual_std', frequency_bands=[[20., 40.]])
-    settings['bias_correction'] = dict(data_source='radiosonde', dataset='analysis_radiosonde', factor=1.,
+    settings['bias_correction'] = dict(dataset='analysis_radiosonde', factor=1.,
+                                       frequencies='bias_channels',
                                        days_of_month={'first': 1, 'last': 20})
     recipe.write_text(tomli_w.dumps(settings))
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example', 'cpu')
     assert workflow.hyper_params['input_noise_TB_22.24'] == pytest.approx(0., abs=1e-12)
     workflow.train()
     model = load_model('example', 'test', tmp_path)
-    assert model.hyper_params['mean_bias'] == [1., 1.]
+    assert model.hyper_params['mean_bias'] == [1., 0.]
+    assert model.hyper_params['omb_bias_correction']['specific_freqs'] == [22.24]
+    assert model.hyper_params['omb_bias_correction']['data_source'] == 'radiosonde'
     assert model.hyper_params['omb_input_noise']['statistic'] == 'residual_std'
     assert model.hyper_params['omb_bias_correction']['selection']['days_of_month']['last'] == 20
     assert model.hyper_params['omb_bias_correction']['data_id'] != model.hyper_params['omb_input_noise']['data_id']

@@ -51,7 +51,7 @@ def main(argv=None):
     mode = train.add_mutually_exclusive_group()
     mode.add_argument('-f', '--fresh', dest='run_mode', action='store_const', const='fresh', help="Replace only this retrieval's model and optimization study.")
     mode.add_argument('-c', '--continue', dest='run_mode', action='store_const', const='continue', help="Add trials to this retrieval's existing optimization study.")
-    train.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Reference data for optimization.')
+    train.add_argument('--data-source', choices=('radiosonde', 'era5'), help='Optimization reference source, inferred when the dataset has one reference.')
     train.add_argument('--dataset', help='Override the named analysis dataset for optimization.')
     train.add_argument('-s', '--start-date', help='First observation day for optimization, YYYY-MM-DD. Fitting/test periods come from the split recipe.')
     train.add_argument('-e', '--end-date', help='Last observation day for optimization, YYYY-MM-DD (inclusive).')

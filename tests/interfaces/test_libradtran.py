@@ -142,7 +142,7 @@ def test_ir_uses_discovered_atmosphere(tmp_path, monkeypatch, installation, gen,
     executable, data, recorded = installation(tmp_path / "install", "share/libRadtran/data")
     monkeypatch.setenv("PATH", str(executable.parent))
     project_dir = tmp_path / "retrieval_project"
-    create_site("test", project_dir, gen=gen)
+    create_site("test", project_dir, instrument_generation=gen)
     result = calculate_IR_band_TB(
         "test", project_dir,
         z_km=[0.0, 1.0], T_K=[290.0, 280.0], rh_100=[50.0, 50.0],

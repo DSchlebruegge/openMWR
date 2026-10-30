@@ -1,16 +1,16 @@
 # Optimization example with explicit input-noise ranges.
-# Replace SITE with your site name: openMWR train SITE MLR_opt_example
+# Replace SITE with the site name: openMWR train SITE MLR_opt_example
 schema_version = 1
 
 [model]
 kind = "mlr"
 output_vars = ["T", "rh", "lwc", "lwp", "iwv"]
 mode = "zenith"
-freqs = "dataset"
+frequencies = "dataset"
 heights = "dataset"
 additional_input_vars = ["TB_IR", "surface_T", "surface_p", "surface_rh", "doy_cos", "doy_sin"]
 
-[model.norm_functions]
+[model.normalization]
 TB = "z_norm"
 TB_IR = "z_norm"
 surface_T = "z_norm"
@@ -33,14 +33,15 @@ dataset = "training"
 seed = 42
 
 [input_noise]
-method = "standard"
-TB = { low = 0.0, high = 1.5 }
-TB_IR = { low = 0.0, high = 2.0 }
-surface_T = { low = 0.1, high = 1.5 }
-surface_p = { low = 0.1, high = 2.0 }
-surface_rh = { low = 0.1, high = 2.0 }
-doy_cos = { low = 0.05, high = 0.5 }
-doy_sin = { low = 0.05, high = 0.5 }
+# Standard deviations in physical input units, before normalization.
+method = "specified"
+TB = { low = 0.0, high = 1.5 }  # K
+TB_IR = { low = 0.0, high = 2.0 }  # K
+surface_T = { low = 0.1, high = 1.5 }  # K
+surface_p = { low = 0.1, high = 2.0 }  # hPa
+surface_rh = { low = 0.1, high = 2.0 }  # percentage points
+doy_cos = { low = 0.05, high = 0.5 }  # dimensionless
+doy_sin = { low = 0.05, high = 0.5 }  # dimensionless
 
 [optimization]
 # Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
@@ -49,5 +50,4 @@ seed = 42
 days_of_month = { first = 1, last = 20 }
 score_weights = { T = 1.0, rh = 0.1 }
 n_trials = 200
-data_source = "radiosonde"
 dataset = "analysis_radiosonde"

@@ -1,14 +1,14 @@
 # Optimization example with explicit weight-decay and input-noise ranges.
-# Replace SITE with your site name: openMWR train SITE SPC_opt_example
+# Replace SITE with the site name: openMWR train SITE SPC_opt_example
 schema_version = 1
 
 [model]
 kind = "spectral"
 mode = "zenith"
-freqs = "dataset"
+frequencies = "dataset"
 hidden_layer_size = 64
 
-[model.norm_functions]
+[model.normalization]
 TB = "z_norm"
 
 [data]
@@ -20,15 +20,16 @@ dataset = "training"
 seed = 42
 batch_size = 512
 epochs = 500
-lr_height = 0.002
-lr_low = 1e-7
-epoch_max_lr = 50
-loss_fn = "MAE"
+learning_rate_max = 0.002
+learning_rate_min = 1e-7
+learning_rate_peak_epoch = 50
+loss = "MAE"
 weight_decay = { low = 1e-8, high = 1e-4, log = true }
 
 [input_noise]
-method = "standard"
-TB = { low = 0.0, high = 1.5 }
+# Standard deviations in physical input units, before normalization.
+method = "specified"
+TB = { low = 0.0, high = 1.5 }  # K
 
 [optimization]
 # Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
@@ -37,5 +38,4 @@ seed = 42
 days_of_month = { first = 1, last = 20 }
 score_weights = { TB = 1.0 }
 n_trials = 200
-data_source = "radiosonde"
 dataset = "analysis_radiosonde"

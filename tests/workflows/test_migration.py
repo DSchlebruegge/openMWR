@@ -72,6 +72,35 @@ def legacy_site(project, name):
     return directory, settings
 
 
+def test_explicit_migration_preserves_noise_with_equal_angle_and_channel_labels(tmp_path):
+    from openMWR.migrate import migrate_project
+    from openMWR.models import Model
+    from openMWR.omb import get_input_noise
+
+    create_site('test', tmp_path)
+    model = Model('scan', heights=[0., 1000.], freqs=[30., 31.4], angles=[30., 90.],
+                  is_MLR=True, is_bls_model=True, vary_input_noise_with_angle=True,
+                  additional_input_vars=[], output_vars=['T'])
+    model.nor = xr.Dataset({key: xr.ones_like(value).expand_dims(stat=['mean', 'std', 'max'])
+                            for key, value in xr.merge([model.input, model.output]).items()})
+    inputs = xr.ones_like(model.input).expand_dims(time=[np.datetime64('2024-01-01')])
+    expected = run_model(model, inputs, 'cpu', include_input_vars=False)
+    old_parameters = {'input_noise_TB_30.0': 2., 'input_noise_TB_31.4': .3, 'input_noise_TB_90.0': 1.}
+    model.save('test', tmp_path, old_parameters)
+    path = tmp_path / 'sites/test/retrieval/scan/model.pth'
+    original = path.read_bytes()
+    migrate_project(tmp_path)
+    converted = load_model('scan', 'test', tmp_path)
+    xr.testing.assert_identical(run_model(converted, inputs, 'cpu', include_input_vars=False), expected)
+    noise = get_input_noise(converted)
+    np.testing.assert_allclose(noise.TB.sel(ang=30), [4., .6])
+    np.testing.assert_allclose(noise.TB.sel(ang=90), [2., .3])
+    assert path.with_name('model.pth.bak').read_bytes() == original
+    saved = path.read_bytes()
+    migrate_project(tmp_path)
+    assert path.read_bytes() == saved
+
+
 @pytest.fixture
 def old_checkpoint():
     reference = torch.load(Path(__file__).parents[1] / 'data/checkpoint_01.pt',
@@ -100,6 +129,8 @@ def test_migrate_legacy_project_preview_application_and_repeat(tmp_path, custom_
     converted = {key: value for key, value in settings.items() if value is not None}
     converted['custom'] = {key: converted.pop(key) for key in ('frequency_shift', 'cut_off_at_mwr_height')}
     converted['hatpro_format'] = 'netcdf'
+    converted['instrument_generation'] = converted.pop('gen')
+    converted['prediction'] = {'output_dir': converted.pop('retrieval_output_dir')}
     existing.write_text('# User comment\n' + tomli_w.dumps(converted))
     before = snapshot(project)
 
@@ -149,7 +180,7 @@ def test_preflight_failure_at_later_site_preserves_entire_project(tmp_path, conf
     if conflict in ('site-settings', 'checkpoint', 'backup', 'blocked-parent'):
         target.mkdir(parents=True)
         if conflict == 'site-settings':
-            (target / 'site.toml').write_text('gen = "G4"\n')
+            (target / 'site.toml').write_text('instrument_generation = "G4"\n')
         elif conflict in ('checkpoint', 'backup'):
             (target / 'retrieval/NN').mkdir(parents=True)
             filename = 'model.pth' if conflict == 'checkpoint' else 'model.pth.bak'

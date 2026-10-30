@@ -64,13 +64,13 @@ Uncomment and fill in the instrument settings at the top of
 `sites/my_site/site.toml`, before `[prediction]`. For the G5 HATPRO in Munich:
 
 ```toml
-gen = "G5"
+instrument_generation = "G5"
 mwr_height = 550
 latitude = 48.148
 longitude = 11.573
 ```
 
-`gen` is the instrument generation (`G4` or `G5`). `mwr_height` is its height in
+`instrument_generation` is the instrument generation (`G4` or `G5`). `mwr_height` is its height in
 metres above sea level. Coordinates are in decimal degrees. Local measurement
 paths are needed later for evaluation and prediction.
 
@@ -250,10 +250,18 @@ example. With torchMWRT, this controls the libRadtran workers. The microwave
 calculation processes profiles in batches. Choose a worker count that fits the
 available CPU cores and memory.
 
-For channel-frequency experiments, `frequency_shift` accepts one offset per
-channel under `[radiative_transfer]`. Offsets are in GHz and are subtracted from
-the nominal frequencies. Copy the recipe to a new name before changing the
-simulation to keep both datasets.
+For channel-frequency experiments, add offsets keyed by nominal frequency:
+
+```toml
+[radiative_transfer.frequency_shift]
+"22.24" = 0.01
+"31.40" = -0.02
+```
+
+Keys and offsets are in GHz. Offsets are subtracted from the nominal frequencies,
+so the first entry simulates 22.23 GHz. Omitted channels retain their nominal
+frequencies. Output channel labels retain the nominal frequencies. Copy the recipe
+to a new name before changing the simulation to keep both datasets.
 
 ## Separate training, validation and test datasets
 
@@ -312,7 +320,7 @@ reused unless a source dataset itself is selected for rebuilding.
 
 Open `sites/my_site/retrieval/NN_example/retrieval.toml`. Its `[model]` section
 selects a zenith neural network with hidden layers of 1024, 64 and 1024 neurons.
-`freqs = "dataset"` and `heights = "dataset"` inherit the grids from the
+`frequencies = "dataset"` and `heights = "dataset"` inherit the grids from the
 `training` dataset selected under `[data]`.
 
 Inputs are microwave and infrared brightness temperatures, surface temperature,
@@ -372,8 +380,8 @@ in `site.toml` to require one observation format for both datasets and predictio
 Binary input supports BRT, BLB, MET and IRT. Files marked as local time also need
 `hatpro_time_offset_hours`, the fixed local time minus UTC in hours.
 
-Set `rpg_retrieval_exists = true` if the instrument's own NetCDF retrieval
-products are also present and should be included for comparison. These products
+To import the instrument's own retrieval products for comparison, set
+`include_rpg = true` under `[observations]` in `datasets/hatpro.toml`. These products
 require NetCDF even when observations use binary. Missing or unreadable products
 are logged and omitted. Available measurements and other comparison products
 are retained.
@@ -408,8 +416,10 @@ The reference profiles must cover the selected observation period.
 
 Open `sites/my_site/evaluations/radiosonde.toml`. This comparison recipe selects
 the saved models and reference data independently of their training recipes.
-Set `station_id` and `test.sources` to the selected radiosonde station IDs. Add the
-observation start date under `[observations]`:
+Set `observations.station_id` to the radiosonde station ID for the comparison.
+The simulated test comparison uses all sources in its split dataset. Set
+`test.sources` to select a subset. Add the observation start date under
+`[observations]`:
 
 ```toml
 start_date = "2024-11-01"
@@ -555,6 +565,7 @@ to `"training_era5"`. For measurement comparison, copy
 `analysis_radiosonde.toml` to `analysis_era5.toml`, set `[inputs].reference` to
 `"simulation_era5"`, and build it with dependencies. Copy the evaluation recipe
 to `evaluations/era5.toml`. Under `[observations]`, remove `station_id` and select
-`data_source = "era5"` and `dataset = "analysis_era5"`. Optimization selects these
-same settings in the retrieval's `[optimization]` section. ERA5 comparisons are
+`dataset = "analysis_era5"`. Optimization selects the same dataset in the
+retrieval's `[optimization]` section. The analysis data supplies the reference
+type. ERA5 comparisons are
 comparisons with a reanalysis.

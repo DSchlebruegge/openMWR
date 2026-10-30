@@ -9,7 +9,7 @@ import numpy as np
 import xarray as xr
 
 from openMWR.config import check_coordinates, check_number, check_time_selection, select_time
-from openMWR.observations import load_analysis_dataset
+from openMWR.observations import load_analysis_dataset, reference_source
 from openMWR.paths import dataset_dir, dataset_recipe_file
 from openMWR.provenance import dataset_id, plain_value, utc_now
 from openMWR.site import load_site_config
@@ -147,18 +147,9 @@ class Omb_Analysis:
             from openMWR.datasets import DatasetWorkflow
             DatasetWorkflow(project_dir, site).build(dataset)
         data = load_analysis_dataset(project_dir, site, dataset, bls=bls, site_config=self.site_config)
-        references = [str(value) for value in data.data_source.values if value != 'hatpro']
-        if data_source is None:
-            if len(references) != 1:
-                raise ValueError('Select data_source when an analysis contains multiple references.')
-            data_source = references[0]
-        if data_source not in references:
-            raise ValueError(f'Background {data_source!r} is absent from {dataset}.')
-        self.data_source = data_source
-        if station_ids_for_analysis is not None and data_source == 'radiosonde':
-            if not station_ids_for_analysis:
-                raise ValueError('Select at least one radiosonde station.')
-            data = data.sel(station=station_ids_for_analysis)
+        self.data_source = data_source = reference_source(data, data_source)
+        from openMWR.observations import select_reference_sources
+        data = select_reference_sources(data, data_source, station_ids_for_analysis)
         if frequencies is not None:
             check_coordinates(frequencies, 'OMB frequencies')
             data = data.sel(frq=frequencies)
@@ -295,7 +286,9 @@ def get_input_noise(model, hyper_params=None):
     if model.is_bls_model:
         angles = xr.DataArray(model.angles, dims='ang', coords={'ang': model.angles})
         if model.vary_input_noise_with_angle:
-            factors = xr.DataArray([params[f'input_noise_TB_{a}'] for a in model.angles], dims='ang', coords={'ang': model.angles})
+            if any(f'input_noise_TB_angle_{angle}' not in params and f'input_noise_TB_{angle}' in params for angle in model.angles):
+                raise ValueError('Saved per-angle noise requires conversion. Run openMWR migrate --project-dir <project>.')
+            factors = xr.DataArray([params[f'input_noise_TB_angle_{a}'] for a in model.angles], dims='ang', coords={'ang': model.angles})
         elif model.vary_input_noise_with_angle_linear:
             factors = 1 + params['input_noise_TB_angle_factor'] * (90 - angles) / 90
         else:

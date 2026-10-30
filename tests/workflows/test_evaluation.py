@@ -13,6 +13,7 @@ from openMWR.evaluation import EvaluationRecipe, evaluate, save_evaluation
 from openMWR.models import Model, SpectralConsistencyModel
 from openMWR.site import create_site
 from tests.fixtures.cli import run_cli
+from tests.fixtures.retrievals import retrieval_project
 
 
 def save_fixed(model, root):
@@ -81,7 +82,6 @@ retrievals = ["old", "new", "scan"]
 bls_baseline = "new"
 [observations]
 dataset = "analysis_radiosonde"
-data_source = "radiosonde"
 station_id = "03715"
 variables = ["T", "rh"]
 height_range = [0, 10000]
@@ -215,6 +215,34 @@ def test_explicit_station_period_and_height_selection_and_missing_coverage(tmp_p
     settings['height_range'] = [2000, 3000]
     with pytest.raises(ValueError, match='height'):
         evaluate(recipe, retrievals=['new'])
+
+
+def test_test_sources_inherit_the_split_dataset_and_remain_overridable(tmp_path):
+    import tomllib
+    import tomli_w
+    from openMWR.recipes import RetrievalRecipe
+
+    retrieval_project(tmp_path, search=False)
+    save_fixed(RetrievalRecipe.load(tmp_path, 'test', 'example').create_model(), tmp_path)
+    source = tmp_path / 'sites/test/datasets/radiosondes.toml'
+    settings = tomllib.loads(source.read_text())
+    settings['stations'] = ['03715', '02290']
+    source.write_text(tomli_w.dumps(settings))
+    data_dir = tmp_path / 'data/sites/test/training_variant'
+    data = xr.load_dataset(data_dir / 'test_03715.nc')
+    data.assign(T=data.T + 10.).to_netcdf(data_dir / 'test_02290.nc')
+    recipe = EvaluationRecipe.load(tmp_path, 'test', 'example')
+    recipe.values.pop('observations')
+    recipe.values['test'].pop('sources')
+    inherited = evaluate(recipe)
+    assert inherited.metadata['settings']['test']['sources'] == ['03715', '02290']
+    assert 'sources' not in recipe.values['test']
+    recipe.values['test']['sources'] = ['03715', '02290']
+    explicit = evaluate(recipe)
+    xr.testing.assert_identical(inherited.evaluations[0].metrics['errors'], explicit.evaluations[0].metrics['errors'])
+    recipe.values['test']['sources'] = ['03715']
+    subset = evaluate(recipe)
+    assert subset.evaluations[0].samples['reference_profiles'] * 2 == inherited.evaluations[0].samples['reference_profiles']
 
 
 def test_spectral_retrieval_uses_the_same_engine_and_result_format(tmp_path):

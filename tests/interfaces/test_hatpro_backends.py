@@ -28,8 +28,8 @@ def project(tmp_path, variant='modern'):
     date = datetime.fromisoformat(day)
     raw = tmp_path / 'raw' / date.strftime('Y%Y/M%m/D%d')
     shutil.copytree(DATA / variant, raw)
-    create_site('test', tmp_path, gen='G5', hatpro_data_dir='raw',
-                rpg_retrieval_exists=False, mwr_height=550)
+    create_site('test', tmp_path, instrument_generation='G5', hatpro_data_dir='raw',
+                mwr_height=550)
     return date, raw
 
 
@@ -45,9 +45,9 @@ def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(t
     date, raw = project(tmp_path, variant)
     for importer in (import_hatpro_data, import_hatpro_data_bls):
         configure(tmp_path, hatpro_format='netcdf')
-        expected = importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+        expected = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
         configure(tmp_path, hatpro_format='binary')
-        actual = importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+        actual = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
         # Binary BLB has no explicit azimuth field. Every common observation and
         # derived time input must agree, including unpacked rain and MET humidity.
         variables = {'TB', 'rain_flag', 'surface_p', 'surface_T', 'surface_rh',
@@ -107,7 +107,7 @@ def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps
     overlaps = [np.datetime64(date) - np.timedelta64(1, 's'),
                 np.datetime64(date + timedelta(days=1)) + np.timedelta64(1, 's')]
     append_times(brt, overlaps)
-    expected = {importer: importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+    expected = {importer: importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
                 for importer in (import_hatpro_data, import_hatpro_data_bls)}
     expected_times = read_hatpro_file(brt).drop_duplicates('time').sortby('time').time
     products = ['BRT', 'BLB', 'MET', 'IRT']
@@ -125,13 +125,13 @@ def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps
     assert str(brt) in caplog.text and 'Discarding' in caplog.text
     for importer, original in expected.items():
         xr.testing.assert_identical(importer(date, 'test', tmp_path,
-            mean_one_min=True, import_retrieval_data=False), original)
+            mean_one_min=True, include_rpg=False), original)
 
 
 def test_days_with_only_invalid_timestamps_report_the_file_and_omit_optional_products(tmp_path, caplog):
     date, raw = project(tmp_path)
     configure(tmp_path, hatpro_format='netcdf')
-    original = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    original = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     for product in ['MET', 'IRT', 'BRT']:
         path = next(raw.glob(f'*.{product}.NC'))
         data = xr.load_dataset(path)
@@ -141,7 +141,7 @@ def test_days_with_only_invalid_timestamps_report_the_file_and_omit_optional_pro
                 load_hatpro_day(date, 'test', tmp_path, ['BRT'])
         else:
             assert not load_hatpro_day(date, 'test', tmp_path, [product])
-            result = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+            result = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
             xr.testing.assert_identical(result.TB, original.TB)
             assert ('surface_p' if product == 'MET' else 'TB_IR') not in result
         assert str(path) in caplog.text
@@ -155,28 +155,28 @@ def test_auto_selects_each_product_and_never_hides_a_broken_selected_file(tmp_pa
     reference.to_netcdf(brt)
     # Missing IRT NetCDF uses binary, while BRT still uses the modified NetCDF.
     next(raw.glob('*.IRT.NC')).unlink()
-    mixed = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    mixed = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     np.testing.assert_allclose(mixed.TB.isel(time=0), reference.TBs.isel(time=0))
     assert np.isfinite(mixed.TB_IR).any()
     configure(tmp_path, hatpro_format='netcdf')
-    nc = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    nc = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     assert 'TB_IR' not in nc
     configure(tmp_path, hatpro_format='auto')
     brt.write_bytes(b'Broken selected NetCDF, even though valid binary exists')
     with pytest.raises((ValueError, OSError)):
-        import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+        import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     configure(tmp_path, hatpro_format='binary')
     next(raw.glob('*.MET')).unlink()
-    binary = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    binary = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     np.testing.assert_allclose(binary.TB.isel(time=0), reference.TBs.isel(time=0) - 10)
     assert 'surface_p' not in binary  # Forced binary never uses the MET NetCDF.
     configure(tmp_path, hatpro_format='unknown')
     with pytest.raises(ValueError, match='hatpro_format'):
-        import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+        import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     config = tmp_path / 'sites/test/site.toml'
     config.write_text('hatpro_format = "auto"\n')
     with pytest.raises(ValueError, match='set hatpro_data_dir'):
-        import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+        import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
 
 
 @pytest.mark.parametrize('angles', [
@@ -192,7 +192,7 @@ def test_incompatible_scans_are_skipped_with_the_missing_and_measured_angles(tmp
     output = tmp_path / 'processed'
     output.mkdir()
     with pytest.raises(ValueError, match='Incompatible BLS scan angles.*missing required angles'):
-        import_hatpro_data_bls(date, 'test', tmp_path, import_retrieval_data=False,
+        import_hatpro_data_bls(date, 'test', tmp_path, include_rpg=False,
                               out_file=output / 'rejected.nc')
     with caplog.at_level('INFO', logger='openMWR.hatpro_data'):
         hatpro_data._create_hatpro_day_file(date, True, '_bls', 'test', tmp_path, output, False, load_site_config('test', tmp_path))
@@ -215,7 +215,7 @@ def test_complete_scans_keep_extra_angles_and_their_actual_brightness_temperatur
     expected = read_hatpro_file(path)
     expected = expected.assign_coords(ang=expected.ang.astype('float64').round(2),
                                       frq=expected.frq.astype('float64').round(2)).sortby('ang')
-    actual = import_hatpro_data_bls(date, 'test', tmp_path, import_retrieval_data=False)
+    actual = import_hatpro_data_bls(date, 'test', tmp_path, include_rpg=False)
     xr.testing.assert_identical(actual.TB, expected.TB)
     assert actual.sizes['ang'] == 11 and 42. in actual.ang
 
@@ -228,7 +228,7 @@ def test_empty_zenith_selection_skips_averaging_and_preserves_independent_scans(
     data['ElAng'] = data.ElAng * -1
     data.to_netcdf(path)
     with pytest.raises(ValueError, match='No zenith observations remain'):
-        import_hatpro_data(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+        import_hatpro_data(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
     output = tmp_path / 'processed'
     output.mkdir()
     with caplog.at_level('INFO', logger='openMWR.hatpro_data'):
@@ -242,10 +242,10 @@ def test_empty_zenith_selection_skips_averaging_and_preserves_independent_scans(
     # A day with both target and sky views retains the sky portion.
     original['ElAng'] = original.ElAng.where(original.time >= original.time[-3], -90.)
     original.to_netcdf(path)
-    partial = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    partial = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     np.testing.assert_array_equal(partial.time, original.time[-3:])
     np.testing.assert_array_equal(partial.TB, original.TBs[-3:])
-    averaged = import_hatpro_data(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+    averaged = import_hatpro_data(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
     assert np.isfinite(averaged.TB).any() and bool((averaged.elevation_angle.dropna('time') == 90).all())
 
 
@@ -255,7 +255,7 @@ def test_empty_zenith_selection_skips_averaging_and_preserves_independent_scans(
 def test_unavailable_rpg_products_preserve_observations_and_other_comparisons(tmp_path, caplog, importer, profile_product):
     date, raw = project(tmp_path)
     configure(tmp_path, hatpro_format='netcdf')
-    expected = importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=False)
+    expected = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
     primary = 'BRT' if profile_product == 'TPC' else 'BLB'
     times = read_hatpro_file(next(raw.glob(f'*.{primary}.NC'))).time.values
     # Hourly source blocks need not arrive in chronological order.
@@ -280,7 +280,7 @@ def test_unavailable_rpg_products_preserve_observations_and_other_comparisons(tm
                    coords={'time': times}).to_netcdf(raw / f'{date:%y%m%d}.LWP.NC')
 
     def read():
-        result = importer(date, 'test', tmp_path, mean_one_min=True, import_retrieval_data=True)
+        result = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=True)
         for name in expected.data_vars:
             xr.testing.assert_identical(result[name], expected[name])
         return result
@@ -326,13 +326,13 @@ def test_malformed_netcdf_names_missing_fields_and_preserves_partial_weather(tmp
     path = next(raw.glob('*.BRT.NC'))
     original = xr.load_dataset(path)
     expected_temperature = import_hatpro_data(date, 'test', tmp_path,
-        import_retrieval_data=False).surface_T
+        include_rpg=False).surface_T
     for variable, diagnostic in [('TBs', 'missing required variables: TB'),
                                  ('Freq', 'missing required coordinate frq'),
                                  ('time', 'missing required coordinate time')]:
         original.drop_vars(variable).to_netcdf(path)
         with pytest.raises(ValueError, match=f'BRT.NC.*{diagnostic}'):
-            import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+            import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     invalid = original.copy()
     invalid['Freq'] = original.Freq.expand_dims(time=original.time)
     invalid.to_netcdf(path)
@@ -354,7 +354,7 @@ def test_malformed_netcdf_names_missing_fields_and_preserves_partial_weather(tmp
     infrared.drop_vars('IRR_Map').to_netcdf(irt)
     met = next(raw.glob('*.MET.NC'))
     xr.load_dataset(met).drop_vars(['Surf_P', 'Surf_RH']).to_netcdf(met)
-    result = import_hatpro_data(date, 'test', tmp_path, import_retrieval_data=False)
+    result = import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
     assert {'TB', 'surface_T'} <= set(result.data_vars)
     assert not {'TB_IR', 'surface_p', 'surface_rh'} & set(result.data_vars)
     xr.testing.assert_identical(result.surface_T, expected_temperature)
@@ -392,7 +392,7 @@ def test_binary_dataset_build_update_and_prediction_use_the_same_inputs(tmp_path
     date, raw = project(tmp_path)
     recipe = tmp_path / 'sites/test/datasets/hatpro.toml'
     recipe.write_text(tomli_w.dumps(dict(kind='hatpro', start_date=str(date.date()),
-        end_date=str(date.date()), observations={'import_retrieval_data': True},
+        end_date=str(date.date()), observations={'include_rpg': True},
         execution={'processes': 1})))
     assert DatasetWorkflow(tmp_path, 'test').settings('hatpro')['hatpro_format'] == 'auto'
     configure(tmp_path, hatpro_format='binary')
@@ -434,7 +434,7 @@ def test_combining_days_keeps_observations_and_missing_comparisons_as_nan(tmp_pa
         coords={'time': times, 'height': [0., 1000.]}).to_netcdf(raw / f'{date:%y%m%d}.TPC.NC')
     recipe = tmp_path / 'sites/test/datasets/hatpro.toml'
     recipe.write_text(tomli_w.dumps(dict(kind='hatpro', start_date=str(date.date()),
-        end_date=str(next_date.date()), observations={'import_retrieval_data': True},
+        end_date=str(next_date.date()), observations={'include_rpg': True},
         execution={'processes': 1})))
     workflow = DatasetWorkflow(tmp_path, 'test')
     workflow.build('hatpro')

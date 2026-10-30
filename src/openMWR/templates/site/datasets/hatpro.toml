@@ -3,3 +3,7 @@
 kind = "hatpro"
 start_date = "site"
 end_date = "today"
+
+[observations]
+# Include available RPG NetCDF retrieval products for later comparisons.
+include_rpg = false

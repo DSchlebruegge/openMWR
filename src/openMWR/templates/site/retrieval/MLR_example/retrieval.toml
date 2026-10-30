@@ -1,16 +1,16 @@
 # Basic zenith multilinear regression with recommended settings written explicitly.
-# Replace SITE with your site name: openMWR train SITE MLR_example
+# Replace SITE with the site name: openMWR train SITE MLR_example
 schema_version = 1
 
 [model]
 kind = "mlr"
 output_vars = ["T", "rh", "lwc", "lwp", "iwv"]
 mode = "zenith"
-freqs = "dataset"
+frequencies = "dataset"
 heights = "dataset"
 additional_input_vars = ["TB_IR", "surface_T", "surface_p", "surface_rh", "doy_cos", "doy_sin"]
 
-[model.norm_functions]
+[model.normalization]
 TB = "z_norm"
 TB_IR = "z_norm"
 surface_T = "z_norm"
@@ -33,11 +33,12 @@ dataset = "training"
 seed = 42
 
 [input_noise]
-method = "standard"
-TB = 0.5
-TB_IR = 0.5
-surface_T = 0.5
-surface_p = 0.5
-surface_rh = 0.5
-doy_cos = 0.2
-doy_sin = 0.2
+# Standard deviations in physical input units, before normalization.
+method = "specified"
+TB = 0.5  # K
+TB_IR = 0.5  # K
+surface_T = 0.5  # K
+surface_p = 0.5  # hPa
+surface_rh = 0.5  # percentage points
+doy_cos = 0.2  # dimensionless
+doy_sin = 0.2  # dimensionless

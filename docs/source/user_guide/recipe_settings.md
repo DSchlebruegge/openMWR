@@ -18,6 +18,18 @@ including worker processes. Create a new workflow to use edits to `site.toml`.
 Project-specific settings belong in `[custom]`. They do not control openMWR's
 scientific processing.
 
+`instrument_generation` selects G4 or G5. Prediction settings belong together:
+
+```toml
+[prediction]
+retrievals = ["NN_example"]
+# Optional. Relative paths start at the project root.
+output_dir = "data/predictions"
+```
+
+Without `output_dir`, prediction uses `data/sites/<site>/predictions/`.
+Plot destinations are project-specific settings under `[custom]`.
+
 Optional calibration dates mark the time plots in OMB reports:
 
 ```toml
@@ -46,9 +58,10 @@ custom = [90.0, 30.0, 10.0]
 ```
 
 Select these with `heights = "custom"`, `frequencies = "custom"` or
-`angles = "custom"` in a dataset recipe. Retrieval recipes use `freqs` instead
-of `frequencies`. They also accept `"dataset"` to inherit the training dataset's
-grid. All sites share the project grid file. Processing records and checkpoints
+`angles = "custom"` in a dataset or retrieval recipe. Retrieval recipes also
+accept `"dataset"` to inherit the training dataset's
+grid. `bias_correction.frequencies` accepts a named frequency grid or numeric list.
+All sites share the project grid file. Processing records and checkpoints
 store resolved numeric values. Changing a grid used by existing datasets requires
 rebuilding them.
 
@@ -61,14 +74,15 @@ names and `[inputs]` supplies the dependency edges.
 | --- | --- | --- |
 | `radiosonde` | None | `stations`, `start_year`, `end_year` |
 | `era5` | None | `start_date`, `end_date`, `hour_interval`, `delay_days` when using `"today"` |
-| `hatpro` | None | `start_date`, `end_date`. `[observations].import_retrieval_data` inherits the site choice when omitted |
+| `hatpro` | None | `start_date`, `end_date`. Optional `[observations].include_rpg` imports available RPG retrieval products |
 | `profiles` | `source`: radiosonde or ERA5 | `[preparation].heights`. Radiosondes also require `incomplete_profiles`, `cloud` and `quality` settings |
 | `simulation` | `profiles` | `[radiative_transfer]` backend, absorption model, frequencies, angles and infrared microphysics |
 | `split` | `simulation` | `[split]` test and validation day ranges, with optional pool filters |
 | `analysis` | `observations`: HATPRO, `reference`: simulation | `[analysis]` matching tolerance, rain exclusion, height range and required observations |
 
-Derived recipes inherit their source stations unless selecting a subset with
-`stations`. Generated files, `state.json` and `build.log` live under
+Derived recipes inherit their input sources unless selecting a subset with
+`sources`. Radiosonde download recipes use `stations` for the station list.
+Generated files, `state.json` and `build.log` live under
 `data/sites/<site>/<name>/`. Processing records track effective settings and input
 identities. Changed settings or rebuilt inputs require a downstream rebuild.
 
@@ -76,7 +90,8 @@ identities. Changed settings or rebuilt inputs require a downstream rebuild.
 
 Source date bounds include the whole end day. `start_date = "site"` inherits
 the site's measurement start. `end_date = "today"` follows the current date,
-subtracting `delay_days` for ERA5. Radiosondes also accept
+subtracting `delay_days` for ERA5. A fixed end date omits `delay_days`.
+Literal dates use quoted `YYYY-MM-DD` strings in every recipe. Radiosondes also accept
 `end_year = "current_year"`.
 
 Radiosondes download missing historical years and refresh recent years.
@@ -97,9 +112,9 @@ the last available day.
 ### Profile preparation and simulation
 
 Radiosonde `[preparation.cloud]` specifies `rh_threshold` as a fraction,
-`min_temperature` in K and `adiabatic_fraction`. `"power_law"` requires `a` and `b`.
-`"karstens"` and `"none"` omit both. The formulas are given in the generated recipe
-comments. `"none"` keeps the fully adiabatic liquid water content.
+`min_temperature` in K and `adiabatic_fraction_method`. `"power_law"` requires `a` and `b`.
+`"karstens"` and `"fully_adiabatic"` omit both. The formulas are given in the generated
+recipe comments. `"fully_adiabatic"` keeps the adiabatic liquid water content.
 `[preparation.quality]` specifies `min_top_height` in metres above sea level before
 rebasing, and `min_levels` as distinct valid source levels before interpolation.
 ERA5 uses its native cloud water and does not accept these radiosonde settings.
@@ -108,6 +123,11 @@ ERA5 uses its native cloud water and does not accept these radiosonde settings.
 `min_effective_radius` in micrometres. The minimum radius must be at least 2.5 and
 below 60. Calculated radii at or above 60 are rejected before RT, matching
 libRadtran's Hu-Stamnes cloud optics.
+
+Optional `[radiative_transfer.frequency_shift]` maps nominal channel frequencies
+to offsets in GHz. Offsets are subtracted before RT. Omitted channels have zero
+offset, and output labels retain their nominal frequencies. Keys must identify
+selected channels and follow the same numeric matching rule as `channel_noise`.
 
 Analysis `height_range` is in metres above the instrument. It must cover the
 heights later selected for evaluation or optimization. `required_observations`
@@ -127,7 +147,8 @@ Binary BRT, BLB, MET and IRT are decoded by MWRpy. Masking, time matching and
 averaging use the same code as NetCDF. BLS uses integrated BLB scans. Binary BLB
 has no explicit azimuth field. The NetCDF reader removes its extra 0-degree
 surface-temperature channel. RPG retrieval products require NetCDF in every
-mode when `import_retrieval_data` is enabled. Missing or unreadable comparison
+mode when `observations.include_rpg = true` is set in the HATPRO recipe.
+The option is off when omitted. Missing or unreadable comparison
 products are logged and omitted independently. Their absence does not discard
 observations or other available products. After daily files are combined,
 unavailable comparison values remain missing, without interpolation.
@@ -166,11 +187,18 @@ for a neural model. Only the selected targets are required in training data.
 
 `heights` is required for T, rh or lwc profiles. Omit it for a retrieval predicting
 only lwp or iwv. `additional_input_vars` lists auxiliary inputs and may be empty.
-BLS models also specify `angles`. All models require `norm_functions` for every
-active input and output. Supported names are `z_norm`, `std_norm`, `log_norm` and
+BLS models also specify `angles`. All models require `normalization` for every
+active input and output. Entries for unused variables are rejected.
+Supported names are `z_norm`, `std_norm`, `log_norm` and
 `max_norm`. Dropout is off when omitted. Optimization score weights and evaluation
 variables must refer to outputs the retrieval predicts. Derived quantities are
 calculated when their required inputs are available.
+
+`learning_rate_min`, `learning_rate_max` and `learning_rate_peak_epoch` define
+the linear rise and decay of the neural learning rate. The peak epoch is
+zero-based. The minimum must not exceed the maximum. Searches must satisfy this
+ordering for every combination of their ranges or choices.
+`loss` selects `MAE`, `MSE`, `MAEPlusBiasLoss` or `MSEPlusBiasLoss`.
 
 MLR fits the expected squared error under independent, zero-mean input noise
 directly. It uses the configured noise levels without generating random noisy
@@ -228,9 +256,36 @@ number or search. Other losses omit it. A search starts optimization through
 
 ### Input noise and bias correction
 
-`input_noise.method = "standard"` requires explicit values or searches for every
-active input. `TB` applies to all selected frequencies, with entries such as
-`"TB_22.24"` taking precedence. A `TB` search samples each channel independently.
+Noise values are standard deviations in physical input units, before normalization.
+
+| Inputs | Noise unit |
+| --- | --- |
+| `TB`, `TB_IR`, `surface_T` | K |
+| `surface_p` | hPa |
+| `surface_rh` | Percentage points. `0.5` means half a percentage point |
+| `doy_cos`, `doy_sin` | Dimensionless |
+
+Cloud `rh_threshold` instead uses a fraction between zero and one.
+
+`input_noise.method = "specified"` requires explicit values or searches for every
+active input. `TB` applies to all selected frequencies. A `TB` search samples each
+channel independently. Optional `channel_noise` entries override individual
+channels, keyed by frequency in GHz:
+
+```toml
+[input_noise]
+method = "specified"
+TB = 0.5
+
+[input_noise.channel_noise]
+"22.24" = 0.25
+"31.40" = { low = 0.1, high = 0.8 }
+```
+
+Supply auxiliary-input noise in `[input_noise]` as required by the model.
+Frequency labels are numeric, so `"31.4"` and `"31.40"` identify the same channel.
+Duplicate labels for the same frequency and unselected channels are rejected.
+Omit `TB` when the channel table specifies every selected frequency.
 
 The alternative `omb` method uses observed-minus-simulated TB scatter as training
 noise. It includes background, RT and sampling errors. It does not measure
@@ -240,7 +295,6 @@ instrument noise. Replace `[input_noise]` with, for example:
 [input_noise]
 method = "omb"
 statistic = "std"
-data_source = "era5"
 dataset = "analysis_era5"
 days_of_month = { first = 1, last = 20 }
 factor = 2.0
@@ -249,7 +303,8 @@ surface_T = 0.5
 
 Specify noise for every auxiliary input used by the model. Explicit TB entries
 can override the OMB estimates with numbers or searches. The OMB scaling factor
-is fixed. Optional `sources` selects the reference stations. Their finite pairs
+is fixed. Optional `sources` selects reference stations, using all stations in
+the analysis dataset when omitted. Their finite pairs
 are pooled for training noise. OMB reports keep stations separate.
 
 `statistic` is required. `std` uses total OMB standard deviation. Experimental
@@ -270,13 +325,37 @@ in-sample residual scatter can include background errors and remove correlated
 measurement errors. It is an experimental augmentation choice.
 Optional `max_lwp` selects pairs below that LWP in both sources, in g/m².
 
-BLS models can enable `model.vary_input_noise_with_angle` or
-`model.vary_input_noise_with_angle_linear`, but not both. Their noise values or
-factor belong in `[input_noise]`. OMB-derived noise uses the zenith estimate and
-these configured angle factors. A zenith comparison must be available.
+BLS noise is angle independent unless `angle_dependence` is set under
+`[input_noise]`. `"none"` uses the same channel noise at every angle.
+For `"linear"`, specify a fixed value or search for `angle_factor`:
 
-Optional `[bias_correction]` requires `data_source`, `dataset` and `factor`.
-`sources` and `specific_freqs` restrict it. It shares the observation date filters
+```toml
+# Entries within [input_noise].
+angle_dependence = "linear"
+angle_factor = { low = 1.5, high = 3.0 }
+```
+
+The channel standard deviation is multiplied by
+`1 + angle_factor * (90 - angle) / 90`, with elevation angles in degrees.
+For separate factors, replace `angle_factor` with `angle_factors`, select
+`"per_angle"` and supply every selected angle:
+
+```toml
+# For a model selecting 90 and 30 degrees.
+angle_dependence = "per_angle"
+
+[input_noise.angle_factors]
+"90.0" = 1.0
+"30.0" = { low = 1.0, high = 3.0 }
+```
+
+Channel noise values and angle factors use separate names. Each angle factor
+multiplies the channel standard deviation. OMB-derived noise uses the zenith
+estimate and these configured factors. A zenith comparison must be available.
+
+Optional `[bias_correction]` requires `dataset` and `factor`.
+`sources` and `frequencies` restrict it. Omitted `sources` uses all reference
+sources in the analysis dataset. It shares the observation date filters
 below and accepts `max_lwp`. The fitted mean of observed minus simulated TB is
 added to synthetic training and validation inputs. Measured prediction inputs
 are used directly. BLS corrections are estimated separately by angle.
@@ -287,8 +366,12 @@ an offset. Low LWP alone does not independently establish cloud-free conditions.
 
 ### Optimization and observation selection
 
-Search recipes require `[optimization]` with `n_trials`, `data_source`, `dataset`,
-`seed` and `score_weights`. The reference is a named analysis dataset.
+Search recipes require `[optimization]` with `n_trials`, `dataset`,
+`seed` and `score_weights`. The reference is a named analysis dataset. Optional `sources` selects a subset
+of its sources. Omit it to use all sources in that dataset.
+The analysis data determines whether the reference is radiosondes or ERA5.
+Optimization, OMB noise and bias correction share this rule. An explicit
+`data_source` is needed only for custom analysis data containing several references.
 The score sums each selected variable's weight times its mean RMSE, using the
 model's height weights where present. Omitted or zero-weight variables do not
 contribute. Generated profile examples use `{ T = 1.0, rh = 0.1 }`. Spectral
@@ -318,6 +401,10 @@ neural network weights.
 
 Evaluation recipes use `schema_version = 1` and select saved models independently
 of training recipes. `[observations]`, `[test]` or both may be present.
+The observation reference type comes from its analysis data. Custom analysis
+data with several references requires an explicit `observations.data_source`.
+Omitted `test.sources` uses every source in the selected split dataset. A list
+selects a subset, following the same rule as `data.sources` in retrieval recipes.
 Profile `height_range` is in metres above the instrument or `"model"` for the
 whole model grid. Spectral comparisons select `variables = ["TB"]` without a
 height range. With several radiosonde stations, select `observations.station_id`.

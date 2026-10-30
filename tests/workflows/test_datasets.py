@@ -67,6 +67,27 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     assert xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).time.size == 3
 
 
+def test_frequency_shifts_follow_channels_when_the_grid_is_reordered(dataset_project, monkeypatch):
+    monkeypatch.setattr('openMWR.run_RT.calculate_IR_band_TB', lambda *args, **kwargs: 200.)
+    install_raw(dataset_project, pd.date_range('2020-01-01', periods=2, freq='12h').values)
+    for name, frequencies in (('forward', [22.24, 31.4]), ('reversed', [31.4, 22.24])):
+        recipe(dataset_project, name, kind='simulation', inputs={'profiles': 'profiles'},
+               radiative_transfer={'frequencies': frequencies, 'angles': [90.],
+                                   'frequency_shift': {'22.240': 0.01}}, execution={'processes': 1})
+    recipe(dataset_project, 'physical', kind='simulation', inputs={'profiles': 'profiles'},
+           radiative_transfer={'frequencies': [22.23, 31.4], 'angles': [90.]}, execution={'processes': 1})
+    workflow = DatasetWorkflow(dataset_project, 'test')
+    workflow.build(['forward', 'reversed', 'physical'], with_dependencies=True)
+    forward = xr.load_dataset(dataset_file(dataset_project, 'test', 'forward', '03715'))
+    reverse = xr.load_dataset(dataset_file(dataset_project, 'test', 'reversed', '03715'))
+    physical = xr.load_dataset(dataset_file(dataset_project, 'test', 'physical', '03715'))
+    xr.testing.assert_equal(forward.TB, reverse.TB.sel(frq=forward.frq))
+    xr.testing.assert_allclose(forward.TB, physical.TB.assign_coords(frq=forward.frq))
+    np.testing.assert_array_equal(forward.attrs['freq_shift'], [0.01, 0.])
+    np.testing.assert_array_equal(reverse.attrs['freq_shift'], [0., 0.01])
+    assert workflow.settings('forward')['frequency_shift'] == [0.01, 0.]
+
+
 def test_split_creation_update_and_target_only_rebuild(dataset_project):
     times = pd.date_range('2020-01-01', periods=40).values
     workflow = saved_simulation(dataset_project, times)

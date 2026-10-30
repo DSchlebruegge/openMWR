@@ -1,14 +1,14 @@
 # Spectral consistency: predict each channel's TB from the other channels.
-# Replace SITE with your site name: openMWR train SITE SPC_example
+# Replace SITE with the site name: openMWR train SITE SPC_example
 schema_version = 1
 
 [model]
 kind = "spectral"
 mode = "zenith"
-freqs = "dataset"
+frequencies = "dataset"
 hidden_layer_size = 64
 
-[model.norm_functions]
+[model.normalization]
 TB = "z_norm"
 
 [data]
@@ -20,12 +20,13 @@ dataset = "training"
 seed = 42
 batch_size = 512
 epochs = 500
-lr_height = 0.002
-lr_low = 1e-7
-epoch_max_lr = 50
-loss_fn = "MAE"
+learning_rate_max = 0.002
+learning_rate_min = 1e-7
+learning_rate_peak_epoch = 50
+loss = "MAE"
 weight_decay = 1e-5
 
 [input_noise]
-method = "standard"
-TB = 0.5
+# Standard deviations in physical input units, before normalization.
+method = "specified"
+TB = 0.5  # K

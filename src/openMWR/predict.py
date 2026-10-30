@@ -428,7 +428,7 @@ class PredictionWorkflow:
     """
 
     def __init__(self, project_dir, site, retrievals=None, device='auto', *,
-                 output_dir=None, smooth=True, import_retrieval_data=False):
+                 output_dir=None, smooth=True, include_rpg=False):
         self.project_dir = project_root(project_dir)
         self.site = site
         self.site_config = load_site_config(site, self.project_dir)
@@ -450,7 +450,7 @@ class PredictionWorkflow:
         self._bls_models = tuple(model for model in self.models if model.is_bls_model)
         self.output_dir = prediction_output_dir(self.project_dir, site, output_dir, site_config=self.site_config)
         self.smooth = smooth
-        self.import_retrieval_data = import_retrieval_data
+        self.include_rpg = include_rpg
         logger.info('Prediction for %s: %s; device=%s', site, ', '.join(retrievals), self.device)
 
     def predict(self, date, *, observations=None, observations_bls=None):
@@ -491,10 +491,10 @@ class PredictionWorkflow:
                     raise ValueError('Observations must belong to the requested UTC day.')
             elif bls:
                 observations = import_hatpro_data_bls(date, self.site, self.project_dir,
-                    import_retrieval_data=self.import_retrieval_data, site_config=self.site_config)
+                    include_rpg=self.include_rpg, site_config=self.site_config)
             else:
                 observations = import_hatpro_data(date, self.site, self.project_dir,
-                    import_retrieval_data=self.import_retrieval_data, mean_one_min=True, site_config=self.site_config)
+                    include_rpg=self.include_rpg, mean_one_min=True, site_config=self.site_config)
             observations = mask_invalid_measurements(observations, periods)
             for model in models:
                 validate_model_data(model.input, observations, f'{group} observations for {model.name}')

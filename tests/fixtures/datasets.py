@@ -17,7 +17,7 @@ def recipe(dataset_project, name, **values):
     # Explicit fixture choices; production loaders do not fill these values.
     base = {
         'radiosonde': {'start_year': 1990, 'end_year': 'current_year'},
-        'era5': {'start_date': 'site', 'end_date': 'today', 'hour_interval': 6, 'delay_days': 5},
+        'era5': {'start_date': 'site', 'end_date': 'today', 'hour_interval': 6},
         'hatpro': {'start_date': 'site', 'end_date': 'today'},
         'profiles': {'preparation': {'heights': 'levels_208_30km'}},
         'simulation': {'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
@@ -26,10 +26,12 @@ def recipe(dataset_project, name, **values):
         'analysis': {'analysis': {'max_time_difference_minutes': 10, 'exclude_rain': True, 'height_range': [0, 10000], 'required_observations': ['TB']}},
         'split': {'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},
     }.get(values['kind'], {})
+    if values['kind'] == 'era5' and values.get('end_date', 'today') == 'today':
+        base['delay_days'] = 5
     if values['kind'] == 'profiles':
         source = dataset_project / 'sites/test/datasets' / (values.get('inputs', {}).get('source', '') + '.toml')
         if source.is_file() and tomllib.loads(source.read_text())['kind'] == 'radiosonde':
-            base['preparation'].update(incomplete_profiles='monthly_mean', cloud={'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3},
+            base['preparation'].update(incomplete_profiles='monthly_mean', cloud={'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'power_law', 'a': 0.7, 'b': 2.3},
                                        quality={'min_top_height': 15000, 'min_levels': 500})
     for key, value in base.items():
         values[key] = {**value, **values.get(key, {})} if isinstance(value, dict) else values.get(key, value)
@@ -40,9 +42,9 @@ def recipe(dataset_project, name, **values):
 
 @pytest.fixture
 def dataset_project(tmp_path):
-    create_site('test', tmp_path, gen='G5', mwr_height=550,
+    create_site('test', tmp_path, instrument_generation='G5', mwr_height=550,
                 latitude=48.148, longitude=11.573, mwr_measurement_start_date='2020-01-01',
-                rpg_retrieval_exists=False, hatpro_data_dir='observations')
+                hatpro_data_dir='observations')
     recipe(tmp_path, 'source', kind='radiosonde', stations=['03715'], start_year=2020, end_year=2020)
     recipe(tmp_path, 'profiles', kind='profiles', inputs={'source': 'source'}, preparation={
         'heights': [0, 500, 1000, 2000, 5000, 10000, 15000, 20000, 30000],

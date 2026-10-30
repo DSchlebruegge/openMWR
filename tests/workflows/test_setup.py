@@ -42,7 +42,7 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
     EvaluationRecipe.load(project, 'my_site', 'radiosonde')
     assert 'data/' in (project / '.gitignore').read_text()
     recipe = RetrievalRecipe.load(project, 'my_site', 'NN_example')
-    assert recipe.section('model')['freqs'] == 'dataset'
+    assert recipe.section('model')['frequencies'] == 'dataset'
     assert all(not isinstance(value, dict) for value in recipe.section('training').values())
     assert not list((project / 'data').rglob('*.*'))
     before = {path: path.read_bytes() for path in project.rglob('*.toml')}
@@ -54,7 +54,7 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
 
 def test_existing_site_is_preserved_and_another_site_can_be_created(tmp_path):
     directory = create_site('first', tmp_path, with_examples=True)
-    (directory / 'site.toml').write_text('# User edits\ngen = "G4"\n')
+    (directory / 'site.toml').write_text('# User edits\ninstrument_generation = "G4"\n')
     (tmp_path / '.gitignore').write_text('# Project-owned exclusions\nlarge-data/\n')
     grids_file = tmp_path / 'grids.toml'
     grids = tomllib.loads(grids_file.read_text())
@@ -84,10 +84,10 @@ def test_invalid_site_names_create_nothing(tmp_path, site):
 
 def test_python_configuration_overrides_and_both_dataset_chains(tmp_path):
     directory = create_site('test', tmp_path, with_examples=True,
-        gen='G4', mwr_height=123, hatpro_data_dir='raw',
+        instrument_generation='G4', mwr_height=123, hatpro_data_dir='raw',
         mwr_measurement_start_date='2020-01-01', prediction={'retrievals': ['custom']})
     settings = tomllib.loads((directory / 'site.toml').read_text())
-    assert settings['gen'] == 'G4' and settings['mwr_height'] == 123
+    assert settings['instrument_generation'] == 'G4' and settings['mwr_height'] == 123
     assert settings['prediction'] == {'retrievals': ['custom']}
     source = directory / 'datasets/radiosondes.toml'
     source.write_text(source.read_text().replace('stations = []', 'stations = ["03715"]'))

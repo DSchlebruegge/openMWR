@@ -40,7 +40,7 @@ def test_python_helpers_observe_template_values_and_overrides(tmp_path, monkeypa
         else:
             settings['training'][key] = 17
             settings['input_noise']['TB'] = 0.25
-            settings['input_noise']['TB_22.24'] = 0.15
+            settings['input_noise']['channel_noise'] = {'22.240': 0.15}
         path.write_text(tomli_w.dumps(settings))
 
     project = tmp_path / 'project'

@@ -78,9 +78,9 @@ def checkpoint(prediction_project, name, *, bls=False, spectral=False, weather=T
 
 @pytest.fixture
 def prediction_project(tmp_path):
-    create_site('test', tmp_path, gen='G5', hatpro_data_dir='raw',
-                retrieval_output_dir='published', mwr_height=550,
-                prediction={'retrievals': ['primary', 'scan']})
+    create_site('test', tmp_path, instrument_generation='G5', hatpro_data_dir='raw',
+                mwr_height=550,
+                prediction={'output_dir': 'published', 'retrievals': ['primary', 'scan']})
     checkpoint(tmp_path, 'primary')
     checkpoint(tmp_path, 'scan', bls=True)
     raw_day(tmp_path, datetime(2024, 1, 1))

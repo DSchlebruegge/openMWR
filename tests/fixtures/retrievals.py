@@ -10,15 +10,15 @@ from openMWR.train import TrainingWorkflow
 
 
 def retrieval_project(tmp_path, kind='mlr', mode='zenith', suffix='variant', search=True):
-    create_site('test', tmp_path, gen='G5', mwr_height=550)
+    create_site('test', tmp_path, instrument_generation='G5', mwr_height=550)
     directory = tmp_path / 'sites/test/retrieval/example'
     directory.mkdir()
     settings = f'''schema_version = 1
 [model]
 kind = "{kind}"
 mode = "{mode}"
-freqs = [22.24, 31.4]
-norm_functions = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_norm' if kind == 'mlr' else 'log_norm'}", lwp = "{'max_norm' if kind == 'mlr' else 'log_norm'}", iwv = "z_norm" }}
+frequencies = [22.24, 31.4]
+normalization = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_norm' if kind == 'mlr' else 'log_norm'}", lwp = "{'max_norm' if kind == 'mlr' else 'log_norm'}", iwv = "z_norm" }}
 '''
     if kind != 'spectral':
         settings += 'output_vars = ["T", "rh", "lwc", "lwp", "iwv"]\nheights = [0.0, 1000.0]\nadditional_input_vars = []\n'
@@ -30,10 +30,12 @@ norm_functions = {{ TB = "z_norm", T = "z_norm", rh = "z_norm", lwc = "{'max_nor
             settings += f'hidden_layers = [4]\ndropout_rate = 0.0\nloss_weights = {{ {weights}, lwp = 1.0, iwv = 1.0 }}\n'
     else:
         settings += 'hidden_layer_size = 4\n'
+        start = settings.index('normalization = ')
+        settings = settings[:start] + 'normalization = { TB = "z_norm" }\nhidden_layer_size = 4\n'
     if mode == 'bls':
-        settings += 'angles = [90.0, 30.0]\nvary_input_noise_with_angle_linear = true\n'
+        settings += 'angles = [90.0, 30.0]\n'
     training = ('' if kind == 'mlr' else
-                'epochs = 1\nbatch_size = 4\nlr_height = 0.002\nlr_low = 1e-7\nepoch_max_lr = 50\nloss_fn = "MAE"\nweight_decay = 1e-5\n')
+                'epochs = 1\nbatch_size = 4\nlearning_rate_max = 0.002\nlearning_rate_min = 1e-7\nlearning_rate_peak_epoch = 50\nloss = "MAE"\nweight_decay = 1e-5\n')
     variant = f'dataset = "training_{suffix}"\n' if suffix else 'dataset = "training"\n'
     settings += f'''
 [data]
@@ -45,16 +47,16 @@ seed = 42
 {training}
 
 [input_noise]
-method = "standard"
+{'angle_dependence = "linear"' if mode == 'bls' else ''}
+method = "specified"
 TB = 0.0
-{'TB_angle_factor = 3.0' if mode == 'bls' else ''}
+{'angle_factor = 3.0' if mode == 'bls' else ''}
 
 [optimization]
 seed = 42
 days_of_month = {{ first = 1, last = 20 }}
 score_weights = {{ T = 1.0, rh = 0.1 }}
 n_trials = 1
-data_source = "radiosonde"
 dataset = "analysis_radiosonde"
 '''
     if kind == 'spectral':
@@ -63,13 +65,13 @@ dataset = "analysis_radiosonde"
         if kind == 'mlr':
             settings = settings.replace('TB = 0.0', 'TB = { low = 0.001, high = 0.002 }')
         else:
-            settings = settings.replace('lr_height = 0.002', 'lr_height = { low = 0.001, high = 0.002 }')
+            settings = settings.replace('learning_rate_max = 0.002', 'learning_rate_max = { low = 0.001, high = 0.002 }')
     recipe = directory / 'retrieval.toml'
     recipe.write_text(settings)
     import tomli_w
     dataset_name = f'training_{suffix}' if suffix else 'training'
     evaluation = {'schema_version': 1, 'retrievals': ['example'],
-                  'observations': {'dataset': 'analysis_radiosonde', 'data_source': 'radiosonde',
+                  'observations': {'dataset': 'analysis_radiosonde',
                                    'station_id': '03715', 'variables': ['TB'] if kind == 'spectral' else ['T', 'rh'],
                                    'days_of_month': {'first': 21, 'last': 31}},
                   'test': {'dataset': dataset_name, 'sources': ['03715'],
@@ -82,7 +84,7 @@ dataset = "analysis_radiosonde"
     (evaluation_dir / 'example.toml').write_text(tomli_w.dumps(evaluation))
     for name, definition in {
         'radiosondes': {'kind': 'radiosonde', 'stations': ['03715'], 'start_year': 1990, 'end_year': 'current_year'},
-        'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0], 'incomplete_profiles': 'monthly_mean', 'cloud': {'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction': 'power_law', 'a': 0.7, 'b': 2.3}, 'quality': {'min_top_height': 15000, 'min_levels': 500}}},
+        'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0], 'incomplete_profiles': 'monthly_mean', 'cloud': {'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'power_law', 'a': 0.7, 'b': 2.3}, 'quality': {'min_top_height': 15000, 'min_levels': 500}}},
         'simulation_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
                           'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R20',
                                                  'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0],

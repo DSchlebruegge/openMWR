@@ -5,13 +5,17 @@ from pathlib import Path
 from importlib.resources import files
 import tomllib
 
-from openMWR.config import (TRAINING_PARAMETERS, check_keys,
-                            check_number, check_name, check_strings, check_coordinates,
+from openMWR.config import (TRAINING_SETTINGS, training_parameters, check_keys,
+                            check_number, check_name, check_strings,
                             validate_parameter_usage, resolve_parameter, input_noise_parameters,
                             require_keys, load_grid, apply_seed, check_seed, check_time_selection, TIME_SELECTION_KEYS,
-                            check_score_weights, check_output_vars)
+                            check_score_weights, check_output_vars, check_learning_rates,
+                            resolve_coordinate_table)
 from openMWR.paths import project_root, retrieval_dir, site_config_file
 from openMWR.site import SiteConfig, load_site_config
+
+_NOISE_CONTROLS = {'method', 'angle_dependence', 'angle_factors', 'channel_noise'}
+_REFERENCE_KEYS = {'data_source', 'dataset', 'sources', 'factor', 'statistic', 'frequency_bands', 'max_lwp', *TIME_SELECTION_KEYS}
 
 
 def load_retrieval_template(name):
@@ -27,6 +31,39 @@ def _check_reference(settings, section):
         raise ValueError(f"{section}.data_source must be 'radiosonde' or 'era5'.")
     if 'dataset' in settings:
         check_name(settings['dataset'], f'{section}.dataset')
+    if 'sources' in settings:
+        check_strings(settings['sources'], f'{section}.sources')
+        if not settings['sources']:
+            raise ValueError(f'{section}.sources must not be empty.')
+        for source in settings['sources']:
+            check_name(source, f'{section}.sources')
+
+
+def noise_parameters(settings):
+    """Lower recipe noise tables to distinct checkpoint/study parameter names."""
+    metadata = _NOISE_CONTROLS | (_REFERENCE_KEYS if settings.get('method') == 'omb' else set())
+    values = {key: value for key, value in settings.items() if key not in metadata}
+    for key in values:
+        if key.startswith('TB_angle_'):
+            raise ValueError(f'Unknown input_noise setting {key!r}. Use angle_factor or the angle_factors table.')
+        if key.startswith('TB_'):
+            try:
+                float(key.removeprefix('TB_'))
+            except ValueError:
+                continue
+            raise ValueError(f'Unknown input_noise setting {key!r}. Put frequency-specific values in input_noise.channel_noise.')
+    if 'angle_factor' in values:
+        values['TB_angle_factor'] = values.pop('angle_factor')
+    for field, prefix in (('channel_noise', 'TB_'), ('angle_factors', 'TB_angle_')):
+        if field not in settings:
+            continue
+        label = f'input_noise.{field}'
+        for coordinate, value in resolve_coordinate_table(settings[field], label).items():
+            if field == 'angle_factors' and not 0 < coordinate <= 90:
+                raise ValueError(f'{label} angles must be above 0 and at most 90 degrees.')
+            key = f'{prefix}{coordinate}'
+            values[key] = value
+    return values
 
 
 @dataclass(frozen=True)
@@ -62,9 +99,8 @@ class RetrievalRecipe:
     @property
     def requires_optimization(self):
         """Whether the recipe defines searches in its training or input noise."""
-        return any(isinstance(value, dict)
-                   for section in ('training', 'input_noise')
-                   for key, value in self.section(section).items() if key != 'days_of_month')
+        return any(isinstance(value, dict) for value in self.section('training').values()) or any(
+            isinstance(value, dict) for value in noise_parameters(self.section('input_noise')).values())
 
     def _validate(self):
         check_keys(self.values, ("schema_version", "model", "data", "training", "input_noise", "bias_correction", "optimization"), "recipe")
@@ -74,20 +110,19 @@ class RetrievalRecipe:
             table = self.section(section)
             if isinstance(table, dict):
                 for key, value in table.items():
-                    if isinstance(value, dict) and key not in ('days_of_month', 'score_weights') and (section, key) not in (("model", "norm_functions"), ("model", "loss_weights")):
+                    if isinstance(value, dict) and key not in ('days_of_month', 'score_weights') and (section, key) not in (("model", "normalization"), ("model", "loss_weights")):
                         raise ValueError(f"Search definitions are supported only in training and input_noise; {section}.{key} does not support a search.")
         model = self.section("model")
-        check_keys(model, ("kind", "mode", "freqs", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "output_vars", "norm_functions", "loss_weights", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"), "model")
-        require_keys(model, ('kind', 'mode', 'freqs', 'norm_functions'), 'model')
+        check_keys(model, ("kind", "mode", "frequencies", "heights", "angles", "hidden_layers", "hidden_layer_size", "dropout_rate", "additional_input_vars", "output_vars", "normalization", "loss_weights"), "model")
+        require_keys(model, ('kind', 'mode', 'frequencies', 'normalization'), 'model')
         if model["kind"] not in ("nn", "mlr", "spectral"):
             raise ValueError("model.kind must be 'nn', 'mlr', or 'spectral'.")
         if model['mode'] not in ("zenith", "bls"):
             raise ValueError("model.mode must be 'zenith' or 'bls'.")
         settings = dict(model)
-        for key in ("freqs", "heights", "angles"):
+        for key in ("frequencies", "heights", "angles"):
             if key in model and model[key] != 'dataset':
-                settings[key] = load_grid(self.project_dir, 'frequencies' if key == 'freqs' else key,
-                                          model[key], label=f'model.{key}')
+                settings[key] = load_grid(self.project_dir, key, model[key], label=f'model.{key}')
         if "hidden_layers" in model:
             if not isinstance(model["hidden_layers"], list) or not model["hidden_layers"]:
                 raise ValueError("model.hidden_layers must be a nonempty list.")
@@ -99,19 +134,14 @@ class RetrievalRecipe:
             check_number(model["dropout_rate"], "model.dropout_rate", 0)
             if model["dropout_rate"] >= 1:
                 raise ValueError("model.dropout_rate must be below 1.")
-        for key in ("vary_input_noise_with_angle", "vary_input_noise_with_angle_linear"):
-            if key in model and type(model[key]) is not bool:
-                raise ValueError(f"model.{key} must be true or false.")
-        if model.get("vary_input_noise_with_angle") and model.get("vary_input_noise_with_angle_linear"):
-            raise ValueError("Select only one angle-dependent input noise scheme.")
-        if model['mode'] != "bls" and any(k in model for k in ("angles", "vary_input_noise_with_angle", "vary_input_noise_with_angle_linear")):
-            raise ValueError("Angles and angle-dependent noise require model.mode = 'bls'.")
+        if model['mode'] != 'bls' and 'angles' in model:
+            raise ValueError("Angles require model.mode = 'bls'.")
         if model["kind"] == "spectral":
-            check_keys(model, ("kind", "mode", "freqs", "hidden_layer_size", "norm_functions"), "spectral model")
+            check_keys(model, ("kind", "mode", "frequencies", "hidden_layer_size", "normalization"), "spectral model")
             if model['mode'] != "zenith":
                 raise ValueError("Spectral models use zenith observations.")
             require_keys(model, ('hidden_layer_size',), 'model')
-            if model['freqs'] != 'dataset' and len(settings['freqs']) < 2:
+            if model['frequencies'] != 'dataset' and len(settings['frequencies']) < 2:
                 raise ValueError("Spectral models require at least two frequencies.")
         elif "hidden_layer_size" in model:
             raise ValueError("model.hidden_layer_size is only used by spectral models.")
@@ -132,8 +162,11 @@ class RetrievalRecipe:
                     raise ValueError(f"model.{key} is not used by mlr models.")
         if "additional_input_vars" in model:
             check_strings(model["additional_input_vars"], "model.additional_input_vars")
-        if not isinstance(model["norm_functions"], dict) or any(v not in ("z_norm", "std_norm", "log_norm", "max_norm") for v in model["norm_functions"].values()):
-            raise ValueError("model.norm_functions must map variables to supported normalization functions.")
+        if not isinstance(model["normalization"], dict) or any(v not in ("z_norm", "std_norm", "log_norm", "max_norm") for v in model["normalization"].values()):
+            raise ValueError("model.normalization must map variables to supported normalization functions.")
+        variables = {'TB', *model.get('additional_input_vars', []), *model.get('output_vars', [])}
+        check_keys(model['normalization'], variables, 'model.normalization')
+        require_keys(model['normalization'], variables, 'model.normalization')
 
         data = self.section("data")
         check_keys(data, ('dataset', 'sources'), 'data')
@@ -144,29 +177,39 @@ class RetrievalRecipe:
                 raise ValueError('data.sources must not be empty.')
             for source in data['sources']:
                 check_name(source, 'data.sources')
-        check_keys(self.section("training"), TRAINING_PARAMETERS, "training")
-        validate_parameter_usage(model["kind"] == "mlr", self.section("training"), complete=True)
-        for key, value in self.section("training").items():
-            resolve_parameter(value, key, f"training.{key}")
+        training = self.section('training')
+        check_keys(training, TRAINING_SETTINGS, 'training')
+        parameters = {TRAINING_SETTINGS[key]: value for key, value in training.items()}
+        validate_parameter_usage(model['kind'] == 'mlr', parameters)
+        required = training_parameters(model['kind'] == 'mlr', parameters.get('loss_fn'))
+        require_keys(training, {key for key, parameter in TRAINING_SETTINGS.items() if parameter in required}, 'training')
+        for key, value in training.items():
+            resolve_parameter(value, TRAINING_SETTINGS[key], f'training.{key}')
+        check_learning_rates(parameters)
         noise = self.section("input_noise")
         if not isinstance(noise, dict):
             raise ValueError("input_noise must be a TOML table.")
         method = noise.get("method")
-        if method not in ("standard", "omb"):
-            raise ValueError("input_noise.method must be 'standard' or 'omb'.")
+        if method not in ('specified', 'omb'):
+            raise ValueError("input_noise.method must be 'specified' or 'omb'.")
         if "search" in noise:
             raise ValueError("Unknown input_noise setting 'search'. Put search definitions directly in the parameter values.")
-        for key, value in noise.items():
-            if key == "method":
-                continue
-            if method != "omb" or key not in ("data_source", "dataset", "sources", "factor", "statistic", "frequency_bands", "max_lwp", *TIME_SELECTION_KEYS):
-                resolve_parameter(value, f"input_noise_{key}", f"input_noise.{key}")
+        angle_method = noise.get('angle_dependence', 'none')
+        if angle_method not in ('none', 'linear', 'per_angle'):
+            raise ValueError('input_noise.angle_dependence must be none, linear or per_angle.')
+        if model['mode'] != 'bls' and any(key in noise for key in ('angle_dependence', 'angle_factor', 'angle_factors')):
+            raise ValueError('Angle-dependent input noise requires a BLS model.')
+        for key, used in (('angle_factor', angle_method == 'linear'), ('angle_factors', angle_method == 'per_angle')):
+            if used:
+                require_keys(noise, (key,), 'input_noise')
+            elif key in noise:
+                raise ValueError(f'input_noise.{key} is not used by angle_dependence = {angle_method}.')
+        for key, value in noise_parameters(noise).items():
+            resolve_parameter(value, f'input_noise_{key}', f'input_noise.{key}')
         if method == "omb":
-            require_keys(noise, ('data_source', 'dataset', 'factor', 'statistic'), 'input_noise')
+            require_keys(noise, ('dataset', 'factor', 'statistic'), 'input_noise')
             check_time_selection(noise, 'input_noise')
             _check_reference(noise, 'input_noise')
-            if "sources" in noise:
-                check_strings(noise["sources"], "input_noise.sources")
             if isinstance(noise["factor"], dict):
                 raise ValueError("input_noise.factor does not support a search; use a fixed OMB scaling factor.")
             check_number(noise["factor"], "input_noise.factor", 0)
@@ -181,22 +224,20 @@ class RetrievalRecipe:
             if 'max_lwp' in noise:
                 check_number(noise['max_lwp'], 'input_noise.max_lwp', 0)
         bias = self.section("bias_correction")
-        check_keys(bias, ("data_source", "dataset", "sources", "factor", "specific_freqs", "max_lwp", *TIME_SELECTION_KEYS), "bias_correction")
+        check_keys(bias, ("data_source", "dataset", "sources", "factor", "frequencies", "max_lwp", *TIME_SELECTION_KEYS), "bias_correction")
         if 'bias_correction' in self.values:
-            require_keys(bias, ('data_source', 'dataset', 'factor'), 'bias_correction')
+            require_keys(bias, ('dataset', 'factor'), 'bias_correction')
             check_time_selection(bias, 'bias_correction')
             _check_reference(bias, 'bias_correction')
             check_number(bias["factor"], "bias_correction.factor", 0)
             if 'max_lwp' in bias:
                 check_number(bias['max_lwp'], 'bias_correction.max_lwp', 0)
-            if "sources" in bias:
-                check_strings(bias["sources"], "bias_correction.sources")
-            if "specific_freqs" in bias:
-                check_coordinates(bias["specific_freqs"], "bias_correction.specific_freqs")
+            if "frequencies" in bias:
+                load_grid(self.project_dir, 'frequencies', bias['frequencies'], label='bias_correction.frequencies')
         optimization = self.section("optimization")
-        check_keys(optimization, ("n_trials", "data_source", "dataset", "seed", "score_weights", *TIME_SELECTION_KEYS), "optimization")
+        check_keys(optimization, ("n_trials", "data_source", "dataset", "sources", "seed", "score_weights", *TIME_SELECTION_KEYS), "optimization")
         if self.requires_optimization:
-            require_keys(optimization, ('n_trials', 'data_source', 'dataset', 'seed', 'score_weights'), 'optimization')
+            require_keys(optimization, ('n_trials', 'dataset', 'seed', 'score_weights'), 'optimization')
         if "n_trials" in optimization:
             check_number(optimization["n_trials"], "optimization.n_trials", 1, integer=True)
         _check_reference(optimization, 'optimization')
@@ -216,36 +257,43 @@ class RetrievalRecipe:
         kind = settings.pop("kind")
         mode = settings.pop('mode')
         inherited = {}
-        if any(settings.get(key) == 'dataset' for key in ('freqs', 'heights', 'angles')):
+        if any(settings.get(key) == 'dataset' for key in ('frequencies', 'heights', 'angles')):
             from openMWR.datasets import DatasetWorkflow
             inherited = DatasetWorkflow(self.project_dir, self.site, site_config=self.site_config).coordinates(self.section('data')['dataset'])
-        for key in ('freqs', 'heights', 'angles'):
+        for key in ('frequencies', 'heights', 'angles'):
             if key in settings:
-                coordinate_kind = 'frequencies' if key == 'freqs' else key
-                value = inherited[coordinate_kind] if settings[key] == 'dataset' else settings[key]
+                value = inherited[key] if settings[key] == 'dataset' else settings[key]
                 settings[key] = np.asarray(value, dtype=float)
+        settings['freqs'] = settings.pop('frequencies')
+        settings['norm_functions'] = settings.pop('normalization')
         if kind == "spectral":
             if len(settings['freqs']) < 2:
                 raise ValueError('Spectral models require at least two frequencies.')
             model = SpectralConsistencyModel(self.name, **settings)
         else:
+            if mode == 'bls':
+                method = self.section('input_noise').get('angle_dependence', 'none')
+                settings['vary_input_noise_with_angle'] = method == 'per_angle'
+                settings['vary_input_noise_with_angle_linear'] = method == 'linear'
             if kind == 'nn':
                 settings.setdefault('dropout_rate', 0.0)
             settings.setdefault('heights', None)
             model = Model(self.name, is_MLR=kind == 'mlr', is_bls_model=mode == 'bls', **settings)
-        require_keys(model.norm_functions, set(model.input.data_vars) | set(model.output.data_vars), 'model.norm_functions')
         return model
 
     def training_params(self, workflow):
         """Resolve fixed values and searches where training parameters are defined."""
-        return {key: resolve_parameter(value, key, f"training.{key}", workflow)
+        return {TRAINING_SETTINGS[key]: resolve_parameter(value, TRAINING_SETTINGS[key], f"training.{key}", workflow)
                 for key, value in self.section("training").items()}
 
     def input_noise_params(self, workflow):
         """Resolve complete fixed/search noise settings; OMB supplies TB noise."""
         settings = self.section("input_noise")
-        metadata = {"method", "data_source", "dataset", "sources", "factor", "statistic", "frequency_bands", "max_lwp", *TIME_SELECTION_KEYS} if settings["method"] == "omb" else {"method"}
-        noise = {key: value for key, value in settings.items() if key not in metadata}
+        if settings.get('angle_dependence') == 'per_angle':
+            required_angles = {float(angle) for angle in workflow.model.angles}
+            if {float(angle) for angle in settings['angle_factors']} != required_angles:
+                raise ValueError(f'input_noise.angle_factors must specify exactly the selected angles {sorted(required_angles)}.')
+        noise = noise_parameters(settings)
         if "TB" in noise:
             tb = noise.pop("TB")
             noise = {**{f"TB_{f}": tb for f in workflow.model.freqs}, **noise}

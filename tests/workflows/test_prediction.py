@@ -172,7 +172,7 @@ def test_configuration_and_checkpoint_selection_before_writing(prediction_projec
 
 def test_default_output_and_missing_saved_predictions(prediction_project):
     config = prediction_project / 'sites/test/site.toml'
-    config.write_text(config.read_text().replace('retrieval_output_dir = "published"\n', ''))
+    config.write_text(config.read_text().replace('output_dir = "published"\n', ''))
     workflow = PredictionWorkflow(prediction_project, 'test', ['primary'])
     path, = workflow.save(workflow.predict('2024-01-01'))
     assert path == prediction_project / 'data/sites/test/predictions/2024/01/20240101_retrieval.nc'
@@ -200,7 +200,7 @@ periods = [{ start_date = "2024-01-01", end_date = "2024-01-01" }]
 reason = "Station unavailable"
 ''')
     observations = import_hatpro_data(datetime(2024, 1, 1), 'test', prediction_project,
-                                     mean_one_min=True, import_retrieval_data=False)
+                                     mean_one_min=True, include_rpg=False)
     assert observations.time.size == 6 and np.isfinite(observations.TB).all()
     workflow = PredictionWorkflow(prediction_project, 'test', ['without_weather'])
     loaded = workflow.predict('2024-01-01', observations=observations)

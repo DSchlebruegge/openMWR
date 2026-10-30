@@ -3,12 +3,12 @@ retrievals = ["SPC_example"]
 
 [observations]
 dataset = "analysis_radiosonde"
-data_source = "radiosonde"
 station_id = "03715"
 variables = ["TB"]
 days_of_month = { first = 21, last = 31 }
 
 [test]
 dataset = "training"
-sources = ["03715"]
+# Omit sources to use every source in this split dataset.
+# sources = ["03715"]
 variables = ["TB"]

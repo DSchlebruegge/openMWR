@@ -12,6 +12,13 @@ from openMWR.paths import project_root
 INTEGER_TRAINING = ("epochs", "batch_size", "epoch_max_lr")
 _NN_TRAINING = {"epochs", "batch_size", "lr_height", "lr_low", "epoch_max_lr", "loss_fn", "weight_decay"}
 TRAINING_PARAMETERS = _NN_TRAINING | {"seed", "bias_weight"}
+# Recipes use descriptive names. Checkpoint and Optuna parameter names are a
+# storage contract and are resolved at the recipe boundary.
+TRAINING_SETTINGS = {key: key for key in TRAINING_PARAMETERS - {'lr_height', 'lr_low', 'epoch_max_lr', 'loss_fn'}} | {
+    'learning_rate_max': 'lr_height', 'learning_rate_min': 'lr_low',
+    'learning_rate_peak_epoch': 'epoch_max_lr', 'loss': 'loss_fn',
+}
+TRAINING_NAMES = {value: key for key, value in TRAINING_SETTINGS.items()}
 TIME_SELECTION_KEYS = ('start_date', 'end_date', 'days_of_month')
 PROFILE_OUTPUTS = ('T', 'rh', 'lwc', 'lwp', 'iwv')
 
@@ -132,7 +139,7 @@ def check_cloud(cloud):
             raise ValueError(f'{label} requires 0 <= a <= 1 and b > 0.')
     elif method in ('karstens', 'none'):
         if {'a', 'b'} & cloud.keys():
-            raise ValueError(f'{label}: a and b apply only to power_law; remove them for {method}.')
+            raise ValueError(f'{label}: a and b apply only to power_law; remove them for this method.')
     else:
         raise ValueError(f"{label}.adiabatic_fraction must be 'power_law', 'karstens' or 'none'.")
 
@@ -248,7 +255,7 @@ def input_noise_parameters(model):
     names.update(var for var in model.input_vars if var != 'TB')
     if model.is_bls_model:
         if model.vary_input_noise_with_angle:
-            names.update(f'TB_{angle}' for angle in model.angles)
+            names.update(f'TB_angle_{angle}' for angle in model.angles)
         elif model.vary_input_noise_with_angle_linear:
             names.add('TB_angle_factor')
     return names
@@ -329,21 +336,53 @@ def check_coordinates(values, label, minimum=0):
         raise ValueError(f"{label} must not contain duplicates.")
 
 
+def resolve_coordinate_table(table, label):
+    """Resolve numeric TOML keys, rejecting aliases for the same coordinate."""
+    if not isinstance(table, dict) or not table:
+        raise ValueError(f'{label} must be a nonempty table keyed by numeric coordinates.')
+    resolved = {}
+    for coordinate, value in table.items():
+        try:
+            coordinate = float(coordinate)
+        except (TypeError, ValueError):
+            raise ValueError(f'{label} keys must be numeric coordinates.') from None
+        check_number(coordinate, label, 0)
+        if coordinate in resolved:
+            raise ValueError(f'Duplicate {label} coordinate {coordinate}.')
+        resolved[coordinate] = value
+    return resolved
+
+
+def check_learning_rates(settings):
+    """Require correctly ordered fixed rates and independent search spaces."""
+    def candidates(value):
+        if hasattr(value, '_asdict'):
+            value = value._asdict()
+        if isinstance(value, dict):
+            return value['choices'] if 'choices' in value else (value['low'], value['high'])
+        return (value,)
+
+    if {'lr_low', 'lr_height'} <= settings.keys():
+        if max(candidates(settings['lr_low'])) > min(candidates(settings['lr_height'])):
+            raise ValueError('training.learning_rate_min must not exceed learning_rate_max, including every combination in their search ranges or choices.')
+
+
 def validate_training_settings(settings):
     """Check fixed training values, also used for resolved optimization trials."""
     for key in INTEGER_TRAINING:
         if key in settings:
-            check_number(settings[key], f"training.{key}", 0 if key == "epoch_max_lr" else 1, integer=True)
+            check_number(settings[key], f"training.{TRAINING_NAMES[key]}", 0 if key == "epoch_max_lr" else 1, integer=True)
     for key in ("lr_height", "lr_low", "weight_decay", "bias_weight"):
         if key in settings:
-            check_number(settings[key], f"training.{key}", 0)
+            check_number(settings[key], f"training.{TRAINING_NAMES[key]}", 0)
     if 'seed' in settings:
         check_seed(settings['seed'], 'training.seed')
     if "loss_fn" in settings and settings["loss_fn"] not in ("MAE", "MSE", "MAEPlusBiasLoss", "MSEPlusBiasLoss"):
-        raise ValueError(f"Unknown training.loss_fn: {settings['loss_fn']!r}.")
+        raise ValueError(f"Unknown training.loss: {settings['loss_fn']!r}.")
     for key, value in settings.items():
         if key.startswith("input_noise_"):
             check_number(value, key, 0)
+    check_learning_rates(settings)
 
 
 def validate_parameter_usage(is_mlr, settings, *, complete=False):

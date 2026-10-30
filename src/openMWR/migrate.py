@@ -17,6 +17,23 @@ from openMWR.paths import checkpoint_file, project_root, site_config_file, site_
 logger = logging.getLogger(__name__)
 
 
+def _convert_angle_noise(checkpoint):
+    """Separate historical per-angle factors from channel noise parameter names."""
+    structure, parameters = checkpoint['structure'], checkpoint['hyper_params']
+    if not structure.get('is_bls_model') or not structure.get('vary_input_noise_with_angle'):
+        return False
+    channels = {f'input_noise_TB_{frequency}' for frequency in structure['freqs']}
+    changed = False
+    for angle in structure['angles']:
+        old, new = f'input_noise_TB_{angle}', f'input_noise_TB_angle_{angle}'
+        if new not in parameters and old in parameters:
+            parameters[new] = parameters[old]
+            if old not in channels:
+                del parameters[old]
+            changed = True
+    return changed
+
+
 def _convert_checkpoint(path, name):
     import torch
     import xarray as xr
@@ -27,7 +44,7 @@ def _convert_checkpoint(path, name):
     version = checkpoint.get('format_version')
     if version == CHECKPOINT_VERSION:
         _read_checkpoint(path)
-        return None
+        return _checkpoint_payload(checkpoint) if _convert_angle_noise(checkpoint) else None
     if version not in (None, 1):
         raise ValueError(f'Unsupported checkpoint format {version!r}.')
     structure = checkpoint['structure']
@@ -59,6 +76,7 @@ def _convert_checkpoint(path, name):
     checkpoint['structure'] = model.checkpoint_structure()
     checkpoint['model_class'] = kind
     checkpoint['format_version'] = CHECKPOINT_VERSION
+    _convert_angle_noise(checkpoint)
     return _checkpoint_payload(checkpoint)
 
 
@@ -130,6 +148,13 @@ def migrate_project(project_dir, *, dry_run=False):
                     raise ValueError('site configuration must be a JSON object.')
                 settings = {key: value for key, value in settings.items() if value is not None}
                 settings.setdefault('hatpro_format', 'netcdf')
+                if 'gen' in settings:
+                    settings['instrument_generation'] = settings.pop('gen')
+                if 'retrieval_output_dir' in settings:
+                    settings.setdefault('prediction', {})['output_dir'] = settings.pop('retrieval_output_dir')
+                for old_key, key in (('plot_dir', 'plot_dir'), ('rpg_retrieval_exists', 'include_rpg')):
+                    if old_key in settings:
+                        settings.setdefault('custom', {})[key] = settings.pop(old_key)
                 extra = {key: settings.pop(key) for key in list(settings) if key not in SITE_KEYS}
                 if extra:
                     settings['custom'] = {**extra, **settings.get('custom', {})}

@@ -12,11 +12,11 @@ from openMWR.paths import project_root, site_root, site_data_dir, site_config_fi
 
 logger = logging.getLogger(__name__)
 
-SITE_KEYS = {'gen', 'mwr_height', 'latitude', 'longitude', 'hatpro_data_dir',
-             'hatpro_format', 'hatpro_time_offset_hours', 'rpg_retrieval_exists',
-             'mwr_measurement_start_date', 'plot_dir', 'retrieval_output_dir',
+SITE_KEYS = {'instrument_generation', 'mwr_height', 'latitude', 'longitude', 'hatpro_data_dir',
+             'hatpro_format', 'hatpro_time_offset_hours',
+             'mwr_measurement_start_date',
              'prediction', 'invalid_measurements', 'calibration_dates', 'custom'}
-_PATH_KEYS = {'hatpro_data_dir', 'plot_dir', 'retrieval_output_dir'}
+_PATH_KEYS = {'hatpro_data_dir'}
 
 
 @dataclass(frozen=True)
@@ -51,8 +51,8 @@ class SiteConfig(Mapping):
 
 def _validate_site(values):
     check_keys(values, SITE_KEYS, 'site')
-    if 'gen' in values and values['gen'] not in ('G4', 'G5'):
-        raise ValueError('site.gen must be "G4" or "G5".')
+    if 'instrument_generation' in values and values['instrument_generation'] not in ('G4', 'G5'):
+        raise ValueError('site.instrument_generation must be "G4" or "G5".')
     for key, limits in (('mwr_height', None), ('latitude', (-90, 90)), ('longitude', (-180, 180))):
         if key in values:
             check_number(values[key], f'site.{key}')
@@ -62,8 +62,6 @@ def _validate_site(values):
         if key in values and (not isinstance(values[key], str) or not values[key].strip()):
             raise ValueError(f'site.{key} must be a nonempty path.')
     check_hatpro_format(values.get('hatpro_format', 'auto'), values.get('hatpro_time_offset_hours'))
-    if 'rpg_retrieval_exists' in values and type(values['rpg_retrieval_exists']) is not bool:
-        raise ValueError('site.rpg_retrieval_exists must be true or false.')
     if 'mwr_measurement_start_date' in values:
         check_time_selection({'start_date': values['mwr_measurement_start_date']}, 'site')
     if 'calibration_dates' in values:
@@ -72,7 +70,9 @@ def _validate_site(values):
             check_time_selection({'start_date': value}, 'site.calibration_dates')
     if 'prediction' in values:
         prediction = values['prediction']
-        check_keys(prediction, ('retrievals',), 'prediction')
+        check_keys(prediction, ('retrievals', 'output_dir'), 'prediction')
+        if 'output_dir' in prediction and (not isinstance(prediction['output_dir'], str) or not prediction['output_dir'].strip()):
+            raise ValueError('prediction.output_dir must be a nonempty path.')
         if 'retrievals' in prediction:
             check_strings(prediction['retrievals'], 'prediction.retrievals')
             if not prediction['retrievals']:
@@ -101,6 +101,8 @@ def load_site_config(site, project_dir, *, config=None):
         raise ValueError(f'{path}: {exc}') from exc
     for key in _PATH_KEYS & values.keys():
         values[key] = str(root / Path(values[key]).expanduser())
+    if 'output_dir' in values.get('prediction', {}):
+        values['prediction']['output_dir'] = str(root / Path(values['prediction']['output_dir']).expanduser())
     return SiteConfig(site, root, values)
 
 
@@ -163,7 +165,7 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
             Directory where the MWR (HATPRO) data is stored.  
             Must contain year-based subfolders (e.g. ``Y2024``, ``Y2025``).
 
-        gen : str
+        instrument_generation : str
             Generation of the HATPRO microwave radiometer (e.g. ``"G4"``, ``"G5"``).
 
         hatpro_format : str, optional
@@ -177,9 +179,6 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
 
         mwr_height : float or int
             Height of the MWR above sea level (in meters).
-
-        rpg_retrieval_exists : bool
-            Indicates whether an operational RPG retrieval product exists for the site.
 
         mwr_measurement_start_date : str
             Start date of the MWR measurement time series  
@@ -195,8 +194,8 @@ def create_site(site: str, project_dir: str, *, with_examples: bool = False, **c
         longitude : float
             Geographic longitude of the site in decimal degrees.
 
-        plot_dir : str, optional
-            Directory where plots should be saved (e.g. when running operational scripts).
+        prediction : dict, optional
+            Retrieval selection and optional output_dir for daily prediction.
 
         Project-specific parameters can be supplied in a ``custom`` dictionary
         and are saved in the ``[custom]`` table.
@@ -267,7 +266,7 @@ def get_invalid_measurements(site, project_dir, *, site_config=None):
 def prediction_output_dir(project_dir, site, output_dir=None, *, site_config=None):
     """Resolve the shared directory for daily prediction files and their log."""
     if output_dir is None:
-        output_dir = load_site_config(site, project_dir, config=site_config).get('retrieval_output_dir')
+        output_dir = load_site_config(site, project_dir, config=site_config).get('prediction', {}).get('output_dir')
     if output_dir is None:
         return site_data_dir(project_dir, site, PREDICTIONS_DIR)
     return project_root(project_dir) / Path(output_dir).expanduser()

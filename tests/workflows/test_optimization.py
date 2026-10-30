@@ -43,9 +43,18 @@ def test_continuation_rejects_changed_selected_data_without_replacing_results(tm
 
 def test_continuation_uses_selected_values_instead_of_file_encoding_or_unrelated_dates(tmp_path):
     recipe, _ = retrieval_project(tmp_path)
-    first = training_workflow(tmp_path).optimize(n_trials=1)
+    recipe.write_text(recipe.read_text().replace('[optimization]', '[optimization]\nsources = ["03715"]'))
     path = tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc'
     data = xr.load_dataset(path)
+    data = xr.concat([data, data.assign_coords(station=['02290'])], dim='station')
+    data.to_netcdf(path)
+    first = training_workflow(tmp_path).optimize(n_trials=1)
+    assert first.user_attrs['openMWR_experiment']['optimization']['sources'] == ['03715']
+    # Ineffective normalizers in saved provenance do not change the experiment.
+    definition = first.user_attrs['openMWR_experiment']
+    definition['model']['norm_functions']['unused_sensor'] = 'z_norm'
+    first.set_user_attr('openMWR_experiment', definition)
+    data['T'].loc[{'station': '02290'}] += 1000
     # Dates 21-31 and unselected variables do not rank these trials.
     data['T'].loc[{'time': slice('2024-01-21', None)}] += 50
     data['unrelated'] = data.T * 2
@@ -173,9 +182,9 @@ def test_optimization_runs_for_scan_and_spectral_models(kind, mode, tmp_path, mo
 def test_noise_search_uses_fixed_channels_and_explicit_ranges(tmp_path):
     recipe, data = retrieval_project(tmp_path, 'nn', 'bls', search=False)
     tb = '{ low = 0.1, high = 0.2 }'
-    settings = recipe.read_text().replace('TB_angle_factor = 3.0', '').replace('TB = 0.0', f'''TB = {tb}
-"TB_22.24" = 0.35
-TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
+    settings = recipe.read_text().replace('angle_factor = 3.0', '').replace('TB = 0.0', f'''TB = {tb}
+channel_noise = {{ "22.240" = 0.35 }}
+angle_factor = {{ low = 1.5, high = 3.0 }}''')
     recipe.write_text(settings)
     TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize()
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
@@ -198,13 +207,19 @@ TB_angle_factor = {{ low = 1.5, high = 3.0 }}''')
 def test_training_search_supports_integer_choices_log_ranges_and_overrides(tmp_path):
     recipe, data = retrieval_project(tmp_path, 'nn')
     settings = recipe.read_text().replace('batch_size = 4', 'batch_size = { choices = [2, 4] }')
-    settings = settings.replace('epoch_max_lr = 50', 'epoch_max_lr = { low = 1, high = 3, step = 1 }')
+    settings = settings.replace('learning_rate_peak_epoch = 50', 'learning_rate_peak_epoch = { low = 1, high = 3, step = 1 }')
     settings = settings.replace('weight_decay = 1e-5', 'weight_decay = { low = 1e-8, high = 1e-4, log = true }')
     recipe.write_text(settings)
     custom = tmp_path / 'data/sites/test/custom_analysis/zenith.nc'
     custom.parent.mkdir()
     (tmp_path / 'data/sites/test/analysis_radiosonde/zenith.nc').rename(custom)
-    TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(
+    paired = xr.load_dataset(custom)
+    other_reference = paired.sel(data_source=['radiosonde']).assign_coords(data_source=['era5'])
+    xr.concat([paired, other_reference], dim='data_source').to_netcdf(custom)
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    with pytest.raises(ValueError, match='multiple references'):
+        workflow.validate_optimization(dataset='custom_analysis')
+    workflow.optimize(
         n_trials=2, data_source='radiosonde', dataset='custom_analysis',
         start_date='2024-01-11', end_date='2024-01-12')
     study = optuna.load_study(study_name='example', storage=f'sqlite:///{tmp_path}/sites/test/retrieval/example/optimization.db')
@@ -283,7 +298,7 @@ def test_seeded_optimization_continuation_matches_uninterrupted_trials(tmp_path)
 
 def test_bias_loss_requires_and_uses_explicit_coefficient(tmp_path, monkeypatch):
     recipe, _ = retrieval_project(tmp_path, kind='nn', search=False)
-    recipe.write_text(recipe.read_text().replace('loss_fn = "MAE"', 'loss_fn = "MAEPlusBiasLoss"'))
+    recipe.write_text(recipe.read_text().replace('loss = "MAE"', 'loss = "MAEPlusBiasLoss"'))
     with pytest.raises(ValueError, match='Missing training settings: bias_weight'):
         RetrievalRecipe.load(tmp_path, 'test', 'example')
     recipe.write_text(recipe.read_text().replace('[training]', '[training]\nbias_weight = { low = 0.1, high = 0.3 }'))
@@ -296,7 +311,7 @@ def test_bias_loss_requires_and_uses_explicit_coefficient(tmp_path, monkeypatch)
 def test_era5_only_recipe_reuses_bias_correction_without_station_ids(tmp_path):
     recipe, data = retrieval_project(tmp_path)
     recipe.write_text(recipe.read_text().replace('sources = ["03715"]', 'sources = ["era5"]')
-                      + '\n[bias_correction]\ndays_of_month = { first = 1, last = 20 }\ndata_source = "era5"\ndataset = "analysis_era5"\nfactor = 0.5\n')
+                      + '\n[bias_correction]\ndays_of_month = { first = 1, last = 20 }\ndataset = "analysis_era5"\nfactor = 0.5\n')
     (tmp_path / 'sites/test/datasets/radiosondes.toml').write_text('kind = "era5"\nstart_date = "2024-01-01"\nend_date = "2024-01-31"\nhour_interval = 6\n')
     profiles_file = tmp_path / 'sites/test/datasets/profiles.toml'
     profiles_file.write_text('kind = "profiles"\n[inputs]\nsource = "radiosondes"\n[preparation]\nheights = [0.0, 1000.0]\n')
@@ -332,9 +347,9 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
     observations = xr.concat([background, measured], dim='data_source').assign_coords(data_source=['era5', 'hatpro'])
     observations.to_netcdf(tmp_path / 'data/sites/test/analysis_era5/zenith.nc')
     settings = tomllib.loads(recipe.read_text())
-    settings['model']['freqs'] = 'hatpro'
+    settings['model']['frequencies'] = 'hatpro'
     settings.pop('optimization')
-    settings['input_noise'] = {'method': 'omb', 'statistic': 'std', 'data_source': 'era5', 'dataset': 'analysis_era5', 'factor': 1.0,
+    settings['input_noise'] = {'method': 'omb', 'statistic': 'std', 'dataset': 'analysis_era5', 'factor': 1.0,
                                'start_date': '2024-01-11', 'end_date': '2024-01-21',
                                'days_of_month': {'first': 1, 'last': 20}}
     recipe.write_text(tomli_w.dumps(settings))
@@ -347,8 +362,8 @@ def test_recipe_recomputes_omb_noise_and_its_factor(tmp_path):
         key = f'input_noise_TB_{frequency}'
         assert np.isfinite(first.hyper_params[key])
         assert second.hyper_params[key] == pytest.approx(2 * first.hyper_params[key])
-    settings['input_noise'].update({'TB_22.24': 0.25, 'TB_31.4': {'low': 0.1, 'high': 0.4}})
-    settings['optimization'] = {'n_trials': 1, 'data_source': 'era5', 'dataset': 'analysis_era5', 'seed': 42, 'days_of_month': {'first': 1, 'last': 20}, 'score_weights': {'T': 1.0, 'rh': 0.1}}
+    settings['input_noise']['channel_noise'] = {'22.240': 0.25, '31.40': {'low': 0.1, 'high': 0.4}}
+    settings['optimization'] = {'n_trials': 1, 'dataset': 'analysis_era5', 'seed': 42, 'days_of_month': {'first': 1, 'last': 20}, 'score_weights': {'T': 1.0, 'rh': 0.1}}
     recipe.write_text(tomli_w.dumps(settings))
     overridden = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
     assert overridden.hyper_params['input_noise_TB_22.24'] == 0.25
@@ -377,7 +392,7 @@ def test_observation_periods_are_shared_by_bias_and_optimization(tmp_path):
     selection = {'start_date': '2024-01-11', 'end_date': '2024-01-22',
                  'days_of_month': {'first': 12, 'last': 22}}
     settings = tomllib.loads(recipe.read_text())
-    settings['bias_correction'] = dict(data_source='radiosonde', dataset='analysis_radiosonde', factor=0.5, **selection)
+    settings['bias_correction'] = dict(dataset='analysis_radiosonde', factor=0.5, **selection)
     settings['optimization'].update(selection, score_weights={'T': 1.0, 'rh': 0.0})
     recipe.write_text(tomli_w.dumps(settings))
     workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')

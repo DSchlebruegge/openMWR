@@ -5,8 +5,22 @@ import pytest
 import xarray as xr
 
 from openMWR.config import check_invalid_measurements
-from openMWR.observations import mask_invalid_measurements, valid_observation_times
+from openMWR.observations import mask_invalid_measurements, valid_observation_times, reference_source
 from openMWR.xr_utils import match_analysis_data, mean_n_min
+
+
+def test_reference_selection_infers_only_an_unambiguous_background():
+    paired = xr.Dataset(coords={'data_source': ['hatpro', 'era5', 'radiosonde']})
+    assert reference_source(paired.sel(data_source=['hatpro', 'era5'])) == 'era5'
+    assert reference_source(paired, 'radiosonde') == 'radiosonde'
+    with pytest.raises(ValueError, match='multiple references'):
+        reference_source(paired)
+    with pytest.raises(ValueError, match='absent'):
+        reference_source(paired.sel(data_source=['hatpro', 'era5']), 'radiosonde')
+    with pytest.raises(ValueError, match='distinct reference sources'):
+        reference_source(paired.sel(data_source=['hatpro']))
+    with pytest.raises(ValueError, match='distinct reference sources'):
+        reference_source(paired.sel(data_source=['hatpro', 'era5', 'era5']))
 
 
 def test_invalid_period_preserves_other_variables_and_cannot_be_bridged_by_matching():

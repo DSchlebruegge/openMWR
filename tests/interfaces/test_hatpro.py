@@ -25,7 +25,7 @@ def site(tmp_path):
     today = pd.Timestamp.now().normalize()
     create_site("test", tmp_path,
                 mwr_measurement_start_date=str((today - pd.Timedelta(days=1)).date()),
-                rpg_retrieval_exists=False, hatpro_data_dir="raw")
+                hatpro_data_dir="raw")
     out_dir = tmp_path / "data/sites/test/hatpro"
     out_dir.mkdir(parents=True)
     return str(tmp_path), out_dir, today
@@ -39,7 +39,7 @@ def test_modes_select_and_clean_only_their_daily_files(site, monkeypatch):
     leftover = out_dir / f"hatpro_data_bls_{today - pd.Timedelta(days=2):%Y%m%d}.nc"
     daily_dataset([today - pd.Timedelta(days=2)], [280], bls=True).to_netcdf(leftover)
 
-    def create_day(date, bls, suffix, site, project_dir, out_dir, import_retrieval_data, site_config):
+    def create_day(date, bls, suffix, site, project_dir, out_dir, include_rpg, site_config):
         if bls:
             assert bls_file.read_bytes() == original_bls
             assert leftover.exists()
@@ -67,7 +67,7 @@ def test_overlapping_days_and_updates_keep_first_values_with_missing_profiles(si
     yesterday = today - pd.Timedelta(days=1)
     updating = False
 
-    def create_day(date, bls, suffix, site, project_dir, out_dir, import_retrieval_data, site_config):
+    def create_day(date, bls, suffix, site, project_dir, out_dir, include_rpg, site_config):
         if updating:
             times = [today, today + pd.Timedelta(hours=12), today + pd.Timedelta(hours=18)]
             values = [42, 43, 44]
@@ -116,7 +116,7 @@ def test_combined_failure_propagates_and_preserves_existing_update(site, monkeyp
     daily_dataset([today], [210]).to_netcdf(combined)
     original = combined.read_bytes()
 
-    def create_day(date, bls, suffix, site, project_dir, out_dir, import_retrieval_data, site_config):
+    def create_day(date, bls, suffix, site, project_dir, out_dir, include_rpg, site_config):
         assert not bls
         daily_dataset([date], [220]).to_netcdf(out_dir / f"hatpro_data_{date:%Y%m%d}.nc")
 

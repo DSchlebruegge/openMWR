@@ -24,7 +24,7 @@ from openMWR.config import (check_keys, check_name, check_strings, require_keys,
 from openMWR.calc_errors import cal_RMSE, calculate_errors
 from openMWR.devices import resolve_device, device_name
 from openMWR.models import load_model
-from openMWR.observations import load_analysis_dataset
+from openMWR.observations import load_analysis_dataset, reference_source
 from openMWR.site import load_site_config
 from openMWR.paths import (project_root, site_config_file, dataset_file, checkpoint_file,
                            dataset_recipe_file, evaluation_log_file, evaluation_recipe_file)
@@ -100,24 +100,24 @@ class EvaluationRecipe:
             elif 'height_range' in settings:
                 raise ValueError(f'{section}.height_range applies only to profile variables.')
             if section == 'observations':
-                require_keys(settings, ('data_source',), section)
-                if settings['data_source'] not in ('radiosonde', 'era5'):
+                if 'data_source' in settings and settings['data_source'] not in ('radiosonde', 'era5'):
                     raise ValueError('observations.data_source must be radiosonde or era5.')
                 check_time_selection(settings, section)
                 if 'station_id' in settings:
                     check_name(settings['station_id'], 'observations.station_id')
-                    if settings['data_source'] != 'radiosonde':
+                    if settings.get('data_source') not in (None, 'radiosonde'):
                         raise ValueError('observations.station_id applies only to radiosondes.')
                 if 'include_rpg' in settings and type(settings['include_rpg']) is not bool:
                     raise ValueError('observations.include_rpg must be true or false.')
                 if settings.get('include_rpg') and 'TB' in settings['variables']:
                     raise ValueError('RPG comparison applies to profile retrievals.')
             else:
-                check_strings(settings.get('sources'), 'test.sources')
-                if not settings['sources']:
-                    raise ValueError('Select at least one test source.')
-                for source in settings['sources']:
-                    check_name(source, 'test.sources')
+                if 'sources' in settings:
+                    check_strings(settings['sources'], 'test.sources')
+                    if not settings['sources']:
+                        raise ValueError('Select at least one test source.')
+                    for source in settings['sources']:
+                        check_name(source, 'test.sources')
         return self
 
 
@@ -250,6 +250,9 @@ def _predict_cases(recipe, section, settings, groups, device, inputs, site_confi
             path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls')
             inputs[path] = checkpoint_id(path)
             data = load_analysis_dataset(recipe.project_dir, recipe.site, settings['dataset'], bls=mode == 'bls', site_config=site_config)
+            settings['data_source'] = reference_source(data, settings.get('data_source'))
+            if 'station_id' in settings and settings['data_source'] != 'radiosonde':
+                raise ValueError('observations.station_id applies only to radiosondes.')
             data = select_time(data, **{key: settings[key] for key in TIME_SELECTION_KEYS if key in settings})
             if settings['data_source'] == 'radiosonde':
                 data = _select_station(data, settings.get('station_id'), path)
@@ -257,6 +260,12 @@ def _predict_cases(recipe, section, settings, groups, device, inputs, site_confi
                 data = data.sel(ang=90, drop=True)
             observations[mode] = data
     else:
+        if 'sources' not in settings:
+            from openMWR.datasets import DatasetWorkflow
+            datasets = DatasetWorkflow(recipe.project_dir, recipe.site, site_config=site_config)
+            if datasets.recipe(settings['dataset']).kind != 'split':
+                raise ValueError('test.dataset must select a split dataset.')
+            settings['sources'] = datasets.sources(settings['dataset'])
         for source in settings['sources']:
             path = dataset_file(recipe.project_dir, recipe.site, settings['dataset'], source, split='test')
             inputs[path] = checkpoint_id(path)

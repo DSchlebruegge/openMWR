@@ -18,11 +18,11 @@ def test_site_toml_preserves_settings_and_resolves_paths_from_project(tmp_path, 
     project = tmp_path / "project"
     external = str(tmp_path / "external output")
     settings = dict(
-        gen="G5", mwr_height=550, latitude=48.148,
-        rpg_retrieval_exists=False, mwr_measurement_start_date="2024-11-01",
+        instrument_generation="G5", mwr_height=550, latitude=48.148,
+        mwr_measurement_start_date="2024-11-01",
         calibration_dates=["2025-03-12", "2025-09-04"],
         custom={'frequency_shift': [0.0, -0.01]}, hatpro_data_dir="observations",
-        retrieval_output_dir=external, plot_dir=None,
+        prediction={'output_dir': external},
     )
     create_site("test", project, **settings)
     with (project / "sites/test/site.toml").open("rb") as stream:
@@ -31,10 +31,10 @@ def test_site_toml_preserves_settings_and_resolves_paths_from_project(tmp_path, 
 
     monkeypatch.chdir(tmp_path)
     assert get_config_parameter("test", "hatpro_data_dir", project) == str(project / "observations")
-    assert get_config_parameter("test", "retrieval_output_dir", project) == external
-    assert get_config_parameter("test", ["gen", "plot_dir", "custom"], project) == ("G5", None, {"frequency_shift": [0.0, -0.01]})
+    assert get_config_parameter("test", "prediction", project)['output_dir'] == external
+    assert get_config_parameter("test", ["instrument_generation", "custom"], project) == ("G5", {"frequency_shift": [0.0, -0.01]})
     config = load_site_config('test', project)
-    assert config.get('plot_dir') is None
+    assert config.get('prediction')['output_dir'] == external
     with pytest.raises(ValueError, match='Unknown site setting'):
         config.get('mwr_heigth')
     with pytest.raises(ValueError, match='requested site and project'):
@@ -42,7 +42,7 @@ def test_site_toml_preserves_settings_and_resolves_paths_from_project(tmp_path, 
 
 
 @pytest.mark.parametrize('setting', [
-    'mwr_heigth = 500', 'mwr_height = "500"', 'gen = "G6"',
+    'mwr_heigth = 500', 'mwr_height = "500"', 'instrument_generation = "G6"',
     'latitude = 91', 'longitude = -181', 'latitude = nan',
     'hatpro_data_dir = ""', 'hatpro_format = "automatic"',
     'hatpro_time_offset_hours = 25', 'rpg_retrieval_exists = "false"',
@@ -91,7 +91,7 @@ def test_named_retrieval_roundtrip_and_replacement(tmp_path):
 
 
 def test_workflow_loads_retrieval_optimization_history(tmp_path):
-    create_site("test", tmp_path, gen="G5")
+    create_site("test", tmp_path, instrument_generation="G5")
     directory = tmp_path / 'sites/reference/retrieval/existing_model'
     directory.mkdir(parents=True)
     study = optuna.create_study(
@@ -114,7 +114,7 @@ def test_version_01_checkpoint_migration_preserves_predictions(tmp_path, name):
     reference = torch.load(Path(__file__).parents[1] / 'data/checkpoint_01.pt',
                            map_location='cpu', weights_only=False)
     case = next(case for case in reference['cases'] if case['name'] == name)
-    create_site('test', tmp_path, gen='G5')
+    create_site('test', tmp_path, instrument_generation='G5')
     current = tmp_path / 'sites/test/retrieval' / name / 'model.pth'
     current.parent.mkdir(parents=True)
     current.write_bytes(case['checkpoint'])

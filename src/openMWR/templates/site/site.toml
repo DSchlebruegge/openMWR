@@ -1,11 +1,11 @@
-# TODO: uncomment and fill in the settings for your site.
+# TODO: uncomment and fill in the site settings.
 # Leave any setting already supplied below commented here.
 
 # Instrument height in metres above sea level (required for profile preparation):
 # mwr_height = ...
 
 # Instrument generation, "G4" or "G5" (required for radiative transfer):
-# gen = "..."
+# instrument_generation = "..."
 
 # Site coordinates in decimal degrees:
 # latitude = ...
@@ -21,13 +21,8 @@
 # Binary local timestamps need a fixed offset in hours (local time minus UTC).
 # hatpro_time_offset_hours = 1
 
-# Optional: include the instrument's own NetCDF retrieval products in HATPRO datasets.
-# rpg_retrieval_exists = false
-
 # Optional calibration dates (UTC), shown as markers in OMB reports:
 # calibration_dates = ["2025-03-12"]
 
-# Prediction output defaults to data/sites/<site>/predictions/.
-# retrieval_output_dir = "..."
-
 # The prediction selection below names retrievals to use after training.
+# Add output_dir under [prediction] to override data/sites/<site>/predictions/.

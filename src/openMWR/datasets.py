@@ -24,7 +24,8 @@ from openMWR.paths import (dataset_dir, dataset_file, dataset_recipe_file,
                            radiosonde_year_file, site_config_file)
 from openMWR.config import (check_name, check_keys, check_number, check_strings,
                             require_keys, load_grid, check_cloud, check_profile_quality,
-                            check_analysis, check_infrared, check_time_selection, check_split_days, TIME_SELECTION_KEYS)
+                            check_analysis, check_infrared, check_time_selection, check_split_days,
+                            resolve_coordinate_table, TIME_SELECTION_KEYS)
 from openMWR.site import load_site_config
 from openMWR.background import task_log_handler
 
@@ -41,10 +42,10 @@ _OPTIONS = {
     'radiosonde': ('stations', 'start_year', 'end_year', 'refresh_years'),
     'era5': ('start_date', 'end_date', 'hour_interval', 'delay_days'),
     'hatpro': ('start_date', 'end_date', 'observations', 'execution'),
-    'profiles': ('stations', 'preparation', 'execution'),
-    'simulation': ('stations', 'radiative_transfer', 'execution'),
-    'split': ('stations', 'split'),
-    'analysis': ('stations', 'analysis'),
+    'profiles': ('sources', 'preparation', 'execution'),
+    'simulation': ('sources', 'radiative_transfer', 'execution'),
+    'split': ('sources', 'split'),
+    'analysis': ('sources', 'analysis'),
 }
 
 
@@ -123,17 +124,20 @@ class DatasetRecipe:
         require_keys(self.values, required, self.name)
         if kind == 'era5' and self.values['end_date'] == 'today':
             require_keys(self.values, ('delay_days',), self.name)
+        elif kind == 'era5' and 'delay_days' in self.values:
+            raise ValueError(f'{self.name}.delay_days applies only when end_date = "today". Omit it for a fixed end date.')
         check_keys(self.inputs, _INPUTS[kind], f'{self.name}.inputs')
         if set(self.inputs) != set(_INPUTS[kind]):
             raise ValueError(f'{self.name}: inputs must name {", ".join(_INPUTS[kind])}.')
         for name in self.inputs.values():
             check_name(name, f'{self.name}.inputs')
-        if 'stations' in self.values:
-            check_strings(self.values['stations'], f'{self.name}.stations')
-            if not self.values['stations']:
-                raise ValueError(f'{self.name}.stations must not be empty.')
-            for station in self.values['stations']:
-                check_name(station, 'station')
+        selection = 'stations' if kind == 'radiosonde' else 'sources'
+        if selection in self.values:
+            check_strings(self.values[selection], f'{self.name}.{selection}')
+            if not self.values[selection]:
+                raise ValueError(f'{self.name}.{selection} must not be empty.')
+            for source in self.values[selection]:
+                check_name(source, selection)
         for key in ('start_year', 'end_year', 'refresh_years', 'hour_interval', 'delay_days'):
             if key in self.values:
                 if key == 'end_year' and self.values[key] == 'current_year':
@@ -141,13 +145,15 @@ class DatasetRecipe:
                 check_number(self.values[key], f'{self.name}.{key}', 0 if key == 'delay_days' else 1, integer=True)
         if kind == 'era5' and self.values['hour_interval'] not in (1, 2, 3, 4, 6, 8, 12, 24):
             raise ValueError('hour_interval must divide 24.')
+        coverage = {}
         for key in ('start_date', 'end_date'):
             if key in self.values:
                 if not isinstance(self.values[key], str):
                     raise ValueError(f'{key} must be a quoted ISO date.')
                 if self.values[key] == ('site' if key == 'start_date' else 'today'):
                     continue
-                date.fromisoformat(self.values[key])
+                coverage[key] = self.values[key]
+        check_time_selection(coverage, self.name)
         execution = self.values.get('execution', {})
         check_keys(execution, ('processes',), f'{self.name}.execution')
         if 'processes' in execution:
@@ -160,7 +166,17 @@ class DatasetRecipe:
         if kind == 'profiles':
             require_keys(preparation, ('heights',), f'{self.name}.preparation')
         if 'cloud' in preparation:
-            check_cloud(preparation['cloud'])
+            cloud = dict(preparation['cloud'])
+            label = f'{self.name}.preparation.cloud'
+            check_keys(cloud, ('rh_threshold', 'min_temperature', 'adiabatic_fraction_method', 'a', 'b'), label)
+            require_keys(cloud, ('rh_threshold', 'min_temperature', 'adiabatic_fraction_method'), label)
+            method = cloud.pop('adiabatic_fraction_method')
+            if method not in ('power_law', 'karstens', 'fully_adiabatic'):
+                raise ValueError(f'{label}.adiabatic_fraction_method must be power_law, karstens or fully_adiabatic.')
+            # Keep scientific processing records and the low-level cloud API stable.
+            cloud['adiabatic_fraction'] = 'none' if method == 'fully_adiabatic' else method
+            check_cloud(cloud)
+            preparation['cloud'] = cloud
         if 'incomplete_profiles' in preparation and preparation['incomplete_profiles'] not in ('monthly_mean', 'filter'):
             raise ValueError('preparation.incomplete_profiles must be monthly_mean or filter; RT requires complete profiles.')
         if 'quality' in preparation:
@@ -199,11 +215,13 @@ class DatasetRecipe:
             if key in rt:
                 rt[key] = load_grid(self.project_dir, key, rt[key], label=f'radiative_transfer.{key}')
         if 'frequency_shift' in rt:
-            shifts = rt['frequency_shift']
-            if not isinstance(shifts, list) or len(shifts) != len(rt['frequencies']):
-                raise ValueError('RT frequency_shift must contain one offset per frequency.')
-            for value in shifts:
+            shifts = resolve_coordinate_table(rt['frequency_shift'], 'radiative_transfer.frequency_shift')
+            if set(shifts) - set(rt['frequencies']):
+                raise ValueError('radiative_transfer.frequency_shift keys must name selected frequencies in GHz.')
+            for value in shifts.values():
                 check_number(value, 'radiative_transfer.frequency_shift')
+            # Scientific processing and saved definitions use ordered numeric shifts.
+            rt['frequency_shift'] = [shifts.get(frequency, 0.0) for frequency in rt['frequencies']]
         split = self.values.get('split', {})
         check_keys(split, ('test_days_of_month', 'validation_days_of_month', *TIME_SELECTION_KEYS), f'{self.name}.split')
         check_time_selection(split, f'{self.name}.split')
@@ -211,9 +229,9 @@ class DatasetRecipe:
             require_keys(split, ('test_days_of_month', 'validation_days_of_month'), f'{self.name}.split')
             check_split_days(split['test_days_of_month'], split['validation_days_of_month'])
         observations = self.values.get('observations', {})
-        check_keys(observations, ('import_retrieval_data',), f'{self.name}.observations')
-        if 'import_retrieval_data' in observations and type(observations['import_retrieval_data']) is not bool:
-            raise ValueError('observations.import_retrieval_data must be true or false.')
+        check_keys(observations, ('include_rpg',), f'{self.name}.observations')
+        if 'include_rpg' in observations and type(observations['include_rpg']) is not bool:
+            raise ValueError('observations.include_rpg must be true or false.')
         resolved = dict(self.values)
         if 'preparation' in resolved:
             resolved['preparation'] = preparation
@@ -291,9 +309,9 @@ class DatasetWorkflow:
             return []
         role = 'reference' if recipe.kind == 'analysis' else next(iter(recipe.inputs))
         available = self.sources(recipe.inputs[role])
-        selected = recipe.values.get('stations', available)
+        selected = recipe.values.get('sources', available)
         if set(selected) - set(available):
-            raise ValueError(f'{name}: stations must be a subset of its input sources {available}.')
+            raise ValueError(f'{name}: sources must be a subset of its input sources {available}.')
         return selected
 
     def source_kind(self, name):
@@ -311,8 +329,8 @@ class DatasetWorkflow:
         recipe = self.recipe(name)
         values = recipe.resolved_values() if _values is None else _values
         kind = recipe.kind
-        required = {'profiles': ('mwr_height',), 'simulation': ('gen',),
-                    'hatpro': ('hatpro_data_dir', 'gen')}.get(kind, ())
+        required = {'profiles': ('mwr_height',), 'simulation': ('instrument_generation',),
+                    'hatpro': ('hatpro_data_dir', 'instrument_generation')}.get(kind, ())
         for key in required:
             self.site_settings.require(key)
         settings = {'kind': kind, 'inputs': recipe.inputs, 'sources': self.sources(name)}
@@ -323,7 +341,7 @@ class DatasetWorkflow:
             if settings['start_year'] > settings['end_year']:
                 raise ValueError(f'{name}: start_year is after end_year.')
         elif kind in ('era5', 'hatpro'):
-            delay = values.get('delay_days', 5) if kind == 'era5' else 0
+            delay = values['delay_days'] if kind == 'era5' and values['end_date'] == 'today' else 0
             settings.update(start_date=self.site_settings.require('mwr_measurement_start_date') if values['start_date'] == 'site' else values['start_date'],
                             end_date=str(today - pd.Timedelta(days=delay)) if values['end_date'] == 'today' else values['end_date'])
             if pd.Timestamp(settings['start_date']) > pd.Timestamp(settings['end_date']):
@@ -335,8 +353,8 @@ class DatasetWorkflow:
             else:
                 format = self.site_settings.get('hatpro_format', 'auto')
                 offset = self.site_settings.get('hatpro_time_offset_hours')
-                settings.update(import_retrieval_data=values.get('observations', {}).get('import_retrieval_data', self.site_settings.get('rpg_retrieval_exists', False)),
-                                hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('gen'),
+                settings.update(import_retrieval_data=values.get('observations', {}).get('include_rpg', False),
+                                hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('instrument_generation'),
                                 hatpro_format=format)
                 if offset is not None:
                     settings['hatpro_time_offset_hours'] = offset
@@ -364,7 +382,7 @@ class DatasetWorkflow:
             settings.update(backend=rt['backend'],
                             absorption_model=rt['absorption_model'],
                             frequencies=rt['frequencies'], angles=rt['angles'],
-                            frequency_shift=rt.get('frequency_shift'), infrared=rt['infrared'], gen=self.site_settings.get('gen'))
+                            frequency_shift=rt.get('frequency_shift'), infrared=rt['infrared'], gen=self.site_settings.get('instrument_generation'))
         elif kind == 'split':
             settings.update(values['split'])
         elif kind == 'analysis':
@@ -675,7 +693,7 @@ class DatasetWorkflow:
         elif kind == 'hatpro':
             from openMWR.hatpro_data import create_hatpro_dataset
             create_hatpro_dataset(self.site, self.project_dir, site_config=self.site_settings, dataset=name, update_only=True,
-                                  import_retrieval_data=settings['import_retrieval_data'],
+                                  include_rpg=settings['import_retrieval_data'],
                                   start_date=settings['start_date'], end_date=settings['end_date'], num_of_processes=processes)
         elif kind == 'profiles':
             source = self.recipe(recipe.inputs['source'])

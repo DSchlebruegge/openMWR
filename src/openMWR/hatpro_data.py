@@ -105,7 +105,7 @@ def import_hatpro_data(
     site: str,
     project_dir: str,
     mean_one_min: bool = False,
-    import_retrieval_data: bool = True,
+    include_rpg: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
     *, site_config=None,
 ) -> Optional[xr.Dataset]:
@@ -125,7 +125,7 @@ def import_hatpro_data(
         Working-project root containing data/ and sites/.
     mean_one_min : bool, optional
         If True, average all variables to 1-minute resolution.
-    import_retrieval_data : bool, optional
+    include_rpg : bool, optional
         If True, include available RPG retrieval products (LWP, LPR, TPC, HPC,
         IWV). Missing or unreadable products are logged and omitted.
     out_file : str or os.PathLike, optional
@@ -157,7 +157,7 @@ def import_hatpro_data(
     site_config = load_site_config(site, project_dir, config=site_config)
     periods = get_invalid_measurements(site, project_dir, site_config=site_config)
     products = ['BRT', 'MET', 'IRT']
-    if import_retrieval_data:
+    if include_rpg:
         products += ['LWP', 'LPR', 'TPC', 'HPC', 'IWV']
     datasets = load_hatpro_day(date, site, project_dir, products, site_config=site_config)
     ds_BRT = datasets['BRT']
@@ -172,7 +172,7 @@ def import_hatpro_data(
     extra = []
     if 'IRT' in datasets:
         extra.append(datasets['IRT'].TB_IR.isel(wavelength=0, drop=True))
-    if import_retrieval_data:
+    if include_rpg:
         extra.extend(datasets[key] for key in ('LWP', 'LPR', 'TPC', 'HPC', 'IWV') if key in datasets)
     ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
@@ -213,7 +213,7 @@ def import_hatpro_data_bls(
     site: str,
     project_dir: str,
     mean_one_min: bool = False,
-    import_retrieval_data: bool = True,
+    include_rpg: bool = True,
     out_file: Optional[Union[str, os.PathLike]] = None,
     *, site_config=None,
 ) -> Optional[xr.Dataset]:
@@ -233,7 +233,7 @@ def import_hatpro_data_bls(
         Working-project root containing data/ and sites/.
     mean_one_min : bool, optional
         If True, average surface meteorology to 1-minute resolution.
-    import_retrieval_data : bool, optional
+    include_rpg : bool, optional
         If True, include available RPG retrieval temperature profiles (TPB).
         Missing or unreadable products are logged and omitted.
     out_file : str or os.PathLike, optional
@@ -264,7 +264,7 @@ def import_hatpro_data_bls(
     """
     site_config = load_site_config(site, project_dir, config=site_config)
     periods = get_invalid_measurements(site, project_dir, site_config=site_config)
-    products = ['MET', 'BLB'] + (['TPB'] if import_retrieval_data else [])
+    products = ['MET', 'BLB'] + (['TPB'] if include_rpg else [])
     datasets = load_hatpro_day(date, site, project_dir, products, site_config=site_config)
     ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
     if ds_MET is not None and mean_one_min:
@@ -312,7 +312,7 @@ def _create_hatpro_day_file(
     site: str,
     project_dir: str,
     hatpro_out_dir: Union[str, os.PathLike],
-    import_retrieval_data: bool,
+    include_rpg: bool,
     site_config,
 ) -> None:
 
@@ -324,7 +324,7 @@ def _create_hatpro_day_file(
                 date,
                 site,
                 project_dir,
-                import_retrieval_data=import_retrieval_data,
+                include_rpg=include_rpg,
                 out_file=daily_file, site_config=site_config,
             )
         else:
@@ -333,7 +333,7 @@ def _create_hatpro_day_file(
                 site,
                 project_dir,
                 mean_one_min=True,
-                import_retrieval_data=import_retrieval_data,
+                include_rpg=include_rpg,
                 out_file=daily_file, site_config=site_config,
             )
     except FileNotFoundError as e:
@@ -348,7 +348,7 @@ def _create_hatpro_day_file(
 def create_hatpro_dataset(
     site: str,
     project_dir: str,
-    import_retrieval_data: Optional[bool] = None,
+    include_rpg: bool = False,
     num_of_processes: int = 1,
     update_only: bool = False,
     dataset: str = 'hatpro',
@@ -365,8 +365,7 @@ def create_hatpro_dataset(
         Site name used for configuration and output paths.
     project_dir : str
         Working-project root containing data/ and sites/.
-    import_retrieval_data : bool, optional
-        If None, the site config parameter `rpg_retrieval_exists` is used.
+    include_rpg : bool, optional
         When True, available RPG retrieval products are included in the output.
         Missing or unreadable products do not prevent observation processing.
     num_of_processes : int, optional
@@ -391,8 +390,6 @@ def create_hatpro_dataset(
 
     site_config = load_site_config(site, project_dir, config=site_config)
     site_config.require('hatpro_data_dir')
-    if import_retrieval_data is None:
-        import_retrieval_data = site_config.get('rpg_retrieval_exists', False)
     start_date = pd.Timestamp(start_date or site_config.require('mwr_measurement_start_date'))
     end_date = pd.Timestamp(end_date or pd.Timestamp.now().normalize())
     dr_full = pd.date_range(start_date, end_date)
@@ -444,7 +441,7 @@ def create_hatpro_dataset(
                         site,
                         project_dir,
                         hatpro_out_dir,
-                        import_retrieval_data, site_config,
+                        include_rpg, site_config,
                     )
             else:
                 run_pool_date_range(
@@ -456,7 +453,7 @@ def create_hatpro_dataset(
                     site,
                     project_dir,
                     hatpro_out_dir,
-                    import_retrieval_data, site_config,
+                    include_rpg, site_config,
                 )
 
             logger.info(f'Finished creating daily files for Hatpro data with BLS: {bls}')

@@ -1,12 +1,12 @@
 # Optimization example with explicit weight-decay and input-noise ranges.
-# Replace SITE with your site name: openMWR train SITE NN_BLS_opt_example
+# Replace SITE with the site name: openMWR train SITE NN_BLS_opt_example
 schema_version = 1
 
 [model]
 kind = "nn"
 output_vars = ["T", "rh", "lwc", "lwp", "iwv"]
 mode = "bls"
-freqs = "dataset"
+frequencies = "dataset"
 heights = "dataset"
 angles = "dataset"
 hidden_layers = [1024, 64, 1024]
@@ -21,7 +21,7 @@ lwc = { upper_bounds = [2000, 10000], values = [1.0, 0.5, 0.25] }
 lwp = 1.0
 iwv = 1.0
 
-[model.norm_functions]
+[model.normalization]
 TB = "z_norm"
 surface_T = "z_norm"
 surface_p = "z_norm"
@@ -43,20 +43,22 @@ dataset = "training"
 seed = 42
 batch_size = 512
 epochs = 500
-lr_height = 0.002
-lr_low = 1e-7
-epoch_max_lr = 50
-loss_fn = "MAE"
+learning_rate_max = 0.002
+learning_rate_min = 1e-7
+learning_rate_peak_epoch = 50
+loss = "MAE"
 weight_decay = { low = 1e-8, high = 1e-4, log = true }
 
 [input_noise]
-method = "standard"
-TB = { low = 0.0, high = 1.5 }
-surface_T = { low = 0.1, high = 1.5 }
-surface_p = { low = 0.1, high = 2.0 }
-surface_rh = { low = 0.1, high = 2.0 }
-doy_cos = { low = 0.05, high = 0.5 }
-doy_sin = { low = 0.05, high = 0.5 }
+# Standard deviations in physical input units, before normalization.
+# Angle dependence is off unless angle_dependence is specified.
+method = "specified"
+TB = { low = 0.0, high = 1.5 }  # K
+surface_T = { low = 0.1, high = 1.5 }  # K
+surface_p = { low = 0.1, high = 2.0 }  # hPa
+surface_rh = { low = 0.1, high = 2.0 }  # percentage points
+doy_cos = { low = 0.05, high = 0.5 }  # dimensionless
+doy_sin = { low = 0.05, high = 0.5 }  # dimensionless
 
 [optimization]
 # Optional start_date/end_date (YYYY-MM-DD) combine with days_of_month.
@@ -65,5 +67,4 @@ seed = 42
 days_of_month = { first = 1, last = 20 }
 score_weights = { T = 1.0, rh = 0.1 }
 n_trials = 300
-data_source = "radiosonde"
 dataset = "analysis_radiosonde"
