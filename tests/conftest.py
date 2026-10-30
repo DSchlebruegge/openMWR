@@ -2,6 +2,7 @@
 
 import os
 import socket
+from functools import lru_cache
 
 os.environ['MPLBACKEND'] = 'Agg'
 os.environ.setdefault('MPLCONFIGDIR', '/tmp/openmwr-test-matplotlib')
@@ -15,8 +16,13 @@ import torch
 @pytest.fixture(autouse=True)
 def cpu_backend(monkeypatch):
     """Keep numerical workflows on CPU. Selection tests override availability."""
+    # Preserve the cached-function interface inspected by PyTorch's compiler.
+    @lru_cache
+    def mps_unavailable():
+        return False
+
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
-    monkeypatch.setattr(torch.backends.mps, 'is_available', lambda: False)
+    monkeypatch.setattr(torch.backends.mps, 'is_available', mps_unavailable)
 
 
 @pytest.fixture(autouse=True)
