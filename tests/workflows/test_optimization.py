@@ -4,14 +4,64 @@
 import numpy as np
 import optuna
 import pytest
+import torch
 import xarray as xr
 
-from openMWR.models import load_model
+from openMWR.models import BaseModel, load_model
+from openMWR.predict import run_model
 from openMWR.recipes import RetrievalRecipe
 from openMWR.train import TrainingWorkflow
 
 
 from tests.fixtures.retrievals import retrieval_project, training_workflow
+
+
+def test_custom_python_model_optimizes_and_continues_without_retrieval_recipe(tmp_path):
+    recipe, data = retrieval_project(tmp_path)
+    recipe.unlink()
+
+    class CustomColumnModel(BaseModel):
+        def __init__(self, name, freqs):
+            super().__init__(name)
+            self.freqs = np.asarray(freqs)
+            self.is_MLR = self.is_bls_model = False
+            self.input_vars, self.output_vars = ['TB'], ['lwp']
+            self.input = xr.Dataset({'TB': ('frq', np.zeros(len(freqs)))}, coords={'frq': freqs})
+            self.output = xr.Dataset({'lwp': xr.DataArray(0.)})
+            self.norm_functions = {'TB': 'z_norm', 'lwp': 'z_norm'}
+            self.network = torch.nn.Linear(len(freqs), 1)
+            self.create_slices()
+
+        def forward(self, values):
+            return self.network(values)
+
+    def custom_workflow():
+        workflow = TrainingWorkflow(CustomColumnModel('custom', [22.24, 31.4]),
+                                    'test', 'cpu', tmp_path)
+        workflow.load_training_data(dataset='training_variant')
+        workflow.change_hyper_params(seed=42, epochs=1, batch_size=4,
+                                    lr_height=workflow.suggest_float(0.001, 0.002),
+                                    lr_low=1e-7, epoch_max_lr=1, loss_fn='MSE', weight_decay=0.,
+                                    **{'input_noise_TB_22.24': 0., 'input_noise_TB_31.4': 0.})
+        return workflow
+
+    options = dict(n_trials=1, dataset='analysis_radiosonde', seed=42, score_weights={'lwp': 1.})
+    workflow = custom_workflow()
+    with pytest.raises(ValueError, match='Missing optimization settings: seed'):
+        workflow.validate_optimization(**{key: value for key, value in options.items() if key != 'seed'})
+    assert workflow.validate_optimization(**options) is workflow
+    first = workflow.optimize(**options)
+    assert len(first.trials) == 1
+    assert first.user_attrs['openMWR_experiment']['optimization'] == {
+        'seed': 42, 'score_weights': {'lwp': 1.}}
+
+    continued = custom_workflow().optimize(**options, run_mode='continue')
+    assert len(continued.trials) == 2
+    assert np.isfinite(continued.best_value)
+    restored = CustomColumnModel.load('custom', 'test', tmp_path)
+    assert restored.training_metadata['optimization']['trial_number'] == continued.best_trial.number
+    prediction = run_model(restored, data.sel(ang=90., drop=True), 'cpu', include_input_vars=False)
+    assert np.isfinite(prediction.lwp).all()
 
 
 @pytest.mark.parametrize('changed', ['training', 'validation', 'observations', 'reference'])

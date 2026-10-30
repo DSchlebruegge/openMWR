@@ -20,7 +20,7 @@ from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
 from openMWR.predict import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data
 from openMWR.devices import resolve_device, device_name
 from openMWR.calc_errors import cal_RMSE
-from openMWR.models import Model, BaseModel, SpectralConsistencyModel, load_model
+from openMWR.models import Model, BaseModel, SpectralConsistencyModel
 from openMWR.paths import dataset_file, retrieval_dir, checkpoint_file, optimization_file
 from openMWR.provenance import plain_value, retrieval_log, software_identity, utc_now, dataset_id
 from openMWR.config import (TRAINING_PARAMETERS, TRAINING_SETTINGS, TRAINING_NAMES, check_keys, check_name, require_keys,
@@ -39,8 +39,9 @@ def _experiment_definition(experiment, variables):
         return None
     definition = {key: value for key, value in experiment.items() if key != 'data'}
     structure = definition['model']
-    definition['model'] = {**structure, 'norm_functions': {
-        key: value for key, value in structure['norm_functions'].items() if key in variables}}
+    if 'norm_functions' in structure:
+        definition['model'] = {**structure, 'norm_functions': {
+            key: value for key, value in structure['norm_functions'].items() if key in variables}}
     return definition
 
 
@@ -327,12 +328,16 @@ class TrainingWorkflow:
         options = {'n_trials': n_trials, 'data_source': data_source, 'dataset': dataset,
                    'seed': seed, 'start_date': start_date, 'end_date': end_date,
                    'days_of_month': days_of_month, 'score_weights': score_weights, 'sources': sources}
-        settings = dict(self.recipe.section('optimization') if self.recipe is not None else self._standard_recipe(optimization=True)['optimization'])
-        if self.recipe is None:
+        settings = {}
+        if self.recipe is not None:
+            settings = dict(self.recipe.section('optimization'))
+        elif isinstance(self.model, (Model, SpectralConsistencyModel)):
+            settings = dict(self._standard_recipe(optimization=True)['optimization'])
             settings['score_weights'] = {key: value for key, value in settings['score_weights'].items() if key in self.model.output}
         settings.update({key: value for key, value in options.items() if value is not None})
         if not self.requires_optimization:
             raise ValueError('Optimization needs a search definition in training or input_noise: use low/high or choices on a parameter.')
+        require_keys(settings, ('n_trials', 'dataset', 'seed', 'score_weights'), 'optimization')
         check_seed(settings['seed'], 'optimization.seed')
         check_time_selection(settings, 'optimization')
         check_score_weights(settings['score_weights'], self.model.output.data_vars)
@@ -1133,6 +1138,9 @@ class TrainingWorkflow:
 
         Notes
         -----
+        - Models without a recipe or bundled recommendations require explicit
+          n_trials, dataset, seed and score_weights. Time and source filters
+          are optional.
         - Each trial trains a model using suggested parameters.
         - Evaluation is performed on real atmospheric profiles.
         - Best models are saved automatically.
@@ -1186,7 +1194,7 @@ class TrainingWorkflow:
             best_trial = None
         if best_trial is not None:
             path = checkpoint_file(self.project_dir, self.site, self.model.name)
-            metadata = load_model(self.model.name, self.site, self.project_dir).training_metadata if path.is_file() else None
+            metadata = type(self.model).load(self.model.name, self.site, self.project_dir).training_metadata if path.is_file() else None
             expected = {'study_name': study.study_name, 'trial_number': best_trial.number}
             if (metadata or {}).get('optimization') != expected:
                 raise ValueError('The best study checkpoint is missing or has been replaced. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')

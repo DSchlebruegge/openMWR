@@ -111,6 +111,20 @@ Use the built-in models as a reference for the training and prediction interface
 Load custom checkpoints through the custom class's `load()` method. Recipe model
 kinds and command checkpoint loading use the built-in model classes.
 
+For custom models without bundled recommendations, supply training and input-noise
+parameters explicitly through `change_hyper_params()`. Optimization also requires
+the trial count, analysis dataset, sampler seed and score weights:
+
+```python
+study = workflow.optimize(
+    n_trials=20, dataset="analysis_radiosonde", seed=42,
+    score_weights={"T": 1.0},
+)
+```
+
+Time and source filters are optional. Use `run_mode="continue"` to add trials to
+the same experiment.
+
 ## Evaluate retrievals
 
 ```python
