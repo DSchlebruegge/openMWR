@@ -12,6 +12,7 @@ from openMWR.models import BaseModel, load_model
 from openMWR.paths import project_root
 from openMWR.site import load_site_config, prediction_output_dir, get_invalid_measurements
 from openMWR.devices import resolve_device
+from openMWR.utils import atomic_output
 
 logger = logging.getLogger(__name__)
 
@@ -527,7 +528,7 @@ class PredictionWorkflow:
         return predicted
 
     def save(self, result):
-        """Replace selected daily NetCDF files, keeping the model dimension."""
+        """Replace completed daily NetCDF files, keeping the model dimension."""
         if result.site != self.site:
             raise ValueError('Cannot save predictions from another site with this workflow.')
         paths = []
@@ -535,9 +536,9 @@ class PredictionWorkflow:
             if predicted is None:
                 continue
             path = _daily_file(self.output_dir, result.date, bls)
-            path.parent.mkdir(parents=True, exist_ok=True)
             output = predicted.drop_vars(['doy_sin', 'doy_cos'], errors='ignore')
-            output.to_netcdf(path)
+            with atomic_output(path) as temporary:
+                output.to_netcdf(temporary)
             logger.info('Saved %s', path)
             paths.append(path)
         return paths

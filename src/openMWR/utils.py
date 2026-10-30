@@ -5,6 +5,23 @@ from logging.handlers import TimedRotatingFileHandler
 import os
 import warnings
 import traceback
+from contextlib import contextmanager
+from pathlib import Path
+from stat import S_IMODE
+from tempfile import TemporaryDirectory
+
+
+@contextmanager
+def atomic_output(path):
+    """Write beside the destination, replacing it only after a successful write."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=path.parent, prefix=f'.{path.name}-') as directory:
+        temporary = Path(directory) / path.name
+        yield temporary
+        if path.exists():
+            temporary.chmod(S_IMODE(path.stat().st_mode))
+        temporary.replace(path)
 
 def progress_bar(current, total, start_time, bar_length=50):
     """

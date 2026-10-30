@@ -1,6 +1,7 @@
 """Saved retrievals applied to small local RPG measurements."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -111,7 +112,7 @@ def test_computation_errors_are_not_reported_as_missing_data(prediction_project,
         workflow.predict('2024-01-01')
 
 
-def test_override_paths_replacement_model_reuse_and_reading_without_checkpoints(prediction_project):
+def test_override_paths_replacement_model_reuse_and_reading_without_checkpoints(prediction_project, monkeypatch):
     raw_day(prediction_project, datetime(2024, 1, 2), bls=False)
     workflow = PredictionWorkflow(prediction_project, 'test', ['primary'], output_dir='experiment')
     first = workflow.predict('2024-01-01')
@@ -131,6 +132,27 @@ def test_override_paths_replacement_model_reuse_and_reading_without_checkpoints(
     loaded = load_predictions(prediction_project, 'test', '2024-01-02', output_dir='experiment')
     assert loaded.bls is None
     assert not loaded.zenith.T.identical(second.zenith.T)
+
+    # Replacing a published output preserves access permissions. A failed writer
+    # leaves the complete old file readable and removes its temporary output.
+    target = paths[0].with_name('20240102_retrieval.nc')
+    target.chmod(0o640)
+    workflow.save(second)
+    assert target.stat().st_mode & 0o777 == 0o640
+    before = target.read_bytes()
+
+    def interrupted_write(dataset, path, **kwargs):
+        Path(path).write_bytes(b'Incomplete NetCDF')
+        assert target.read_bytes() == before
+        raise OSError('Interrupted write')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(xr.Dataset, 'to_netcdf', interrupted_write)
+        with pytest.raises(OSError, match='Interrupted write'):
+            workflow.save(second)
+    assert target.read_bytes() == before
+    assert {path.name for path in target.parent.iterdir()} == {
+        '20240101_retrieval.nc', '20240102_retrieval.nc'}
 
 
 def test_bls_only_and_multiple_bls_models(prediction_project):
