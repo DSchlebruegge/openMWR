@@ -26,6 +26,12 @@ class _NoUsableObservations(ValueError):
     """A daily source has no observations supported by the importer."""
 
 
+def _select_utc_day(data, date):
+    """Keep the requested day, excluding the following midnight."""
+    day = np.datetime64(date.strftime('%Y-%m-%d'))
+    return data.isel(time=(data.time >= day) & (data.time < day + np.timedelta64(1, 'D')))
+
+
 def _set_time_encoding_to_seconds(ds: xr.Dataset, time_dim: str = "time") -> None:
     """
     Encode datetime coordinates as integer seconds to avoid minute-unit warnings.
@@ -153,6 +159,7 @@ def import_hatpro_data(
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     - IR brightness temperatures are converted to Kelvin.
     - A standard frequency grid is enforced if unexpected values are found.
+    - Returned observations belong to the requested UTC day.
     """
     site_config = load_site_config(site, project_dir, config=site_config)
     periods = get_invalid_measurements(site, project_dir, site_config=site_config)
@@ -182,9 +189,10 @@ def import_hatpro_data(
     # Filter
     #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True)
     ds_hatpro = ds_hatpro.where(ds_hatpro['elevation_angle'].round(0) == 90., drop=True)
+    ds_hatpro = _select_utc_day(ds_hatpro, date)
 
     if not ds_hatpro.sizes['time']:
-        raise _NoUsableObservations('No zenith observations remain after selecting elevation 90 degrees.')
+        raise _NoUsableObservations('No zenith observations remain in the requested UTC day after selecting elevation 90 degrees.')
 
     if mean_one_min:
         ds_hatpro = mean_n_min(ds_hatpro, 1)  # Useful to avoid many NaNs from mismatched time coords
@@ -261,6 +269,7 @@ def import_hatpro_data_bls(
     - A standard frequency grid is enforced if unexpected values are found.
     - The reader excludes the NetCDF surface-temperature channel from scan angles.
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
+    - Returned observations belong to the requested UTC day.
     """
     site_config = load_site_config(site, project_dir, config=site_config)
     periods = get_invalid_measurements(site, project_dir, site_config=site_config)
@@ -288,6 +297,9 @@ def import_hatpro_data_bls(
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro_bls = add_variables_at_closest_time(ds_hatpro_bls, ds_MET, max_diff=2)
     ds_hatpro_bls = mask_invalid_measurements(ds_hatpro_bls, periods)
+    ds_hatpro_bls = _select_utc_day(ds_hatpro_bls, date)
+    if not ds_hatpro_bls.sizes['time']:
+        raise _NoUsableObservations('No BLS time samples remain in the requested UTC day.')
 
     if 'T' in ds_hatpro_bls and 'surface_p' in ds_hatpro_bls and bool(np.isfinite(ds_hatpro_bls.surface_p).any()):
         # Compute pressure from hydrostatic equilibrium
@@ -296,9 +308,6 @@ def import_hatpro_data_bls(
     ds_hatpro_bls = add_time_data(ds_hatpro_bls)
 
     if out_file is not None:
-        if not ds_hatpro_bls["time"].size > 0:
-            raise _NoUsableObservations('No BLS time samples remain before writing.')
-
         ds_hatpro_bls.to_netcdf(out_file)
         ds_hatpro_bls.close()
         return None

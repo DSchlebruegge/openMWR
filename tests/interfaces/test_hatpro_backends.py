@@ -74,7 +74,7 @@ def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(t
 
 
 @pytest.mark.parametrize('format', ['netcdf', 'binary'])
-def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps(tmp_path, caplog, format):
+def test_daily_import_discards_corrupt_times_and_limits_output_to_requested_day(tmp_path, caplog, format):
     date, raw = project(tmp_path)
     configure(tmp_path, hatpro_format=format)
 
@@ -104,18 +104,23 @@ def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps
 
     suffix = '.NC' if format == 'netcdf' else ''
     brt = next(raw.glob(f'*.BRT{suffix}'))
-    overlaps = [np.datetime64(date) - np.timedelta64(1, 's'),
-                np.datetime64(date + timedelta(days=1)) + np.timedelta64(1, 's')]
-    append_times(brt, overlaps)
     expected = {importer: importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
                 for importer in (import_hatpro_data, import_hatpro_data_bls)}
+    overlaps = [np.datetime64(date) - np.timedelta64(1, 's'),
+                np.datetime64(date + timedelta(days=1)),
+                np.datetime64(date + timedelta(days=1)) + np.timedelta64(1, 's')]
+    append_times(brt, overlaps)
+    if format == 'netcdf':
+        append_times(next(raw.glob('*.BLB.NC')), overlaps)
     expected_times = read_hatpro_file(brt).drop_duplicates('time').sortby('time').time
     products = ['BRT', 'BLB', 'MET', 'IRT']
     for product in products if format == 'netcdf' else ['BRT']:
         bad_times = ['1940-01-01', '2037-01-01', 'NaT'] if format == 'netcdf' else ['1940-01-01', '2037-01-01']
         append_times(next(raw.glob(f'*.{product}{suffix}')), bad_times)
 
-    # Check the loader before resampling, so a regression cannot exhaust CI memory.
+    # Keep adjacent-day samples available for matching auxiliary sensors. Only
+    # the assembled daily observations exclude them. Check before resampling so
+    # corrupt timestamps cannot exhaust CI memory.
     with caplog.at_level('WARNING', logger='openMWR.hatpro_io'):
         cleaned = load_hatpro_day(date, 'test', tmp_path, products)
     xr.testing.assert_identical(cleaned['BRT'].time, expected_times)
@@ -124,8 +129,19 @@ def test_daily_import_discards_corrupt_times_before_averaging_and_keeps_overlaps
                      (data.time <= np.datetime64(date + timedelta(days=2)))).all())
     assert str(brt) in caplog.text and 'Discarding' in caplog.text
     for importer, original in expected.items():
-        xr.testing.assert_identical(importer(date, 'test', tmp_path,
-            mean_one_min=True, include_rpg=False), original)
+        actual = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
+        xr.testing.assert_identical(actual, original)
+        assert bool(((actual.time >= np.datetime64(date)) &
+                     (actual.time < np.datetime64(date + timedelta(days=1)))).all())
+
+    # A readable neighbouring-day file is not usable data for the requested day.
+    if format == 'netcdf':
+        for product, importer in [('BRT', import_hatpro_data), ('BLB', import_hatpro_data_bls)]:
+            path = next(raw.glob(f'*.{product}.NC'))
+            data = xr.load_dataset(path).isel(time=[0])
+            data.assign_coords(time=[overlaps[0]]).to_netcdf(path)
+            with pytest.raises(ValueError, match='requested UTC day'):
+                importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
 
 
 def test_days_with_only_invalid_timestamps_report_the_file_and_omit_optional_products(tmp_path, caplog):
