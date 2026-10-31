@@ -146,12 +146,18 @@ reported while other observations remain available.
 Binary BRT, BLB, MET and IRT are decoded by MWRpy. Masking, time matching and
 averaging use the same code as NetCDF. BLS uses integrated BLB scans. Binary BLB
 has no explicit azimuth field. The NetCDF reader removes its extra 0-degree
-surface-temperature channel. RPG retrieval products require NetCDF in every
-mode when `observations.include_rpg = true` is set in the HATPRO recipe.
-The option is off when omitted. Missing or unreadable comparison
+surface-temperature channel. The same format selection applies to stored RPG
+retrieval products: LWP, IWV, TPC, TPB, HPC and LPR. openMWR reads these binary
+products directly, including humidity profiles with or without relative humidity.
+Set `observations.include_rpg = true` in the HATPRO recipe to include these
+comparisons. The option is off when omitted. Missing or unreadable comparison
 products are logged and omitted independently. Their absence does not discard
 observations or other available products. After daily files are combined,
 unavailable comparison values remain missing, without interpolation.
+
+`auto` selects by file presence, without comparing modification times. Use
+`hatpro_format = "binary"` when NetCDF exports can lag behind the binary files.
+Unsupported binary file codes and incomplete records are reported as errors.
 
 Daily import skips empty zenith selections and BLS scans missing standard HATPRO
 angles. `build.log` reports the reason, including missing and measured scan

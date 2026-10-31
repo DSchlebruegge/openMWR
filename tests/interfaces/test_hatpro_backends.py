@@ -23,11 +23,14 @@ from tests.fixtures.prediction import checkpoint
 DATA = Path(__file__).resolve().parents[1] / 'data/hatpro'
 
 
-def project(tmp_path, variant='modern'):
+def project(tmp_path, variant='modern', *, rpg=False):
     day = json.loads((DATA / 'provenance.json').read_text())[variant]['date']
     date = datetime.fromisoformat(day)
     raw = tmp_path / 'raw' / date.strftime('Y%Y/M%m/D%d')
     shutil.copytree(DATA / variant, raw)
+    if rpg:
+        for path in (DATA / variant / 'rpg').iterdir():
+            shutil.copy(path, raw)
     create_site('test', tmp_path, instrument_generation='G5', hatpro_data_dir='raw',
                 mwr_height=550)
     return date, raw
@@ -41,19 +44,34 @@ def configure(tmp_path, **changes):
 
 
 @pytest.mark.parametrize('variant', ['legacy', 'modern'])
-def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(tmp_path, variant):
-    date, raw = project(tmp_path, variant)
+@pytest.mark.parametrize('include_rpg', [False, True])
+def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(tmp_path, variant, include_rpg):
+    date, raw = project(tmp_path, variant, rpg=include_rpg)
+    if include_rpg:
+        # Independent manufacturer exports verify every stored value, timestamp
+        # and height, before matching, filtering or derived calculations.
+        for product in ('LWP', 'IWV', 'TPC', 'TPB', 'HPC', 'LPR'):
+            path = next(raw.glob(f'*.{product}'))
+            binary = read_hatpro_file(path)
+            netcdf = read_hatpro_file(Path(str(path) + '.NC'))
+            xr.testing.assert_allclose(binary, netcdf, rtol=0, atol=0)
+            assert binary.attrs['rpg_file_code'] > 0
+            assert all('units' in value.attrs for value in binary.data_vars.values())
     for importer in (import_hatpro_data, import_hatpro_data_bls):
         configure(tmp_path, hatpro_format='netcdf')
-        expected = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
+        expected = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=include_rpg)
         configure(tmp_path, hatpro_format='binary')
-        actual = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False)
+        actual = importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=include_rpg)
         # Binary BLB has no explicit azimuth field. Every common observation and
         # derived time input must agree, including unpacked rain and MET humidity.
         variables = {'TB', 'rain_flag', 'surface_p', 'surface_T', 'surface_rh',
                      'doy_cos', 'doy_sin', 'years_since_1970'}
+        if include_rpg:
+            variables |= {'T', 'p'}
         if importer is import_hatpro_data:
             variables |= {'TB_IR', 'elevation_angle', 'azimuth_angle'}
+            if include_rpg:
+                variables |= {'ah', 'rh', 'TD', 'lwp', 'iwv', 'lwc'}
             assert set(expected.data_vars) == variables
         else:
             assert set(expected.data_vars) == variables | {'azimuth_angle'}
@@ -64,6 +82,9 @@ def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(t
         assert np.isfinite(actual.TB).any() and np.isfinite(actual.surface_p).any()
         assert float(actual.surface_rh.max()) <= 100
         assert actual.attrs['mwrpy_version']
+        if include_rpg:
+            comparisons = ('T', 'p') if importer is import_hatpro_data_bls else ('T', 'p', 'TD', 'ah', 'rh', 'lwp', 'iwv', 'lwc')
+            assert all(np.isfinite(actual[name]).any() for name in comparisons)
     for suffix in ('', '.NC'):
         irt = read_hatpro_file(next(raw.glob(f'*.IRT{suffix}')))
         assert irt.TB_IR.dims == ('time', 'wavelength')
@@ -330,9 +351,9 @@ def test_unavailable_rpg_products_preserve_observations_and_other_comparisons(tm
     for product in ('TPC', 'TPB', 'HPC', 'LWP'):
         (raw / f'{date:%y%m%d}.{product}.NC').unlink(missing_ok=True)
     binary_rpg = raw / f'{date:%y%m%d}.LWP'
-    binary_rpg.write_bytes(b'Binary RPG products are not decoded')
+    binary_rpg.write_bytes(b'Broken RPG product')
     xr.testing.assert_identical(read(), expected)
-    with pytest.raises(ValueError, match='products require NetCDF'):
+    with pytest.raises(ValueError, match='incomplete RPG header'):
         read_hatpro_file(binary_rpg)
 
 
@@ -376,36 +397,140 @@ def test_malformed_netcdf_names_missing_fields_and_preserves_partial_weather(tmp
     xr.testing.assert_identical(result.surface_T, expected_temperature)
 
 
-def test_binary_errors_and_local_timestamps_have_explicit_meaning(tmp_path):
-    date, raw = project(tmp_path)
-    path = next(raw.glob('*.BRT'))
+@pytest.mark.parametrize('product,reference_offset', [('BRT', 8), ('HPC', 16)])
+def test_binary_errors_and_local_timestamps_have_explicit_meaning(tmp_path, product, reference_offset):
+    date, raw = project(tmp_path, rpg=True)
+    path = next(raw.glob(f'*.{product}'))
     original = path.read_bytes()
     utc = read_hatpro_file(path)
     path.write_bytes(original[:-1])
-    with pytest.raises(ValueError, match='BRT.*records'):
+    with pytest.raises(ValueError, match=f'{product}.*records'):
         read_hatpro_file(path)
     content = bytearray(original)
     struct.pack_into('<i', content, 0, 999)
     path.write_bytes(content)
-    with pytest.raises(ValueError, match='BRT.*not supported'):
+    with pytest.raises(ValueError, match=f'{product}.*not supported'):
         read_hatpro_file(path)
     content = bytearray(original)
-    struct.pack_into('<i', content, 8, 0)  # BRT header's local/UTC reference.
+    struct.pack_into('<i', content, reference_offset, 0)
     path.write_bytes(content)
     with pytest.raises(ValueError, match='hatpro_time_offset_hours'):
         read_hatpro_file(path)
     local = read_hatpro_file(path, time_offset_hours=1)
     np.testing.assert_array_equal(local.time, utc.time - np.timedelta64(1, 'h'))
-    np.testing.assert_array_equal(local.TB, utc.TB)
+    for name in utc.data_vars:
+        np.testing.assert_array_equal(local[name], utc[name])
     configure(tmp_path, hatpro_format='binary', hatpro_time_offset_hours=1)
-    xr.testing.assert_identical(load_hatpro_day(date, 'test', tmp_path, ['BRT'])['BRT'],
+    xr.testing.assert_identical(load_hatpro_day(date, 'test', tmp_path, [product])[product],
                                 local.drop_duplicates('time').sortby('time'))
+    struct.pack_into('<i', content, reference_offset, 2)
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match='unsupported binary time reference 2'):
+        read_hatpro_file(path)
     path.write_bytes(original)
     xr.testing.assert_identical(read_hatpro_file(path, time_offset_hours=1), utc)
 
 
+@pytest.mark.parametrize('product', ['BRT', 'HPC'])
+def test_binary_times_survive_the_unix_int32_boundary(tmp_path, product):
+    _, raw = project(tmp_path, rpg=True)
+    path = next(raw.glob(f'*.{product}'))
+    original = read_hatpro_file(path)
+    content = bytearray(path.read_bytes())
+    expected = np.array(['2038-01-19T03:14:07', '2038-01-19T03:14:08',
+                         '2040-01-01T00:00:00', '2069-01-19T03:14:07'], dtype='datetime64[ns]')
+    if product == 'BRT':
+        frequencies, = struct.unpack_from('<i', content, 12)
+        start, size, reference_offset = 16 + 12 * frequencies, 9 + 4 * frequencies, 8
+    else:
+        levels, = struct.unpack_from('<i', content, 24)
+        start, size, reference_offset = 28 + 4 * levels, 17 + 4 * levels, 16
+    for index, time in enumerate(expected):
+        seconds = int((datetime.fromisoformat(str(time)) - datetime(2001, 1, 1)).total_seconds())
+        struct.pack_into('<i', content, start + index * size, seconds)
+    path.write_bytes(content)
+    utc = read_hatpro_file(path, time_offset_hours=5.75)
+    np.testing.assert_array_equal(utc.time[:4], expected)
+    for name in original.data_vars:
+        np.testing.assert_array_equal(utc[name], original[name])
+    # Offsets are applied only to local-time files, including fractional-hour
+    # zones. The last sample exercises the binary epoch's largest signed value.
+    struct.pack_into('<i', content, reference_offset, 0)
+    path.write_bytes(content)
+    for offset, seconds in [(5.75, 20700), (-3.5, -12600)]:
+        local = read_hatpro_file(path, time_offset_hours=offset)
+        np.testing.assert_array_equal(local.time[:4], expected - np.timedelta64(seconds, 's'))
+
+
+@pytest.mark.parametrize('variant', ['legacy', 'modern'])
+def test_humidity_only_formats_preserve_absolute_profiles_without_inventing_rh(tmp_path, variant):
+    date, raw = project(tmp_path, variant, rpg=True)
+    path = next(raw.glob('*.HPC'))
+    content = bytearray(path.read_bytes())
+    code, count = struct.unpack_from('<2i', content)
+    levels, = struct.unpack_from('<i', content, 24)
+    record_size = 5 + 4 * levels + (12 if variant == 'modern' else 0)
+    content = content[:28 + 4 * levels + count * record_size]
+    struct.pack_into('<i', content, 0, code - 1)
+    path.write_bytes(content)
+    nc = Path(str(path) + '.NC')
+    original = xr.load_dataset(nc)
+    original.drop_vars('RH_prof' if variant == 'modern' else 'relative_humidity_profiles').to_netcdf(nc)
+    binary = read_hatpro_file(path)
+    assert set(binary.data_vars) == {'ah'}
+    xr.testing.assert_allclose(binary, read_hatpro_file(nc), rtol=0, atol=0)
+    configure(tmp_path, hatpro_format='binary')
+    day = import_hatpro_data(date, 'test', tmp_path, include_rpg=True, mean_one_min=True)
+    assert 'rh' not in day and np.isfinite(day.ah).any() and np.isfinite(day.TD).any()
+
+
+def test_rpg_format_selection_and_invalid_optional_files_preserve_other_products(tmp_path, caplog):
+    date, raw = project(tmp_path, rpg=True)
+    products = ['LWP', 'IWV', 'TPC', 'HPC', 'LPR', 'TPB']
+    reference = load_hatpro_day(date, 'test', tmp_path, products)
+    nc = next(raw.glob('*.LWP.NC'))
+    data = xr.load_dataset(nc)
+    data['LWP'] += 100
+    data.to_netcdf(nc)
+    auto = load_hatpro_day(date, 'test', tmp_path, products)
+    xr.testing.assert_allclose(auto['LWP'].lwp, reference['LWP'].lwp + 100)
+    configure(tmp_path, hatpro_format='binary')
+    binary = load_hatpro_day(date, 'test', tmp_path, products)
+    xr.testing.assert_allclose(binary['LWP'], reference['LWP'], rtol=0, atol=0)
+    configure(tmp_path, hatpro_format='auto')
+    nc.unlink()
+    xr.testing.assert_identical(load_hatpro_day(date, 'test', tmp_path, products)['LWP'], binary['LWP'])
+    nc.write_bytes(b'Broken selected NetCDF')
+    assert set(load_hatpro_day(date, 'test', tmp_path, products)) == set(products) - {'LWP'}
+    configure(tmp_path, hatpro_format='binary')
+    path = next(raw.glob('*.TPC'))
+    original = path.read_bytes()
+    for content, diagnostic in [(original[:25], 'incomplete profile header'),
+                                (original + b'extra', 'inconsistent records')]:
+        path.write_bytes(content)
+        with pytest.raises(ValueError, match=diagnostic):
+            read_hatpro_file(path)
+    for offset, value, diagnostic in [(4, 0, 'records must be positive'),
+                                      (24, 0, 'height grid'),
+                                      (24, 2**31 - 1, 'height grid'),
+                                      (28, -1, 'strictly increasing'),
+                                      (32, 0, 'strictly increasing')]:
+        content = bytearray(original)
+        struct.pack_into('<i', content, offset, value)
+        path.write_bytes(content)
+        with pytest.raises(ValueError, match=diagnostic):
+            read_hatpro_file(path)
+    path.write_bytes(original[:-1])
+    next(raw.glob('*.HPC')).unlink()
+    partial = load_hatpro_day(date, 'test', tmp_path, products)
+    assert set(partial) == set(products) - {'TPC', 'HPC'}
+    for product, values in partial.items():
+        xr.testing.assert_identical(values, binary[product])
+    assert str(path) in caplog.text
+
+
 def test_binary_dataset_build_update_and_prediction_use_the_same_inputs(tmp_path):
-    date, raw = project(tmp_path)
+    date, raw = project(tmp_path, rpg=True)
     recipe = tmp_path / 'sites/test/datasets/hatpro.toml'
     recipe.write_text(tomli_w.dumps(dict(kind='hatpro', start_date=str(date.date()),
         end_date=str(date.date()), observations={'include_rpg': True},
@@ -418,6 +543,7 @@ def test_binary_dataset_build_update_and_prediction_use_the_same_inputs(tmp_path
     workflow.require('hatpro')
     outputs = workflow.files('hatpro')
     before = {path: xr.load_dataset(path) for path in outputs}
+    assert all(np.isfinite(data.T).any() for data in before.values())
     workflow.build('hatpro')
     for path, original in before.items():
         xr.testing.assert_identical(xr.load_dataset(path), original)

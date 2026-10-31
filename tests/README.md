@@ -31,7 +31,7 @@ they do not establish infrared numerical accuracy.
 | `workflows/test_prediction.py` | Applying saved models, smoothing, mixed profile/column outputs and missing observations |
 | `science/test_observations.py` | Variable validity, UTC period bounds, independent station samples and matching across outages |
 | `interfaces/test_devices.py` | Automatic device priority, explicit overrides and hardware availability |
-| `interfaces/test_hatpro_backends.py` | Paired manufacturer exports and binary observations, format selection, local timestamps, malformed files and integration with datasets/prediction |
+| `interfaces/test_hatpro_backends.py` | Paired manufacturer exports and binary measurements/retrieval products, format selection, local timestamps, malformed files and integration with datasets/prediction |
 | `science/` | Numerical values, units, coordinates, cloud/profile rules, loss weights and derivatives |
 | `interfaces/` | Parser/dispatch, invalid recipes, editable grids, recommendations, storage, acquisition, plotting and external binaries |
 

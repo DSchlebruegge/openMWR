@@ -123,8 +123,8 @@ def import_hatpro_data(
     date : datetime or pandas.Timestamp
         Date used to construct RPG file paths like
         `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>[.NC]`.
-        The site hatpro_format selects auto, netcdf or binary observations.
-        RPG retrieval products require NetCDF in either mode.
+        The site hatpro_format selects auto, netcdf or binary inputs for
+        measurements and stored RPG retrieval products alike.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
     project_dir : str
@@ -233,8 +233,8 @@ def import_hatpro_data_bls(
     date : datetime or pandas.Timestamp
         Date used to construct RPG file paths like
         `{hatpro_data_dir}/Y%Y/M%m/D%d/%y%m%d.<suffix>[.NC]`.
-        The site hatpro_format selects auto, netcdf or binary observations.
-        RPG retrieval products require NetCDF in either mode.
+        The site hatpro_format selects auto, netcdf or binary inputs for
+        measurements and stored RPG retrieval products alike.
     site : str
         Site name used to resolve `hatpro_data_dir` from the site config.
     project_dir : str

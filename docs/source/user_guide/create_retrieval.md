@@ -377,12 +377,13 @@ The input root must contain daily RPG files in folders such as
 By default, openMWR prefers NetCDF for each observation product and uses binary
 when that NetCDF file is absent. Set `hatpro_format = "netcdf"` or `"binary"`
 in `site.toml` to require one observation format for both datasets and prediction.
-Binary input supports BRT, BLB, MET and IRT. Files marked as local time also need
+Binary input supports BRT, BLB, MET and IRT, and the RPG comparison products
+LWP, IWV, TPC, TPB, HPC and LPR. Files marked as local time also need
 `hatpro_time_offset_hours`, the fixed local time minus UTC in hours.
 
 To import the instrument's own retrieval products for comparison, set
-`include_rpg = true` under `[observations]` in `datasets/hatpro.toml`. These products
-require NetCDF even when observations use binary. Missing or unreadable products
+`include_rpg = true` under `[observations]` in `datasets/hatpro.toml`. The same
+`hatpro_format` selection applies to these products. Missing or unreadable products
 are logged and omitted. Available measurements and other comparison products
 are retained.
 `datasets/hatpro.toml` uses the site start and `end_date = "today"`. Set explicit
