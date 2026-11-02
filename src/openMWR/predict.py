@@ -519,7 +519,9 @@ class PredictionWorkflow:
         if 'rain_flag' in observations:
             predicted['rain_flag'] = observations.rain_flag.sel(time=predicted.time)
         if self.smooth and not bls:
-            predicted = predicted.rolling(time=5, center=True, min_periods=1).mean(keep_attrs=True)
+            # Smoothing must not fill times without a valid prediction.
+            predicted = predicted.rolling(time=5, center=True, min_periods=1).mean(
+                keep_attrs=True).where(predicted.notnull())
         units = {'T': 'K', 'rh': '%', 'surface_T': 'K', 'surface_rh': '%',
                  'surface_p': 'hPa', 'lwc': 'g/m^3', 'lwp': 'g/m^2', 'iwv': 'kg/m^2', 'TB': 'K'}
         for name, unit in units.items():

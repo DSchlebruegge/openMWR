@@ -81,6 +81,21 @@ def test_known_prediction_smoothing_and_netcdf_roundtrip(prediction_project, mon
     partial = run_model_list([workflow.models[0]], stations, 'cpu')
     assert int(partial.T.sel(height=0).notnull().sum()) == 6
 
+    # Smoothing must not create predictions from missing required inputs,
+    # including before a recovery separated by a long measurement gap.
+    recovered = result.observations.copy(deep=True).assign_coords(time=np.array([
+        '2024-01-01T00:00', '2024-01-01T00:01', '2024-01-01T00:02',
+        '2024-01-01T01:00', '2024-01-01T01:01', '2024-01-01T01:02',
+    ], dtype='datetime64[ns]'))
+    recovered['surface_p'][:3] = np.nan
+    recovered_result = workflow.predict('2024-01-01', observations=recovered,
+                                        observations_bls=result.observations_bls)
+    assert not recovered_result.errors
+    assert recovered_result.zenith.T.isel(time=slice(0, 3)).isnull().all()
+    np.testing.assert_allclose(recovered_result.zenith.T.sel(height=0).isel(time=slice(3, None)),
+                               301.75, rtol=0, atol=5e-5)
+    xr.testing.assert_identical(recovered_result.bls, result.bls)
+
 
 def test_range_continues_after_missing_day_and_reports_partial_bls(prediction_project):
     raw_day(prediction_project, datetime(2024, 1, 3), bls=False)
