@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from openMWR.plot import SkewT, load_radiosonde_profile, plot_err, plot_scatter_lwp
+from openMWR.plot import SkewT, TimeSeriesPlot, load_radiosonde_profile, plot_err, plot_scatter_lwp
 from openMWR.evaluation import _profile_figure
 
 
@@ -71,6 +71,50 @@ def test_missing_lwp_still_produces_a_figure():
     plot_scatter_lwp(predicted, reference, figure=figure, show=False)
     assert len(figure.axes) == 2
     assert figure.axes[0].lines[0].get_xdata().size == 0
+
+
+@pytest.mark.parametrize(('field', 'limits'), [
+    ('gaps', {}), ('zero_with_gaps', {'vmin': 0}),
+    ('constant', {}), ('constant', {'vmin': 280}),
+    ('constant', {'vmax': 280}), ('constant', {'center': 280}),
+    ('missing', {}), ('missing', {'vmin': 0, 'vmax': 1}),
+])
+def test_contour_limits_handle_gaps_constant_fields_and_missing_data(field, limits):
+    data = np.arange(15, dtype=float).reshape(3, 5) + 270
+    if field == 'gaps':
+        data[1, 2], data[2, 1] = np.nan, np.inf
+    elif field == 'zero_with_gaps':
+        data[:] = 0
+        data[:, 2] = np.nan
+    elif field == 'constant':
+        data[:] = 280
+    else:
+        data[:] = np.nan
+    original = data.copy()
+    day = pd.Timestamp('2024-01-01')
+    time = xr.DataArray(pd.date_range(day, periods=5, freq='4h'), dims='time')
+    height = xr.DataArray([0., 1., 2.], dims='height')
+    figure = TimeSeriesPlot(day, 'Contour limits')
+    try:
+        axis = figure.add_axis(ylabel='Height [km]')
+        if field == 'missing':
+            with pytest.raises(ValueError, match='no finite data'):
+                axis.plot_filled_contours(time, height, data, 'Temperature [K]', 'viridis', **limits)
+        else:
+            axis.plot_filled_contours(time, height, data, 'Temperature [K]', 'viridis', **limits)
+            figure.fig.canvas.draw()
+            lower, upper = axis.ax.collections[0].get_clim()
+            assert np.isfinite([lower, upper]).all() and lower < upper
+            finite = data[np.isfinite(data)]
+            assert lower <= finite.min() <= finite.max() <= upper
+            for key, actual in [('vmin', lower), ('vmax', upper)]:
+                if key in limits:
+                    assert actual == pytest.approx(limits[key])
+            if 'center' in limits:
+                assert lower + upper == pytest.approx(2 * limits['center'])
+        np.testing.assert_array_equal(data, original)
+    finally:
+        figure.close()
 
 
 def test_report_error_axes_distinguish_signed_errors_from_nonnegative_errors():

@@ -665,14 +665,19 @@ class Axis:
 
         Notes
         -----
-        - If all values in ``data`` are zero and ``vmax`` is not provided, a default
-            ``vmax = 1`` is used.
+        - Missing and infinite values remain masked. Automatic limits use only
+            finite values. Entirely missing fields raise a ValueError.
+        - If all finite values are zero and ``vmax`` is not provided, a default
+            ``vmax = 1`` is used. Other constant fields get a small plotting range.
         - Level spacing is internally adjusted to “nice” rounded steps based on
             order-of-magnitude heuristics.
         
         """
-        # Handle edge case where all data values are zero
-        if np.all(data == 0) and vmax is None:
+        data = np.ma.masked_invalid(data)
+        finite = data.compressed()
+        if not finite.size:
+            raise ValueError('Cannot plot filled contours: no finite data values.')
+        if np.all(finite == 0) and vmax is None:
             vmax = 1
 
         def find_better_step(step_orig):
@@ -698,10 +703,20 @@ class Axis:
         #Determining levels
         lev_in_contour = 2 # Number of colored bins in one contour bin
 
-        min = vmin if vmin is not None else data.min()
-        max = vmax if vmax is not None else data.max()
+        minimum = vmin if vmin is not None else finite.min()
+        maximum = vmax if vmax is not None else finite.max()
+        if not np.isfinite([minimum, maximum]).all() or maximum < minimum:
+            raise ValueError('Contour limits must be finite and increasing.')
+        if minimum == maximum and (center is None or minimum == center):
+            if vmin is not None and vmax is not None:
+                raise ValueError('Contour limits must be finite and increasing.')
+            padding = max(1., abs(minimum) * .01)
+            if vmin is None:
+                minimum -= padding
+            if vmax is None:
+                maximum += padding
 
-        diff = max - min
+        diff = maximum - minimum
         step = diff / n_bins_goal
 
         if (vmin is None or vmax is None) and center is None:
@@ -709,15 +724,15 @@ class Axis:
             step, order_of_magnitude = find_better_step(step)
 
             if vmin is None and vmax is None:
-                vmin = round_down(min, order_of_magnitude * 10)
-                diff = max - vmin
+                vmin = round_down(minimum, order_of_magnitude * 10)
+                diff = maximum - vmin
 
             diff = round_up(diff, step)
 
             if vmin is None:
-                vmin = max - diff
+                vmin = maximum - diff
         elif center is not None:
-            max_dev = np.max([max - center, center - min])
+            max_dev = np.max([maximum - center, center - minimum])
 
             step, order_of_magnitude = find_better_step(2 * max_dev / n_bins_goal)
 
