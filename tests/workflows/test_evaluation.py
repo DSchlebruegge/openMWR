@@ -151,6 +151,7 @@ def test_separate_groups_rescore_baseline_and_save_standalone_report_without_cha
     scan_only = evaluate(recipe, retrievals=['scan']).evaluations[0]
     assert set(scan_only.metrics['errors'].model.values) == {'scan', 'RPG', 'RPG_BLS'}
     assert set(scan_only.metrics['relative_rmse'].data_vars) == {'T', 'rh'}
+    assert not list(tmp_path.rglob('*.log'))
     path = save_evaluation(result)
     assert path.parent == tmp_path / 'sites/test/evaluations'
     assert re.fullmatch(r'comparison_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.html', path.name)
@@ -177,6 +178,8 @@ def test_separate_groups_rescore_baseline_and_save_standalone_report_without_cha
     assert command.returncode == 0, command.stderr
     assert command.stdout.strip() == str(tmp_path / 'cli run.html')
     assert 'id="mode-bls"' in (tmp_path / 'cli run.html').read_text()
+    assert 'Evaluating comparison' in command.stderr
+    assert not list(tmp_path.rglob('*.log'))
     assert all(path.read_bytes() == before for path, before in originals.items())
     # An unknown relative-RMSE reference must never receive a guessed label.
     result.evaluations[2].metrics['relative_rmse'].attrs.pop('reference')

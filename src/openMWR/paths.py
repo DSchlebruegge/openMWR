@@ -102,7 +102,7 @@ def evaluation_recipe_file(project_dir: PathLike, site: str, name: str) -> Path:
 
 
 def evaluation_log_file(project_dir: PathLike, site: str, name: str) -> Path:
-    """Return the append log beside an evaluation recipe and its HTML reports."""
+    """Return the background console log beside an evaluation recipe."""
     return evaluation_recipe_file(project_dir, site, name).with_suffix('.log')
 
 

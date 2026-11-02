@@ -1,7 +1,6 @@
 import sys
 import time
 import logging
-from logging.handlers import TimedRotatingFileHandler
 import os
 import warnings
 import traceback
@@ -130,53 +129,6 @@ def is_called_from_notebook():
         return False
     except ImportError:
         return False
-
-def setup_daily_logger(name=__name__, file=f"{__file__}.log", level=logging.INFO):
-    """
-    Create a daily rotating file logger.
-
-    Parameters
-    ----------
-    name : str, optional
-        Logger name, by default ``__name__``.
-    file : str, optional
-        Path to the log file, by default ``"{__file__}.log"``.
-    level : int, optional
-        Logging level (e.g., ``logging.INFO``), by default ``logging.INFO``.
-
-    Returns
-    -------
-    logging.Logger
-        Configured logger instance.
-
-    Notes
-    -----
-    Existing handlers are cleared to prevent duplicate log entries. The handler
-    rotates at midnight UTC without keeping backups.
-    """
-
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    # Doppelte Handler verhindern
-    if logger.hasHandlers():
-        logger.handlers.clear()
-
-    handler = TimedRotatingFileHandler(
-        file,
-        when="midnight",
-        interval=1,
-        backupCount=0,
-        encoding='utf-8',
-        utc=True
-    )
-
-    formatter = logging.Formatter('%(asctime)s: %(levelname)s: %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
-    return logger
 
 def remove_files_in_dir(path: str):
     """

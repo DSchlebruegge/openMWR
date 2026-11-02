@@ -28,10 +28,10 @@ from openMWR.models import load_model
 from openMWR.observations import load_analysis_dataset, reference_source
 from openMWR.site import load_site_config
 from openMWR.paths import (project_root, site_config_file, dataset_file, checkpoint_file,
-                           dataset_recipe_file, evaluation_log_file, evaluation_recipe_file)
+                           dataset_recipe_file, evaluation_recipe_file)
 from openMWR.plot import plot_scatter_lwp
 from openMWR.predict import run_model_list, validate_model_data
-from openMWR.provenance import checkpoint_id, plain_value, software_identity, task_log, utc_now
+from openMWR.provenance import checkpoint_id, plain_value, software_identity, utc_now
 from openMWR.xr_utils import load_combined_dataset
 
 logger = logging.getLogger(__name__)
@@ -383,74 +383,73 @@ def evaluate(recipe: EvaluationRecipe, *, retrievals=None, device='auto'):
         if settings.get('bls_baseline') not in settings['retrievals']:
             settings.pop('bls_baseline', None)
     recipe = EvaluationRecipe(project_root(recipe.project_dir), recipe.site, recipe.name, settings).validate()
-    with task_log(evaluation_log_file(recipe.project_dir, recipe.site, recipe.name)):
-        started = utc_now()
-        device = resolve_device(device)
-        hashes = {name: checkpoint_id(checkpoint_file(recipe.project_dir, recipe.site, name)) for name in settings['retrievals']}
-        models = [load_model(name, recipe.site, recipe.project_dir) for name in settings['retrievals']]
-        if len({'TB' in model.output for model in models}) > 1:
-            raise ValueError('Evaluate spectral and profile retrievals in separate recipes.')
-        groups = {mode: [model for model in models if model.is_bls_model == (mode == 'bls')]
-                  for mode in MODE_TITLES}
-        baseline_name = settings.get('bls_baseline')
-        baseline = next((model for model in models if model.name == baseline_name), None)
-        if baseline is not None and (baseline.is_bls_model or 'TB' in baseline.output):
-            raise ValueError('bls_baseline must be a zenith profile retrieval.')
-        if not groups['bls']:
-            settings.pop('bls_baseline', None)
-            baseline = None
-        configuration = [site_config_file(recipe.project_dir, recipe.site)]
-        configuration += [dataset_recipe_file(recipe.project_dir, recipe.site, settings[key]['dataset'])
-                          for key in ('observations', 'test') if key in settings]
-        inputs = {path: checkpoint_id(path) for path in configuration if path.is_file()}
-        notes = {model.name: _model_notes(model, recipe) for model in models}
-        logger.info('Evaluating %s with retrievals %s.', recipe.name, ', '.join(settings['retrievals']))
-        evaluations = {mode: [] for mode in MODE_TITLES}
-        for section in ('observations', 'test'):
-            if section not in settings:
+    started = utc_now()
+    device = resolve_device(device)
+    hashes = {name: checkpoint_id(checkpoint_file(recipe.project_dir, recipe.site, name)) for name in settings['retrievals']}
+    models = [load_model(name, recipe.site, recipe.project_dir) for name in settings['retrievals']]
+    if len({'TB' in model.output for model in models}) > 1:
+        raise ValueError('Evaluate spectral and profile retrievals in separate recipes.')
+    groups = {mode: [model for model in models if model.is_bls_model == (mode == 'bls')]
+              for mode in MODE_TITLES}
+    baseline_name = settings.get('bls_baseline')
+    baseline = next((model for model in models if model.name == baseline_name), None)
+    if baseline is not None and (baseline.is_bls_model or 'TB' in baseline.output):
+        raise ValueError('bls_baseline must be a zenith profile retrieval.')
+    if not groups['bls']:
+        settings.pop('bls_baseline', None)
+        baseline = None
+    configuration = [site_config_file(recipe.project_dir, recipe.site)]
+    configuration += [dataset_recipe_file(recipe.project_dir, recipe.site, settings[key]['dataset'])
+                      for key in ('observations', 'test') if key in settings]
+    inputs = {path: checkpoint_id(path) for path in configuration if path.is_file()}
+    notes = {model.name: _model_notes(model, recipe) for model in models}
+    logger.info('Evaluating %s with retrievals %s.', recipe.name, ', '.join(settings['retrievals']))
+    evaluations = {mode: [] for mode in MODE_TITLES}
+    for section in ('observations', 'test'):
+        if section not in settings:
+            continue
+        selection = settings[section]
+        cases = _predict_cases(recipe, section, selection, groups, device, inputs, site_config)
+        for mode, group in groups.items():
+            if not group:
                 continue
-            selection = settings[section]
-            cases = _predict_cases(recipe, section, selection, groups, device, inputs, site_config)
-            for mode, group in groups.items():
-                if not group:
-                    continue
-                reference, predicted, supported = cases[mode]
-                compared = group
-                if mode == 'bls' and baseline is not None:
-                    compared = [baseline, *group]
-                    reference = _reference_grid(compared, reference, selection['variables'], selection)
-                    zenith_reference, zenith_predictions, zenith_supported = cases['zenith']
-                    _check_references(reference, zenith_reference)
-                    baseline_rows = [baseline.name]
-                    predicted = xr.concat([zenith_predictions.sel(model=baseline_rows), predicted], dim='model', join='outer')
-                    supported = {**{name: zenith_supported[name] for name in baseline_rows}, **supported}
-                if section == 'observations':
-                    for model in compared:
-                        optimization = (model.training_metadata or {}).get('setup', {}).get('optimization')
-                        if optimization:
-                            dates = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
-                            if isinstance(dates.get('days_of_month'), list):
-                                dates['days_of_month'] = dict(zip(('first', 'last'), dates['days_of_month']))
-                            overlap = bool(select_time(reference, **dates).sizes['time'])
-                            notes[model.name].append(
-                                f"{MODE_TITLES[mode]} observations: optimized against {optimization.get('data_source', 'an unrecorded reference')}. "
-                                f"Optimization selection: {_observation_note(dates)} "
-                                + ('Selected evaluation dates overlap this selection.' if overlap else 'Selected evaluation dates are outside this selection.'))
-                evaluations[mode].append(_score_case(mode, section, selection, predicted, reference, supported))
-        evaluations = [case for group in evaluations.values() for case in group]
-        metadata = dict(site=recipe.site, evaluation=recipe.name, project_dir=str(recipe.project_dir),
-                        started_utc=started, finished_utc=utc_now(), settings=plain_value(settings),
-                        device=device, device_name=device_name(device), code=software_identity(),
-                        inputs=[dict(path=str(path.relative_to(recipe.project_dir)), sha256=digest) for path, digest in sorted(inputs.items())],
-                        models=[dict(name=model.name, mode='Boundary layer scan' if model.is_bls_model else 'Zenith',
-                                     checkpoint_sha256=hashes[model.name],
-                                     training_metadata=model.training_metadata, notes=notes[model.name]) for model in models])
-        for evaluation in evaluations:
-            for name in evaluation.metrics['errors'].model.values:
-                if name not in {model['name'] for model in metadata['models']}:
-                    metadata['models'].append(dict(name=str(name), mode='RPG product', notes=[]))
-        logger.info('Finished evaluation %s.', recipe.name)
-        return Analysis(metadata, evaluations)
+            reference, predicted, supported = cases[mode]
+            compared = group
+            if mode == 'bls' and baseline is not None:
+                compared = [baseline, *group]
+                reference = _reference_grid(compared, reference, selection['variables'], selection)
+                zenith_reference, zenith_predictions, zenith_supported = cases['zenith']
+                _check_references(reference, zenith_reference)
+                baseline_rows = [baseline.name]
+                predicted = xr.concat([zenith_predictions.sel(model=baseline_rows), predicted], dim='model', join='outer')
+                supported = {**{name: zenith_supported[name] for name in baseline_rows}, **supported}
+            if section == 'observations':
+                for model in compared:
+                    optimization = (model.training_metadata or {}).get('setup', {}).get('optimization')
+                    if optimization:
+                        dates = {key: optimization[key] for key in TIME_SELECTION_KEYS if key in optimization}
+                        if isinstance(dates.get('days_of_month'), list):
+                            dates['days_of_month'] = dict(zip(('first', 'last'), dates['days_of_month']))
+                        overlap = bool(select_time(reference, **dates).sizes['time'])
+                        notes[model.name].append(
+                            f"{MODE_TITLES[mode]} observations: optimized against {optimization.get('data_source', 'an unrecorded reference')}. "
+                            f"Optimization selection: {_observation_note(dates)} "
+                            + ('Selected evaluation dates overlap this selection.' if overlap else 'Selected evaluation dates are outside this selection.'))
+            evaluations[mode].append(_score_case(mode, section, selection, predicted, reference, supported))
+    evaluations = [case for group in evaluations.values() for case in group]
+    metadata = dict(site=recipe.site, evaluation=recipe.name, project_dir=str(recipe.project_dir),
+                    started_utc=started, finished_utc=utc_now(), settings=plain_value(settings),
+                    device=device, device_name=device_name(device), code=software_identity(),
+                    inputs=[dict(path=str(path.relative_to(recipe.project_dir)), sha256=digest) for path, digest in sorted(inputs.items())],
+                    models=[dict(name=model.name, mode='Boundary layer scan' if model.is_bls_model else 'Zenith',
+                                 checkpoint_sha256=hashes[model.name],
+                                 training_metadata=model.training_metadata, notes=notes[model.name]) for model in models])
+    for evaluation in evaluations:
+        for name in evaluation.metrics['errors'].model.values:
+            if name not in {model['name'] for model in metadata['models']}:
+                metadata['models'].append(dict(name=str(name), mode='RPG product', notes=[]))
+    logger.info('Finished evaluation %s.', recipe.name)
+    return Analysis(metadata, evaluations)
 
 
 def save_evaluation(analysis, output_file=None):
