@@ -34,14 +34,15 @@ _MLR_FITTING = 'least squares with expected input-noise penalty'
 
 
 def _experiment_definition(experiment, variables):
-    """Compare effective settings, excluding data identities and unused normalizers."""
+    """Compare scientific settings, excluding names, data identities and unused normalizers."""
     if experiment is None:
         return None
     definition = {key: value for key, value in experiment.items() if key != 'data'}
-    structure = definition['model']
+    structure = {key: value for key, value in definition['model'].items() if key != 'name'}
     if 'norm_functions' in structure:
-        definition['model'] = {**structure, 'norm_functions': {
-            key: value for key, value in structure['norm_functions'].items() if key in variables}}
+        structure['norm_functions'] = {
+            key: value for key, value in structure['norm_functions'].items() if key in variables}
+    definition['model'] = structure
     return definition
 
 
@@ -283,20 +284,20 @@ class TrainingWorkflow:
             raise ValueError('Continuing is available only for optimization. Use --fresh or run_mode="fresh" to train one new model.')
         study_path = optimization_file(self.project_dir, self.site, self.model.name)
         storage = f'sqlite:///{study_path}'
-        has_study = run_mode != 'fresh' and study_path.is_file() and self.model.name in optuna.study.get_all_study_names(storage=storage)
+        has_database = study_path.is_file()
         path = checkpoint_file(self.project_dir, self.site, self.model.name)
-        if run_mode is None and (path.is_file() or has_study):
+        if run_mode is None and (path.is_file() or has_database):
             choice = 'Choose --fresh to replace its model and study'
             if optimization:
                 choice += ', or --continue to add optimization trials'
             raise ValueError(f'Results already exist for this retrieval. {choice}; Python callers can set run_mode explicitly.')
-        if run_mode == 'continue' and not has_study:
+        if run_mode == 'continue' and not has_database:
             raise ValueError('No optimization study exists for this retrieval. Use --fresh or run_mode="fresh" to start one.')
         if run_mode == 'fresh':
             for artifact in (path, path.with_name('training_progress.pdf'), study_path):
                 artifact.unlink(missing_ok=True)
-        continuing = optimization and has_study and run_mode != 'fresh'
-        self.logger.info('%s retrieval %s.', 'Continuing' if continuing else 'Starting fresh', self.model.name)
+        self.logger.info('%s retrieval %s.',
+                         'Continuing' if run_mode == 'continue' else 'Starting fresh', self.model.name)
         return storage
 
     def _log_training_setup(self, optimization=None):
@@ -532,7 +533,7 @@ class TrainingWorkflow:
         study_site : str
             Site where the Optuna study is stored.
         old_model_name : str
-            Name of the study/model whose parameters should be loaded.
+            Retrieval directory whose study parameters should be loaded.
 
         Notes
         -----
@@ -541,7 +542,7 @@ class TrainingWorkflow:
         study_file = optimization_file(self.project_dir, study_site, old_model_name)
         if not study_file.is_file():
             raise FileNotFoundError(f'Missing optimization database: {study_file}.')
-        study = optuna.load_study(study_name=old_model_name, storage=f"sqlite:///{study_file}")
+        study = optuna.load_study(study_name=None, storage=f"sqlite:///{study_file}")
 
         self.hyper_params.update(study.best_params)
 
@@ -1145,8 +1146,8 @@ class TrainingWorkflow:
         Parameters
         ----------
         n_trials : int, optional
-            Number of optimization trials. Defaults to 300 for BLS models
-            and 200 otherwise.
+            Number of new optimization trials. Uses the recipe or bundled
+            recommendation when omitted.
         data_source : str, optional
             Reference source used to score trials. Inferred when the analysis
             has one reference, otherwise select 'radiosonde' or 'era5'.
@@ -1191,7 +1192,11 @@ class TrainingWorkflow:
         storage = self._prepare_run(run_mode, optimization=True)
         retrieval_dir(self.project_dir, self.site, self.model.name).mkdir(parents=True, exist_ok=True)
         sampler = optuna.samplers.TPESampler(seed=None if settings['seed'] == 'random' else settings['seed'])
-        study = optuna.create_study(study_name=self.model.name, storage=storage, load_if_exists=True, direction='minimize', sampler=sampler)
+        if run_mode == 'continue':
+            study = optuna.load_study(study_name=None, storage=storage, sampler=sampler)
+        else:
+            study = optuna.create_study(study_name=self.model.name, storage=storage,
+                                       direction='minimize', sampler=sampler)
         unused = TRAINING_PARAMETERS - training_parameters(self.model.is_MLR, hyper_params.get('loss_fn'))
         # Applied bias corrections are already recorded as hyper_params['mean_bias'].
         experiment = plain_value({'model': self.model.checkpoint_structure(), 'hyper_params': hyper_params,

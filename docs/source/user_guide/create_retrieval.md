@@ -355,6 +355,11 @@ To try different settings while keeping a model, copy its recipe into a new
 retrieval directory and use that name in the command. To replace the current
 model deliberately, run `train` with `--fresh`.
 
+The retrieval name comes from its folder. To rename a trained retrieval, stop
+its training process and rename the whole folder, keeping its recipe, model
+and optimization database together. The saved files need no edits. Update site
+settings, evaluation recipes and Python code that reference the old name.
+
 ## Compare the retrieval with real measurements
 
 An analysis dataset pairs MWR measurements with reference profiles and their

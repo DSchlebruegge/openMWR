@@ -72,6 +72,7 @@ def test_named_retrieval_roundtrip_and_replacement(tmp_path):
     payload = torch.load(tmp_path / 'sites/test/retrieval/MLR/model.pth', weights_only=True)
     assert payload['format_version'] == CHECKPOINT_VERSION
     assert payload['structure']['heights'] == [0., 100.]
+    assert 'name' not in payload['structure']
     assert payload['training_metadata'] == {'scores': [1., 2.], 'path': str(tmp_path)}
     loaded = Model.load("MLR", "test", tmp_path)
     torch.testing.assert_close(loaded(inputs), model(inputs))
@@ -105,7 +106,8 @@ def test_workflow_loads_retrieval_optimization_history(tmp_path):
     ))
     model = Model("MLR", heights=np.array([0.0, 100.0]), freqs=np.array([22.24]), is_MLR=True, output_vars=["T", "rh", "lwc", "lwp", "iwv"])
     workflow = TrainingWorkflow(model, "test", "cpu", tmp_path)
-    workflow.get_hyper_params_from_existing_study("reference", "existing_model")
+    directory.rename(directory.with_name('renamed'))
+    workflow.get_hyper_params_from_existing_study("reference", "renamed")
     assert workflow.hyper_params["learning_rate"] == 0.01
 
 

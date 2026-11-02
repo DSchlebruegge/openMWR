@@ -151,19 +151,17 @@ class BaseModel(nn.Module):
         Saves the PyTorch ``state_dict``, the provided hyperparameters, the
         normalization dataset ``self.nor`` (created during training), and the
         captured ``structure`` of the model so it can be re-instantiated via
-        :meth:`BaseModel.load`.
+        :meth:`BaseModel.load`. The name is supplied when loading and is not
+        part of the saved model settings.
         """
         checkpoint = {
             'format_version': CHECKPOINT_VERSION,
             'model_state_dict': self.state_dict(),
             'hyper_params': hyper_params,
             'normalization': self.nor.to_dict(),
-            'structure': self.structure,
+            'structure': self.checkpoint_structure(),
             'model_class': type(self).__name__,
         }
-        # Freeze defaults in new checkpoints, so a later library default cannot
-        # change their architecture, variables, or normalization on load.
-        checkpoint['structure'] = self.checkpoint_structure()
         if training_metadata is not None:
             checkpoint['training_metadata'] = training_metadata
 
@@ -173,8 +171,8 @@ class BaseModel(nn.Module):
         logger.info(f'saved model under {file}')
 
     def checkpoint_structure(self):
-        """Return constructor settings with mutable library defaults resolved."""
-        structure = dict(self.structure)
+        """Return model settings with resolved defaults, independent of its name."""
+        structure = {key: value for key, value in self.structure.items() if key != 'name'}
         for key in ('hidden_layers', 'angles', 'additional_input_vars', 'norm_functions', 'output_vars'):
             if key in structure and hasattr(self, key):
                 structure[key] = getattr(self, key)
@@ -229,11 +227,6 @@ class BaseModel(nn.Module):
 
     @classmethod
     def _from_checkpoint(cls, checkpoint, name):
-
-        if 'name' in checkpoint['structure']:
-            if name != checkpoint['structure']['name']:
-                logger.warning(f"Model name '{name}' does not match the name stored in the checkpoint '{checkpoint['structure']['name']}'. Using the provided name.")
-            
         structure = {**checkpoint['structure'], 'name': name}
         normalization = xr.Dataset.from_dict(checkpoint['normalization'])
 

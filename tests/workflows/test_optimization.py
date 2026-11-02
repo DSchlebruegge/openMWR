@@ -198,17 +198,74 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     assert (recipe.parent / 'model.pth').read_bytes() == checkpoint
 
 
-@pytest.mark.parametrize('replacement', ['deleted', 'replaced'])
+def test_directory_rename_preserves_predictions_and_optimization_history(tmp_path):
+    recipe, data = retrieval_project(tmp_path)
+    study = training_workflow(tmp_path).optimize(n_trials=1)
+    original = load_model('example', 'test', tmp_path)
+    prediction = run_model(original, data, 'cpu', include_input_vars=False)
+    trials = study.trials
+
+    # Existing format-2 files can contain the retrieval name. Moving them must
+    # work without rewriting the checkpoint or the recorded experiment first.
+    checkpoint = recipe.parent / 'model.pth'
+    payload = torch.load(checkpoint, weights_only=True)
+    payload['structure']['name'] = 'example'
+    torch.save(payload, checkpoint)
+    definition = study.user_attrs['openMWR_experiment']
+    definition['model']['name'] = 'example'
+    study.set_user_attr('openMWR_experiment', definition)
+    checkpoint_bytes = checkpoint.read_bytes()
+    database_bytes = checkpoint.with_name('optimization.db').read_bytes()
+
+    renamed = recipe.parent.with_name('candidate')
+    recipe.parent.rename(renamed)
+    loaded = load_model('candidate', 'test', tmp_path)
+    assert loaded.name == 'candidate'
+    assert loaded.training_metadata == original.training_metadata
+    xr.testing.assert_identical(loaded.nor, original.nor)
+    xr.testing.assert_allclose(run_model(loaded, data, 'cpu', include_input_vars=False),
+                               prediction, rtol=0, atol=0)
+    assert (renamed / 'model.pth').read_bytes() == checkpoint_bytes
+    assert (renamed / 'optimization.db').read_bytes() == database_bytes
+
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'candidate')
+    continued = workflow.optimize(n_trials=1, run_mode='continue')
+    assert continued.study_name == study.study_name
+    assert continued.trials[:len(trials)] == trials
+    assert len(continued.trials) == 2
+    assert load_model('candidate', 'test', tmp_path).training_metadata['optimization'] == {
+        'study_name': study.study_name, 'trial_number': continued.best_trial.number}
+
+    # A retrieval database owns one study. Refuse ambiguity without creating
+    # another trial or replacing the best checkpoint.
+    storage = f'sqlite:///{renamed / "optimization.db"}'
+    optuna.create_study(study_name='unrelated', storage=storage)
+    before = (renamed / 'model.pth').read_bytes()
+    with pytest.raises(ValueError, match='exactly 1 study'):
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'candidate').optimize(
+            n_trials=1, run_mode='continue')
+    assert len(optuna.load_study(study_name=study.study_name, storage=storage).trials) == 2
+    assert (renamed / 'model.pth').read_bytes() == before
+    assert not recipe.parent.exists()
+
+
+@pytest.mark.parametrize('replacement', ['deleted', 'replaced', 'different-study'])
 def test_resuming_requires_the_best_study_checkpoint(replacement, tmp_path):
     recipe, data = retrieval_project(tmp_path)
     training_workflow(tmp_path).optimize(n_trials=1)
+    directory = recipe.parent.with_name('renamed')
+    recipe.parent.rename(directory)
     if replacement == 'deleted':
-        (recipe.parent / 'model.pth').unlink()
+        (directory / 'model.pth').unlink()
     else:
-        model = load_model('example', 'test', tmp_path)
-        model.save('test', tmp_path, model.hyper_params)
+        model = load_model('renamed', 'test', tmp_path)
+        metadata = None
+        if replacement == 'different-study':
+            metadata = model.training_metadata
+            metadata['optimization']['study_name'] = 'unrelated'
+        model.save('test', tmp_path, model.hyper_params, training_metadata=metadata)
     with pytest.raises(ValueError, match='best study checkpoint is missing or has been replaced'):
-        training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
+        TrainingWorkflow.from_recipe(tmp_path, 'test', 'renamed').optimize(n_trials=1, run_mode='continue')
 
 
 @pytest.mark.parametrize(('kind', 'mode'), [('nn', 'bls'), ('spectral', 'zenith')])

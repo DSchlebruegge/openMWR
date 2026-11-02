@@ -398,10 +398,12 @@ matches an uninterrupted study, subject to the numerical backend.
 `--continue` requires matching experiment settings, the saved best model, and the
 same selected fitting, validation, observation and reference values. The check
 includes custom Python preprocessing. File attributes, file locations and data
-outside the selected period do not affect it. Changed data or studies without
-recorded data identities require `--fresh` or a new retrieval name. `--fresh` replaces this retrieval's model, study and progress PDF
-after input checks. It retains recipes, logs and datasets. It does not resume
-neural network weights.
+outside the selected period do not affect it. Renaming the retrieval folder
+does not change the experiment. Each `optimization.db` contains one study.
+Changed data or studies without recorded data identities require `--fresh` or
+a new retrieval name. `--fresh` replaces this retrieval's model, study and
+progress PDF after input checks. It retains recipes, logs and datasets. It does
+not resume neural network weights.
 
 ## Evaluation settings
 
