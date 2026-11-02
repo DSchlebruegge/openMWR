@@ -5,13 +5,14 @@ import xml.etree.ElementTree as ET
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.dates import date2num
 from matplotlib.quiver import Barbs
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-from openMWR.plot import SkewT, TimeSeriesPlot, load_radiosonde_profile, plot_err, plot_scatter_lwp
+from openMWR.plot import SkewT, TimeSeriesPlot, TimeSeriesCreator, load_radiosonde_profile, plot_err, plot_scatter_lwp
 from openMWR.evaluation import _profile_figure
 
 
@@ -115,6 +116,76 @@ def test_contour_limits_handle_gaps_constant_fields_and_missing_data(field, limi
         np.testing.assert_array_equal(data, original)
     finally:
         figure.close()
+
+
+@pytest.mark.parametrize('explicit_missing', [False, True], ids=['absent-times', 'nan-values'])
+def test_time_series_leave_long_gaps_white_without_hiding_available_comparisons(explicit_missing):
+    day = pd.Timestamp('2024-01-01')
+    minutes = np.array([0, 1, 4, 5, 15, 16, 40, 41])
+    time = day + pd.to_timedelta(np.arange(42) if explicit_missing else minutes, unit='min')
+    values = np.full(len(time), .75)
+    if explicit_missing:
+        values[~np.isin(np.arange(42), minutes)] = np.nan
+    field = np.array([270., 280., 290.])[:, None] + values[None, :] * 0
+    original = field.copy()
+    figures = []
+
+    def pixel(figure, axis, minute, height):
+        figure.fig.canvas.draw()
+        pixels = np.asarray(figure.fig.canvas.buffer_rgba())
+        x, y = axis.ax.transData.transform((date2num(day + pd.Timedelta(minutes=minute)), height))
+        return pixels[pixels.shape[0] - 1 - round(y), round(x), :3]
+
+    try:
+        line = TimeSeriesPlot(day, 'Lines', max_gap_minutes=10)
+        contour = TimeSeriesPlot(day, 'Contours', max_gap_minutes=10)
+        figures.extend([line, contour])
+        axis = line.add_axis()
+        axis.plot(time, values, color='red', linewidth=4, label='MIM')
+        dense_time = pd.date_range(day, periods=42, freq='min')
+        axis.plot(dense_time, np.full(42, 1.25), color='blue', linewidth=4, label='RPG')
+        axis.ax.set_ylim(0, 2)
+        colors = contour.add_axis()
+        colors.plot_filled_contours(time, np.array([0., 1., 2.]), field, 'T', 'viridis', contours=False)
+        rain_times = np.asarray(time)[np.isfinite(values)]
+        colors.add_hatches(rain_times, np.ones(len(rain_times), dtype=bool))
+        for current in (axis, colors):
+            current.ax.set_xlim(day, day + pd.Timedelta(minutes=42))
+            current.ax.grid(False)
+        # A three-minute scan pause and a gap exactly at the cutoff stay connected.
+        for minute in (2.5, 10.):
+            red = pixel(line, axis, minute, .75)
+            assert red[0] > 200 and max(red[1:]) < 100
+            assert pixel(contour, colors, minute, .75).min() < 240
+        # Both drawing methods leave the long outage white, while independent
+        # measurements remain visible at the same time.
+        assert pixel(line, axis, 28, .75).min() > 250
+        assert pixel(contour, colors, 28, .75).min() > 250
+        blue = pixel(line, axis, 28, 1.25)
+        assert blue[2] > 200 and max(blue[:2]) < 100
+        assert len([item for item in axis.ax.lines if item.get_label() == 'MIM']) == 1
+        np.testing.assert_array_equal(field, original)
+    finally:
+        for figure in figures:
+            figure.close()
+
+
+def test_rpg_smoothing_does_not_mix_measurements_across_long_gaps():
+    day = pd.Timestamp('2024-01-01')
+    time = day + pd.to_timedelta([0, 1, 2, 3, 40, 41, 42, 43], unit='min')
+    predictions = xr.Dataset({'lwp': ('time', np.ones(8)), 'rain_flag': ('time', np.zeros(8))},
+                             coords={'time': time})
+    measured = xr.Dataset({'lwp': ('time', [0., 0., 0., 0., 100., 100., 100., 100.])}, coords={'time': time})
+    original = measured.copy(deep=True)
+    plot = TimeSeriesCreator.lwp(day, predictions, ds_hatpro=measured, max_gap_minutes=10)
+    try:
+        line = next(item for item in plot.axes[0].ax.lines if item.get_label() == 'RPG-Retrieval')
+        values = line.get_ydata()
+        np.testing.assert_array_equal(values[np.isfinite(values)], [0., 0., 0., 0., 100., 100., 100., 100.])
+        assert np.isnan(values).any()
+        xr.testing.assert_identical(measured, original)
+    finally:
+        plot.close()
 
 
 def test_report_error_axes_distinguish_signed_errors_from_nonnegative_errors():

@@ -203,3 +203,15 @@ pred = saved.zenith.sel(model="NN_example")
 
 Use xarray and the plotting functions demonstrated in
 [Run and Plot a Retrieval](run_retrieval.ipynb) for custom figures.
+
+Set `max_gap_minutes` to leave longer gaps blank in time-series plots:
+
+```python
+from openMWR.plot import TimeSeriesCreator
+
+plot = TimeSeriesCreator.temp(saved.date, pred, max_gap_minutes=10)
+plot.save("temperature.svg")
+```
+
+Each series uses its own usable timestamps. Shorter pauses stay connected.
+This option also applies to `TimeSeriesPlot` and does not change the input data.

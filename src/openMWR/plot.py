@@ -20,8 +20,48 @@ from metpy.units import units
 
 from openMWR.utils import round_down, round_up
 from openMWR.paths import radiosonde_station_dir
+from openMWR.config import check_number
 
 logger = logging.getLogger(__name__)
+
+
+def _time_segments(x, data, max_gap_minutes):
+    """Indices of usable samples separated by gaps longer than the cutoff."""
+    times = pd.DatetimeIndex(x).to_numpy(dtype='datetime64[ns]')
+    valid = np.isfinite(data).any(axis=tuple(range(data.ndim - 1))) & ~np.isnat(times)
+    indices = np.flatnonzero(valid)
+    if not indices.size:
+        return []
+    gaps = np.diff(times[indices]) / np.timedelta64(1, 'm')
+    return np.split(indices, np.flatnonzero(gaps > max_gap_minutes) + 1)
+
+
+def _gap_data(x, data, max_gap_minutes):
+    """Prepare a drawing copy with masked separators between time segments."""
+    values = np.ma.asarray(data, dtype=float).filled(np.nan)
+    segments = _time_segments(x, values, max_gap_minutes)
+    if not segments:
+        return np.asarray(x), values
+    indices = np.concatenate(segments)
+    times = pd.DatetimeIndex(x).to_numpy(dtype='datetime64[ns]')[indices]
+    values = np.take(values, indices, axis=-1)
+    boundaries = np.cumsum([len(segment) for segment in segments])[:-1]
+    separators = times[boundaries - 1] + (times[boundaries] - times[boundaries - 1]) // 2
+    return (np.insert(times, boundaries, separators),
+            np.insert(values, boundaries, np.nan, axis=-1))
+
+
+def _smooth_series(data, max_gap_minutes):
+    """Smooth RPG columns within each available interval, retaining outages."""
+    if max_gap_minutes is None:
+        return data.rolling(time=5, center=True, min_periods=1).mean()
+    result = xr.full_like(data, np.nan, dtype=float)
+    for segment in _time_segments(data.time, data.values, max_gap_minutes):
+        part = data.isel(time=slice(segment[0], segment[-1] + 1))
+        valid = np.isfinite(part)
+        result.loc[{'time': part.time}] = part.where(valid).rolling(
+            time=5, center=True, min_periods=1).mean().where(valid)
+    return result
 
 
 def load_radiosonde_profile(project_dir, station_id, date):
@@ -539,7 +579,14 @@ class Axis:
         if 'linewidth' not in kwargs:
             kwargs['linewidth'] = 1.5
 
-        self.ax.plot(*args, **kwargs) 
+        plotted = self.ax.plot(*args, **kwargs)
+        if self.zeitreihe.max_gap_minutes is not None:
+            for line in plotted:
+                x, y = line.get_data()
+                if len(x):
+                    end = pd.DatetimeIndex(x).to_numpy(dtype='datetime64[ns]').max()
+                    self.max_x = end if self.max_x is None else max(self.max_x, end)
+                line.set_data(*_gap_data(x, y, self.zeitreihe.max_gap_minutes))
 
     def plot_wind_dir(self, x: np.array, y: np.array, **line_settings):
         """
@@ -673,6 +720,9 @@ class Axis:
             order-of-magnitude heuristics.
         
         """
+        self.max_x = np.asarray(x).max()
+        if self.zeitreihe.max_gap_minutes is not None:
+            x, data = _gap_data(x, data, self.zeitreihe.max_gap_minutes)
         data = np.ma.masked_invalid(data)
         finite = data.compressed()
         if not finite.size:
@@ -754,9 +804,6 @@ class Axis:
             cs = self.ax.contour(x, y, data, colors='k', levels=levels_contour, extend=extend, linewidths=self.zeitreihe.contour_linewidth) #levels=int(levels/3)
             self.ax.clabel(cs, cs.levels)
 
-        # Update maximum x value
-        self.max_x = x.max().values
-
         self.add_colorbar(c, colorbar_label, yticks=levels_contour)
         #self.cbar.add_lines(cs)
 
@@ -790,9 +837,16 @@ class Axis:
 
         start_times = []
         durations = []
+        breaks = set()
+        if self.zeitreihe.max_gap_minutes is not None:
+            breaks = {segment[0] for segment in _time_segments(
+                time, np.ones(mask.size), self.zeitreihe.max_gap_minutes)}
 
         last_true = False
         for i in range(mask.size):
+            if i in breaks and last_true:
+                durations.append(time[i-1] - start_times[-1])
+                last_true = False
             if mask[i] == True and not last_true:
                 start_times.append(time[i])
                 last_true = True
@@ -801,7 +855,7 @@ class Axis:
                 last_true = False
 
         if last_true:
-            durations.append(time[i-1] - start_times[-1])
+            durations.append(time[-1] - start_times[-1])
 
         m = (self.ax_position[2] * self.zeitreihe.fig.get_figwidth()) / (self.ax_position[3] * self.zeitreihe.fig.get_figheight())
 
@@ -942,12 +996,21 @@ class TimeSeriesPlot:
     pre_title : str, optional
         Text placed before the main title. Defaults to the institute/location
         description if omitted.
+    max_gap_minutes : float, optional
+        Leave gaps longer than this duration blank in lines and contours.
+        Gaps use each field's usable samples. Short gaps remain connected.
+        None preserves the supplied time grid and Matplotlib's gap handling.
 
     Notes
     -----
     - Figures are automatically closed when the object is deleted.
     """
-    def __init__(self, date, title, pre_title=None):
+    def __init__(self, date, title, pre_title=None, *, max_gap_minutes=None):
+        if max_gap_minutes is not None:
+            check_number(max_gap_minutes, 'max_gap_minutes')
+            if max_gap_minutes <= 0:
+                raise ValueError('max_gap_minutes must be positive.')
+        self.max_gap_minutes = max_gap_minutes
         self.date = date
         self.num_of_axes = 0
         self.color_axes = 'k'
@@ -1003,10 +1066,10 @@ class TimeSeriesPlot:
         -------
         None
         """
-        if self.axes[0].max_x is not None:
-            max_x = self.axes[0].max_x
-        else:
-            max_x = max( max(np.nanmax(line.get_xdata()) for line in axis.ax.get_lines() if line._label[0] != '_' and line.get_ydata().size > 0) for axis in self.axes )
+        ends = [axis.max_x for axis in self.axes if axis.max_x is not None]
+        ends.extend(np.nanmax(line.get_xdata()) for axis in self.axes for line in axis.ax.get_lines()
+                    if not line.get_label().startswith('_') and line.get_ydata().size > 0)
+        max_x = max(pd.Timestamp(end).to_datetime64() for end in ends)
         
         self.axes[0].ax.axvspan(max_x + np.timedelta64(60, 's'), self.date + np.timedelta64(1, 'D'), color='lightgray', alpha=alpha) #np.timedelta64(30, 's')
       
@@ -1157,21 +1220,21 @@ class TimeSeriesPlot:
 
     def __del__(self):
         """Destructor to ensure the figure is closed when the object is deleted."""
-        self.close()
+        if hasattr(self, 'fig'):
+            self.close()
 
 
 class TimeSeriesCreator:
-    """Static methods to create specific time series plots."""
+    """Daily plots accepting the same optional max_gap_minutes as TimeSeriesPlot."""
     @staticmethod
-    def lwp(date, pred_NN, pred_MLR=None, ds_hatpro=None, pre_title=None, retrieval_label='MIM-Retrieval'):
-        lwp = TimeSeriesPlot(date, 'Liquid Water Path', pre_title=pre_title)
+    def lwp(date, pred_NN, pred_MLR=None, ds_hatpro=None, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        lwp = TimeSeriesPlot(date, 'Liquid Water Path', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = lwp.add_axis(lower_ylabel=True, ylabel='[g/$m^2$]')
 
         ax.plot(pred_NN.time, pred_NN.lwp, label=retrieval_label)
 
         if ds_hatpro is not None:
-            lwp_rpg = ds_hatpro['lwp']
-            lwp_rpg = lwp_rpg.rolling(time=5, center=True, min_periods=1).mean()
+            lwp_rpg = _smooth_series(ds_hatpro['lwp'], max_gap_minutes)
             ax.plot(lwp_rpg.time, lwp_rpg, label='RPG-Retrieval')
 
         if pred_MLR is not None:
@@ -1188,15 +1251,14 @@ class TimeSeriesCreator:
         return lwp
 
     @staticmethod
-    def iwv(date, pred_NN, ds_hatpro, pre_title=None, retrieval_label='MIM-Retrieval'):
-        iwv = TimeSeriesPlot(date, 'Integrated Water Vapour', pre_title=pre_title)
+    def iwv(date, pred_NN, ds_hatpro, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        iwv = TimeSeriesPlot(date, 'Integrated Water Vapour', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = iwv.add_axis(lower_ylabel=True, ylabel='[kg/$m^2$]')
 
         ax.plot(pred_NN.time, pred_NN['iwv'], label=retrieval_label)
 
         if ds_hatpro is not None:
-            iwv_rpg = ds_hatpro['iwv']
-            iwv_rpg = iwv_rpg.rolling(time=5, center=True, min_periods=1).mean()
+            iwv_rpg = _smooth_series(ds_hatpro['iwv'], max_gap_minutes)
             ax.plot(iwv_rpg.time, iwv_rpg, label='RPG-Retrieval')
         #ax.plot(pred_MLR.time, pred_MLR['iwv_from_ah'], label='MIM-Retrieval\n(MLR)')
 
@@ -1211,8 +1273,8 @@ class TimeSeriesCreator:
         return iwv
 
     @staticmethod
-    def temp(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        temp = TimeSeriesPlot(date, f'Temperature - {retrieval_label}', pre_title=pre_title)
+    def temp(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        temp = TimeSeriesPlot(date, f'Temperature - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = temp.add_axis(ylabel='Height [km]')
         ax.plot_filled_contours(data.time, data.height/1000, data.T.values.T, 'Temperature [K]', 'RdBu_r') #coolwarm
         rain_flag_mask = data['rain_flag'] > 0
@@ -1221,8 +1283,8 @@ class TimeSeriesCreator:
         return temp
 
     @staticmethod
-    def temp_an(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        temp_an = TimeSeriesPlot(date, f'Temperature Anomaly - {retrieval_label}', pre_title=pre_title) #Perturbation, Deviation?
+    def temp_an(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        temp_an = TimeSeriesPlot(date, f'Temperature Anomaly - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes) #Perturbation, Deviation?
         ax = temp_an.add_axis(ylabel='Height [km]')
 
         T_an = data.T - data.T.mean(dim='time')
@@ -1235,8 +1297,8 @@ class TimeSeriesCreator:
         return temp_an
 
     @staticmethod
-    def dT(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        dT = TimeSeriesPlot(date, f'Stability - {retrieval_label}', pre_title=pre_title)
+    def dT(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        dT = TimeSeriesPlot(date, f'Stability - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = dT.add_axis(ylabel='Height [km]')
 
         label = 'unstable   <-   Stability   ->     stable\n(Temperature Gradient minus Dry Adiabatic [K/km])'
@@ -1249,8 +1311,8 @@ class TimeSeriesCreator:
         return dT
 
     @staticmethod
-    def rh(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        rh = TimeSeriesPlot(date, f'Relative Humidity - {retrieval_label}', pre_title=pre_title)
+    def rh(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        rh = TimeSeriesPlot(date, f'Relative Humidity - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = rh.add_axis(ylabel='Height [km]')
 
         # Custom colormap, because 'Blues' does not start fully at white
@@ -1266,8 +1328,8 @@ class TimeSeriesCreator:
         return rh
 
     @staticmethod
-    def ah(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        ah = TimeSeriesPlot(date, f'Absolute Humidity - {retrieval_label}', pre_title=pre_title)
+    def ah(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        ah = TimeSeriesPlot(date, f'Absolute Humidity - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = ah.add_axis(ylabel='Height [km]')
 
         # Custom colormap, because 'Blues' does not start fully at white
@@ -1283,8 +1345,8 @@ class TimeSeriesCreator:
         return ah
 
     @staticmethod
-    def lwc(date, data, pre_title=None, retrieval_label='MIM-Retrieval'):
-        lwc = TimeSeriesPlot(date, f'Liquid Water Content - {retrieval_label}', pre_title=pre_title)
+    def lwc(date, data, pre_title=None, retrieval_label='MIM-Retrieval', *, max_gap_minutes=None):
+        lwc = TimeSeriesPlot(date, f'Liquid Water Content - {retrieval_label}', pre_title=pre_title, max_gap_minutes=max_gap_minutes)
         ax = lwc.add_axis(ylabel='Height [km]')
 
         # Custom colormap, because 'Blues' does not start fully at white
