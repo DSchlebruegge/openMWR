@@ -8,80 +8,40 @@ In pyrtlib, these definitions were split across ``pyrtlib._lineshape.h2oll``,
 ``pyrtlib._lineshape.o2ll``, and ``pyrtlib._lineshape.o3ll``.
 """
 
-import os
-import importlib.util
-import shutil
-from pathlib import Path
+from contextlib import contextmanager
+from importlib.resources import as_file, files
 from typing import Any, List, Optional
 
 from netCDF4 import Dataset
 import torch
 
-MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-LINESHAPE_DATA_PATH = "_lineshape"
-REQUIRED_LINESHAPE_FILES = (
-    "h2o_lineshape.nc",
-    "o2_lineshape.nc",
-    "o3_lineshape.nc",
-)
 
+class AbsModelError(Exception):
+    """Error raised for invalid absorption-model configuration.
 
-def _default_lineshape_dir() -> Path:
-    """Return the local torchMWRT line-shape directory."""
-    return Path(MODULE_DIR) / LINESHAPE_DATA_PATH
-
-
-def _discover_pyrtlib_lineshape_dir() -> Optional[Path]:
-    """Locate ``pyrtlib/_lineshape`` in the current Python environment."""
-    spec = importlib.util.find_spec("pyrtlib")
-    if spec is None:
-        return None
-
-    roots: list[Path] = []
-    if spec.submodule_search_locations is not None:
-        roots.extend(Path(p) for p in spec.submodule_search_locations)
-    elif spec.origin is not None:
-        roots.append(Path(spec.origin).resolve().parent)
-
-    for root in roots:
-        candidate = root / "_lineshape"
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def ensure_lineshape_data_available(destination: Optional[str | Path] = None) -> Path:
-    """Ensure required line-shape NetCDF tables exist locally.
-
-    Missing files are copied from an installed ``pyrtlib`` package.
+    Parameters
+    ----------
+    model : str
+        Model identifier that triggered the error.
+    message : str
+        Human-readable description of the issue.
     """
-    dst = Path(destination) if destination is not None else _default_lineshape_dir()
-    dst.mkdir(parents=True, exist_ok=True)
 
-    missing = [name for name in REQUIRED_LINESHAPE_FILES if not (dst / name).is_file()]
-    if not missing:
-        return dst
+    def __init__(self, model, message):
+        self.model = model
+        self.message = message
 
-    source_dir = _discover_pyrtlib_lineshape_dir()
-    if source_dir is None:
-        missing_str = ", ".join(missing)
-        raise FileNotFoundError(
-            "torchMWRT is missing line-shape data files "
-            f"({missing_str}), and installed pyrtlib/_lineshape could not be found."
-        )
+        super().__init__(self.message)
 
-    unavailable = [name for name in missing if not (source_dir / name).is_file()]
-    if unavailable:
-        unavailable_str = ", ".join(unavailable)
-        raise FileNotFoundError(
-            "torchMWRT could not fetch required line-shape files from pyrtlib: "
-            f"{unavailable_str}"
-        )
 
-    for name in missing:
-        shutil.copy2(source_dir / name, dst / name)
-
-    return dst
+@contextmanager
+def _open_lineshape(nc_path: str):
+    """Read a coefficient table supplied by the installed pyrtlib package."""
+    resource = files("pyrtlib").joinpath(nc_path)
+    if not resource.is_file():
+        raise FileNotFoundError(f"Missing line-shape table {nc_path!r} in the installed pyrtlib package.")
+    with as_file(resource) as path, Dataset(path, mode='r') as nc:
+        yield nc
 
 
 class _LineShape:
@@ -90,28 +50,10 @@ class _LineShape:
     def __init__(self, **kwargs: Any) -> None:
         self.__dict__.update(kwargs)
 
-    @staticmethod
-    def _resolve_nc_path(nc_path: str) -> str:
-        """Resolve a NetCDF path relative to this module when needed."""
-        if os.path.isabs(nc_path):
-            return nc_path
-        return os.path.join(MODULE_DIR, nc_path)
-
-    @staticmethod
-    def _available_models(nc_path: str) -> List[str]:
-        """List available model groups in a NetCDF line-shape file.
-
-        Parameters
-        ----------
-        nc_path : str
-            Path to the NetCDF file containing model groups.
-
-        Returns
-        -------
-        list[str]
-            Available model identifiers.
-        """
-        with Dataset(_LineShape._resolve_nc_path(nc_path), mode='r') as nc:
+    @classmethod
+    def available_models(cls) -> List[str]:
+        """Return model identifiers from this gas's coefficient table."""
+        with _open_lineshape(cls.NC_PATH) as nc:
             return list(nc.groups.keys())
 
     def to(self, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None) -> "_LineShape":
@@ -174,44 +116,7 @@ class H2OLL(_LineShape):
     Other parameters from HITRAN2020.
     """
 
-    # code to import coefficient from .asc file
-    # import pandas as pd
-    # import numpy as np
-
-    # a = pd.read_table("h2o_sdlist.asc", sep=',',header=None, skiprows=1, nrows=19, usecols=range(0, 20))
-    # a = np.loadtxt("h2o_sdlist.asc", delimiter=',', skiprows=1, usecols=range(0, 20), max_rows=20)
-    # np.savetxt("/Users/slarosa/dev/pyrtlib/pyrtlib/lineshape/h2o_list_r22.txt", a)
-
-    # nc = Dataset("/Users/slarosa/Downloads/h2o_lineshape.nc", mode='w')
-
-    # for m in H2OAbsModel.implemented_models():
-    #     grp = nc.createGroup(m)
-    #     H2OAbsModel.model = m
-    #     H2OAbsModel.set_ll()
-    #     grp.createDimension('rows', H2OAbsModel.h2oll.mtx.shape[0])
-    #     grp.createDimension('cols', H2OAbsModel.h2oll.mtx.shape[1])
-    #     mtx = grp.createVariable('mtx', 'f8', ('rows', 'cols', ))
-    #     grp.createDimension('ctrdim', H2OAbsModel.h2oll.ctr.shape[0])
-    #     mtx[:] = H2OAbsModel.h2oll.mtx
-    #     ctr = grp.createVariable('ctr', 'f8', ('ctrdim', ))
-    #     ctr[:] = H2OAbsModel.h2oll.ctr
-    #     reftline = grp.createVariable('reftline', 'f4', ())
-    #     reftline[:] = H2OAbsModel.h2oll.reftline
-
-    # nc.close()
-
-    NC_PATH = os.path.join(LINESHAPE_DATA_PATH, "h2o_lineshape.nc")
-
-    @classmethod
-    def available_models(cls) -> List[str]:
-        """Return available H2O line-shape model identifiers.
-
-        Returns
-        -------
-        list[str]
-            Names of model groups found in ``h2o_lineshape.nc``.
-        """
-        return cls._available_models(cls.NC_PATH)
+    NC_PATH = "_lineshape/h2o_lineshape.nc"
 
     @classmethod
     def load(
@@ -238,7 +143,7 @@ class H2OLL(_LineShape):
 
         Raises
         ------
-        ValueError
+        AbsModelError
             If ``model`` is not available in the NetCDF file.
 
         Notes
@@ -249,10 +154,12 @@ class H2OLL(_LineShape):
         Provenance: variable mapping rules were consolidated from
         ``pyrtlib._lineshape.h2oll``.
         """
-        with Dataset(cls._resolve_nc_path(cls.NC_PATH), mode='r') as nc:
+        with _open_lineshape(cls.NC_PATH) as nc:
             if model not in nc.groups:
-                raise ValueError(
-                    f"Unknown H2O model '{model}'. Available: {list(nc.groups)}"
+                raise AbsModelError(
+                    model,
+                    f"Model {model} is not available for H2O absorption. "
+                    f"Please choose from {list(nc.groups)}",
                 )
             d = nc.groups[model]
             mtx = d.variables['mtx'][:].data
@@ -335,43 +242,8 @@ class O2LL(_LineShape):
     Provenance: data-field selection rules are taken from
     ``pyrtlib._lineshape.o2ll`` and consolidated here.
     """
-    # nc = Dataset("/Users/slarosa/Downloads/o2_lineshape.nc", mode='w')
 
-    # for m in O2AbsModel.implemented_models():
-    #     if m in ['R21SD']:
-    #         continue
-    #     O2AbsModel.model = m
-    #     try:
-    #         O2AbsModel.set_ll()
-    #     except:
-    #         m = m.replace("SD", "")
-    #         O2AbsModel.model = m.replace("SD", "")
-    #         O2AbsModel.set_ll()
-    #     grp = nc.createGroup(m)
-    #     vl = [item for item in dir(O2AbsModel.o2ll) if not item.startswith("__")]
-    #     for v in vl:
-    #         if v != 'np':
-    #             if v in ['wb300', 'x']:
-    #                 mtx = grp.createVariable(v, 'f4', ())
-    #             else:
-    #                 grp.createDimension(f'rows_{v}', getattr(O2AbsModel.o2ll, v).shape[0])
-    #                 mtx = grp.createVariable(v, 'f8', (f'rows_{v}',))
-    #             mtx[:] = getattr(O2AbsModel.o2ll, v)
-
-    # nc.close()
-
-    NC_PATH = os.path.join(LINESHAPE_DATA_PATH, "o2_lineshape.nc")
-
-    @classmethod
-    def available_models(cls) -> List[str]:
-        """Return available O2 line-shape model identifiers.
-
-        Returns
-        -------
-        list[str]
-            Names of model groups found in ``o2_lineshape.nc``.
-        """
-        return cls._available_models(cls.NC_PATH)
+    NC_PATH = "_lineshape/o2_lineshape.nc"
 
     @classmethod
     def load(
@@ -398,7 +270,7 @@ class O2LL(_LineShape):
 
         Raises
         ------
-        ValueError
+        AbsModelError
             If ``model`` is not available in the NetCDF file.
 
         Notes
@@ -409,10 +281,12 @@ class O2LL(_LineShape):
         Provenance: model-conditional field extraction was consolidated from
         ``pyrtlib._lineshape.o2ll``.
         """
-        with Dataset(cls._resolve_nc_path(cls.NC_PATH), mode='r') as nc:
+        with _open_lineshape(cls.NC_PATH) as nc:
             if model not in nc.groups:
-                raise ValueError(
-                    f"Unknown O2 model '{model}'. Available: {list(nc.groups)}"
+                raise AbsModelError(
+                    model,
+                    f"Model {model} is not available for O2 absorption. "
+                    f"Please choose from {list(nc.groups)}",
                 )
             d = nc.groups[model]
             f = d.variables['f'][:].data
@@ -476,36 +350,8 @@ class O3LL(_LineShape):
     Provenance: loading/mapping behavior is taken from
     ``pyrtlib._lineshape.o3ll`` and consolidated here.
     """
-    # nc = Dataset("/Users/slarosa/Downloads/o3_lineshape.nc", mode='w')
 
-    # for m in O3AbsModel.implemented_models():
-    #     if m in ['R22SD', 'R18']:
-    #         if m == 'R22SD':
-    #             m = 'R22'
-    #         grp = nc.createGroup(m)
-    #         O3AbsModel.model = m
-    #         O3AbsModel.set_ll()
-    #         grp.createDimension('rows', O3AbsModel.o3ll.mtx.shape[0])
-    #         grp.createDimension('cols', O3AbsModel.o3ll.mtx.shape[1])
-    #         mtx = grp.createVariable('mtx', 'f8', ('rows', 'cols', ))
-    #         mtx[:] = O3AbsModel.o3ll.mtx
-    #         reftline = grp.createVariable('reftline', 'f4', ())
-    #         reftline[:] = O3AbsModel.o3ll.reftline
-
-    # nc.close()
-
-    NC_PATH = os.path.join(LINESHAPE_DATA_PATH, "o3_lineshape.nc")
-
-    @classmethod
-    def available_models(cls) -> List[str]:
-        """Return available O3 line-shape model identifiers.
-
-        Returns
-        -------
-        list[str]
-            Names of model groups found in ``o3_lineshape.nc``.
-        """
-        return cls._available_models(cls.NC_PATH)
+    NC_PATH = "_lineshape/o3_lineshape.nc"
 
     @classmethod
     def load(
@@ -532,7 +378,7 @@ class O3LL(_LineShape):
 
         Raises
         ------
-        ValueError
+        AbsModelError
             If ``model`` is not available in the NetCDF file.
 
         Notes
@@ -540,10 +386,12 @@ class O3LL(_LineShape):
         Provenance: model loading and variable mapping are consolidated from
         ``pyrtlib._lineshape.o3ll``.
         """
-        with Dataset(cls._resolve_nc_path(cls.NC_PATH), mode='r') as nc:
+        with _open_lineshape(cls.NC_PATH) as nc:
             if model not in nc.groups:
-                raise ValueError(
-                    f"Unknown O3 model '{model}'. Available: {list(nc.groups)}"
+                raise AbsModelError(
+                    model,
+                    f"Model {model} is not available for O3 absorption. "
+                    f"Please choose from {list(nc.groups)}",
                 )
             d = nc.groups[model]
             mtx = d.variables['mtx'][:].data

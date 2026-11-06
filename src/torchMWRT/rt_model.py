@@ -20,7 +20,6 @@ import xarray as xr
 
 from . import consts
 from .absorption_model import H2OAbsModel, O2AbsModel, N2AbsModel, LiqAbsModel, O3AbsModel
-from .lineshape import ensure_lineshape_data_available
 
 from .profile import AtmProfile
 
@@ -84,7 +83,6 @@ class RTModel:
     ) -> None:
         if freqs is None:
             raise ValueError("RTModel requires freqs to initialise absorption models.")
-        ensure_lineshape_data_available()
         self.dtype = dtype
         self.device = torch.device(device) if device is not None else None
         self.freqs = torch.as_tensor(freqs, dtype=self.dtype, device=self.device)

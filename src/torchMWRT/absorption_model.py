@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 from . import consts
+from .lineshape import AbsModelError as AbsModelError
 from .lineshape import H2OLL, O2LL, O3LL
 
 def _dilec12(f: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -151,24 +152,6 @@ def _dcerror(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     z = torch.complex(x, y)
     alt = 2.0 * torch.exp(-(z ** 2)) - w
     return torch.where(y >= 0, w, alt)
-
-
-class AbsModelError(Exception):
-    """Error raised for invalid absorption-model configuration.
-
-    Parameters
-    ----------
-    model : str
-        Model identifier that triggered the error.
-    message : str
-        Human-readable description of the issue.
-    """
-
-    def __init__(self, model, message):
-        self.model = model
-        self.message = message
-
-        super().__init__(self.message)
 
 
 class AbsModel:
@@ -439,11 +422,6 @@ class H2OAbsModel(AbsModel):
 
     def __init__(self, model: str, dtype: torch.dtype, device, freqs: torch.Tensor, amu=None) -> None:
         super(H2OAbsModel, self).__init__(model, dtype=dtype, device=device, freqs=freqs, amu=amu)
-
-        self._implemented_models = H2OLL.available_models()
-
-        if model not in self._implemented_models:
-            raise AbsModelError(model, f"Model {model} is not available for H2O absorption. Please choose from {self._implemented_models}")
 
         self.h2oll = H2OLL.load(self.model, device=self.device, dtype=self.dtype)
 
@@ -894,11 +872,6 @@ class O2AbsModel(AbsModel):
     def __init__(self, model: str, dtype: torch.dtype, device, freqs: torch.Tensor, amu=None) -> None:
         super(O2AbsModel, self).__init__(model, dtype=dtype, device=device, freqs=freqs, amu=amu)
 
-        self._implemented_models = O2LL.available_models()
-
-        if model not in self._implemented_models:
-            raise AbsModelError(model, f"Model {model} is not available for O2 absorption. Please choose from {self._implemented_models}")
-
         self.o2ll = O2LL.load(self.model, device=self.device, dtype=self.dtype)
 
     def o2_absorption(self, pdrykpa: torch.Tensor, vx: torch.Tensor, ekpa: torch.Tensor, frq: torch.Tensor, amu: Optional[dict] = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1269,11 +1242,6 @@ class O3AbsModel(AbsModel):
     def __init__(self, model: str, dtype: torch.dtype, device, freqs: torch.Tensor, amu=None) -> None:
         super(O3AbsModel, self).__init__(model, dtype=dtype, device=device, freqs=freqs, amu=amu)
 
-        self._implemented_models = O3LL.available_models()
-
-        if model not in self._implemented_models:
-            raise AbsModelError(model, f"Model {model} is not available for O3 absorption. Please choose from {self._implemented_models}")
-        
         self.o3ll = O3LL.load(self.model, device=self.device, dtype=self.dtype)
 
     def o3_absorption(self, t: torch.Tensor, p: torch.Tensor, f: torch.Tensor, o3n: torch.Tensor, amu: Optional[dict] = None) -> torch.Tensor:
