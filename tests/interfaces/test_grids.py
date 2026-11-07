@@ -53,7 +53,7 @@ def test_project_grid_edits_are_shared_by_python_and_dataset_recipes(dataset_pro
     path.write_text(tomli_w.dumps(grids))
     recipe(dataset_project, 'profiles', kind='profiles', inputs={'source': 'source'},
            preparation={'heights': 'custom'})
-    recipe(dataset_project, 'r17', kind='simulation', inputs={'profiles': 'profiles'},
+    recipe(dataset_project, 'r24', kind='simulation', inputs={'profiles': 'profiles'},
            radiative_transfer={'frequencies': 'custom', 'angles': 'custom'})
     workflow = DatasetWorkflow(dataset_project, 'test')
     monkeypatch.chdir(dataset_project.parent)

@@ -18,12 +18,13 @@ Open an issue or submit a pull request with the changes.
 With the Python environment activated, run from the openMWR checkout:
 
 ```bash
-python -m pip install --editable ".[docs]"
+python -m pip install --editable ./torchMWRT --editable ".[docs]"
 python -m sphinx -b html docs/source docs/_build/html
 ```
 
-For a uv-managed environment, use `uv pip install --editable ".[docs]"` for the
-installation step. Open `docs/_build/html/index.html` to preview the site.
+For a uv-managed environment, use
+`uv pip install --editable ./torchMWRT --editable ".[docs]"`.
+Open `docs/_build/html/index.html` to preview the site.
 The build renders saved notebook outputs. It does not execute the notebooks.
 
 ## Possible features we want to add in the future

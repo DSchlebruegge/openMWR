@@ -1,13 +1,17 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "openMWR"
-version = "0.2"
+version = "0.2.1"
+description = "Training and applying microwave radiometer retrievals"
+readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = [
+    "torchMWRT>=0.2.1",
     "xarray",
     "torch",
     "matplotlib",
@@ -26,6 +30,12 @@ dependencies = [
     "tomli-w",
 ]
 
+[project.urls]
+Documentation = "https://dschlebruegge.github.io/openMWR/"
+Source = "https://github.com/DSchlebruegge/openMWR"
+Issues = "https://github.com/DSchlebruegge/openMWR/issues"
+Changelog = "https://github.com/DSchlebruegge/openMWR/blob/main/CHANGELOG.md"
+
 [project.scripts]
 openMWR = "openMWR.cli:main"
 
@@ -38,16 +48,23 @@ docs = [
     "sphinx_copybutton",
     "pydata_sphinx_theme",
     "sphinxcontrib-bibtex",
+    "pybtex",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 
 [tool.setuptools.package-data]
-openMWR = ["templates/*.html", "templates/*.toml", "templates/project.gitignore", "templates/site/*.toml", "templates/site/datasets/*.toml", "templates/site/retrieval/*/*.toml", "templates/site/evaluations/*.toml"]
+openMWR = [
+    "templates/*.html",
+    "templates/**/*.toml",
+    "templates/project.gitignore",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

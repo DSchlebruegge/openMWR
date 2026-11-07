@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.2.1
+
+- Publish openMWR and torchMWRT as separate packages from the shared repository.
+  Installing openMWR also installs torchMWRT. Package metadata links to the
+  documentation, source and issue tracker.
+- Read RT coefficients directly from the installed PyRTlib package, including
+  read-only installations. Load and validate each gas's table in one operation.
+- Use R24 in the RT example and primary numerical checks. Evaluate complex
+  speed-dependent line profiles only where they contribute, reducing calculation
+  time and memory use and avoiding NaN gradients from inactive lines.
+- Read binary RPG retrieval products alongside binary HATPRO measurements.
+- Restrict daily HATPRO observations to the requested UTC day and preserve
+  missing predictions during smoothing. Time-series plots can show long gaps.
+- Support optimization of custom Python models and direct Python configuration
+  of training data and input noise.
+- Allow retrieval directories to be renamed without editing saved artifacts.
+  Evaluation and OMB logs are saved only for background commands.
+
 ## 0.2
 
 Version 0.2 changes the project layout, configuration and Python interface.

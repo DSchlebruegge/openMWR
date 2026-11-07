@@ -31,7 +31,8 @@ def profile_inputs(case):
 
 
 def torch_brightness(case):
-    model = RTModel(freqs=np.array(FREQUENCIES), angles=np.array(case['angles']),
+    model = RTModel(freqs=np.array(case.get('frequencies_GHz', FREQUENCIES)),
+                    angles=np.array(case['angles']),
                     absmdl=case['absorption_model'],
                     ray_tracing=case.get('ray_tracing', False),
                     from_sat=case.get('from_sat', False))

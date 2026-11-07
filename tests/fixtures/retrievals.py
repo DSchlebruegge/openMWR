@@ -85,11 +85,11 @@ dataset = "analysis_radiosonde"
     for name, definition in {
         'radiosondes': {'kind': 'radiosonde', 'stations': ['03715'], 'start_year': 1990, 'end_year': 'current_year'},
         'profiles': {'kind': 'profiles', 'inputs': {'source': 'radiosondes'}, 'preparation': {'heights': [0.0, 1000.0], 'incomplete_profiles': 'monthly_mean', 'cloud': {'rh_threshold': 0.96, 'min_temperature': 253.15, 'adiabatic_fraction_method': 'power_law', 'a': 0.7, 'b': 2.3}, 'quality': {'min_top_height': 15000, 'min_levels': 500}}},
-        'simulation_r20': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
-                          'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R20',
+        'simulation_r24': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
+                          'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
                                                  'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0],
                                                  'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
-        dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r20'},
+        dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r24'},
                       'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},
     }.items():
         (tmp_path / f'sites/test/datasets/{name}.toml').write_text(tomli_w.dumps(definition))

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchMWRT"
+version = "0.2.1"
+description = "Microwave radiative transfer with PyTorch"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = [
+    "torch",
+    "numpy",
+    "xarray",
+    "netCDF4",
+    "pyrtlib>=1.2.0",
+]
+
+[project.urls]
+Documentation = "https://dschlebruegge.github.io/openMWR/user_guide/torchMWRT_demo.html"
+Source = "https://github.com/DSchlebruegge/openMWR/tree/main/torchMWRT"
+Issues = "https://github.com/DSchlebruegge/openMWR/issues"
+Changelog = "https://github.com/DSchlebruegge/openMWR/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false

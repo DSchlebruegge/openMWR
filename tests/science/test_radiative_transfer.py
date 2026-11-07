@@ -30,10 +30,10 @@ def test_reference_inputs_are_unchanged():
 def test_brightness_temperature_matches_independent_reference(case):
     result = torch_brightness(case)
     assert result.dims == ('frq', 'ang')
-    np.testing.assert_array_equal(result.frq, FREQUENCIES)
+    np.testing.assert_array_equal(result.frq, case.get('frequencies_GHz', FREQUENCIES))
     np.testing.assert_array_equal(result.ang, case['angles'])
     # Retain the original tolerances: the gridded fixture allows small backend
-    # differences; radiosonde R17 cases agree within 1e-8 K.
+    # differences; radiosonde cases agree within 1e-8 K.
     rtol, atol = (5e-5, 1e-6) if 'time_idx' in case else (0, 1e-8)
     np.testing.assert_allclose(result, case['tb_K'], rtol=rtol, atol=atol)
 
@@ -42,7 +42,7 @@ def test_brightness_temperature_matches_independent_reference(case):
 def test_time_batch_preserves_coordinates_and_reference_values(ray_tracing):
     cases = [next(case for case in REFERENCE['cases']
                   if case.get('time_idx') == i and case['angles'] == [90., 50.]
-                  and case['absorption_model'] == 'R17'
+                  and case['absorption_model'] == 'R24'
                   and case.get('ray_tracing', False) == ray_tracing)
              for i in (11, 12, 24)]
     from torchMWRT import RTModel
@@ -51,7 +51,7 @@ def test_time_batch_preserves_coordinates_and_reference_values(ray_tracing):
     batch = {name: xr.concat([item[name] for item in inputs], dim='time')
              if name != 'height' else inputs[0][name] for name in inputs[0]}
     result = RTModel(freqs=np.array(FREQUENCIES), angles=np.array([90., 50.]),
-                     absmdl='R17', ray_tracing=ray_tracing).execute(
+                     absmdl='R24', ray_tracing=ray_tracing).execute(
                          AtmProfile(**batch), return_ds=True).tbtotal
     assert result.dims == ('time', 'frq', 'ang')
     np.testing.assert_array_equal(result.time, batch['temperature'].time)

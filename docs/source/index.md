@@ -11,13 +11,13 @@ regression retrievals, but it is focused on more complex neural network retrieva
 It also supports the training of retrieval algorithms for elevation scans, to study
 the boundary layer.
 
-`openMWR` also includes `torchMWRT`, a PyTorch translation of the radiative-transfer
+`openMWR` uses `torchMWRT`, a PyTorch translation of the radiative-transfer
 calculation core of [PyRTlib](https://github.com/SatCloP/pyrtlib). Its results agree
 with PyRTlib within numerical tolerances for the tested configurations. Vectorized
 calculations can provide substantial speedups when processing many profiles and
-frequencies. It also supports GPU acceleration and automatic differentiation,
-although differentiation through the radiative-transfer calculation is not
-required for the standard retrieval workflow.
+frequencies. It also supports GPU acceleration and automatic differentiation
+through tensor outputs. Differentiation through the radiative-transfer
+calculation is not required for the standard retrieval workflow.
 
 Start with [Installation](user_guide/installation.md), then
 [Create a Retrieval](user_guide/create_retrieval.md). The tutorial uses TOML

@@ -34,8 +34,8 @@ class RTModel:
     angles : array-like
         Viewing elevation angles in degrees. 
         ``90`` denotes zenith-pointing (upward looking).
-    absmdl : str, optional
-        Absorption-model identifier (for example ``"R98"`` or ``"R17"``).
+    absmdl : str
+        Absorption-model identifier (for example ``"R24"``).
     ray_tracing : bool, optional
         If ``True``, use refractivity-dependent ray tracing. If ``False``, use
         plane-parallel slant-path geometry.
@@ -147,7 +147,8 @@ class RTModel:
             diagnostics in the output.
         return_ds : bool, optional
             If ``True``, return an ``xarray.Dataset``; otherwise return a
-            dictionary of tensors.
+            dictionary of tensors. The xarray conversion detaches the outputs
+            from the autograd graph.
 
         Returns
         -------
@@ -167,6 +168,9 @@ class RTModel:
         The computation is vectorized over leading batch dimensions, frequency,
         and viewing angle. Absorption is computed once per frequency/state and
         reused across angles, then integrated along each slant path.
+
+        For gradients, supply torch tensor inputs with ``requires_grad=True``
+        and keep ``return_ds=False``.
 
         Provenance: output intent and naming conventions are adapted from
         ``pyrtlib.tb_spectrum.TbCloudRTE.execute`` and the underlying

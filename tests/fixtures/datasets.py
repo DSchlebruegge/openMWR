@@ -50,11 +50,11 @@ def dataset_project(tmp_path):
         'heights': [0, 500, 1000, 2000, 5000, 10000, 15000, 20000, 30000],
         'scale_rh_clear_sky': True, 'scale_rh_clear_sky_fraction': 1.0,
         'scale_rh_clear_sky_factor': 0.2, 'scale_rh_clear_sky_seed': 42})
-    for model in ('R17', 'R20'):
+    for model in ('R24', 'R20'):
         recipe(tmp_path, model.lower(), kind='simulation', inputs={'profiles': 'profiles'},
                radiative_transfer={'absorption_model': model, 'frequencies': [22.24], 'angles': [90.0]},
                execution={'processes': 1})
-    recipe(tmp_path, 'training', kind='split', inputs={'simulation': 'r17'})
+    recipe(tmp_path, 'training', kind='split', inputs={'simulation': 'r24'})
     return tmp_path
 
 
@@ -86,11 +86,11 @@ def synthetic_simulation(times):
 
 
 def saved_simulation(dataset_project, times):
-    path = dataset_file(dataset_project, 'test', 'r17', '03715')
+    path = dataset_file(dataset_project, 'test', 'r24', '03715')
     path.parent.mkdir(parents=True, exist_ok=True)
     synthetic_simulation(times).to_netcdf(path)
     workflow = DatasetWorkflow(dataset_project, 'test')
-    workflow.record('r17')
+    workflow.record('r24')
     return workflow
 
 

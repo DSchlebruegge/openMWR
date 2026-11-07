@@ -9,9 +9,9 @@ and the user guide.
 
 ## License
 
-Licensed under [GPL-3.0](LICENSE).
+Licensed under [GPL-3.0](https://github.com/DSchlebruegge/openMWR/blob/main/LICENSE).
 
 ## Attribution
 
-Includes torchMWRT, a PyTorch translation of the radiative-transfer core of
+Uses torchMWRT, a PyTorch translation of the radiative-transfer core of
 [PyRTlib](https://github.com/SatCloP/pyrtlib).

@@ -2,17 +2,28 @@
 
 ## Install openMWR
 
-Use Python 3.11 or newer. Keep the package checkout separate from the working
-project containing site settings, datasets and retrievals:
+Use Python 3.11 or newer. Create a working project for site settings, datasets
+and retrievals:
 
 ```bash
-git clone https://github.com/DSchlebruegge/openMWR.git
 mkdir my_project
 cd my_project
 ```
 
-Create a virtual environment and install the neighbouring checkout with either
-uv or pip.
+Create a virtual environment and install openMWR from PyPI with either pip or uv.
+
+PyTorch is installed automatically with openMWR. For CPU-only use or a specific
+GPU, install `torch` in the activated environment before installing openMWR.
+Follow the [PyTorch installation selector](https://pytorch.org/get-started/locally/).
+With uv, use `uv pip` instead of `pip` or `pip3`.
+
+### With pip
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install openMWR
+```
 
 ### With uv
 
@@ -21,30 +32,14 @@ With [uv](https://docs.astral.sh/uv/) installed:
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install --editable ../openMWR
+uv pip install openMWR
 ```
 
-### With pip
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --editable ../openMWR
-```
-
-Both install the `openMWR` command. The editable installation uses the source
-from the checkout directly. Check the installation:
+Both install the `openMWR` command and Python package, including its `torchMWRT`
+dependency. A Git checkout is not required. Check the installation:
 
 ```bash
 openMWR --help
-```
-
-The directory layout is:
-
-```text
-openMWR/            package checkout
-my_project/        working project. Run tutorial commands here
-    .venv/
 ```
 
 Activate this environment again when opening a new shell. `python -m openMWR`
@@ -55,10 +50,39 @@ command. `openMWR COMMAND --help` lists its options and short aliases.
 For running notebooks or displaying plots inline, install the `notebook` extra:
 
 ```bash
-python -m pip install --editable '../openMWR[notebook]'
+python -m pip install 'openMWR[notebook]'
 ```
 
-With uv, use `uv pip install --editable '../openMWR[notebook]'`.
+With uv, use `uv pip install 'openMWR[notebook]'`.
+
+### From a Git checkout
+
+For package development, clone the repository beside the working project.
+Run from `my_project/` with its environment activated:
+
+```bash
+git clone https://github.com/DSchlebruegge/openMWR.git ../openMWR
+python -m pip install --editable ../openMWR/torchMWRT --editable ../openMWR
+```
+
+With uv, use
+`uv pip install --editable ../openMWR/torchMWRT --editable ../openMWR`.
+Both packages use the checkout directly, so package code edits
+take effect without reinstalling. Project data and configuration stay in
+`my_project/`.
+
+## Install torchMWRT alone
+
+For microwave radiative-transfer calculations without the retrieval workflows,
+install `torchMWRT` in an activated environment:
+
+```bash
+python -m pip install torchMWRT
+```
+
+With uv, use `uv pip install torchMWRT`. See the
+[torchMWRT example](torchMWRT_demo.ipynb) for Python usage. This installation
+does not require openMWR or libRadtran.
 
 ## Install libRadtran
 

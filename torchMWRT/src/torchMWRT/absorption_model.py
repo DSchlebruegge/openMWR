@@ -154,6 +154,23 @@ def _dcerror(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.where(y >= 0, w, alt)
 
 
+def _o2_speed_dependent_profile(sf1, width, df, mixing):
+    """Replace the first oxygen line's profile only near its resonance."""
+    mask = torch.abs(df) < 10. * width
+    if not mask.any():
+        return sf1
+    width = width.expand_as(df)[mask]
+    mixing = mixing.expand_as(df)[mask]
+    width2 = .076 * width
+    xc = torch.complex(width - 1.5 * width2, df[mask]) / width2
+    xrt = torch.sqrt(xc)
+    pxw = 1.77245385090551603 * xrt * _dcerror(-torch.imag(xrt), torch.real(xrt))
+    asd = torch.complex(torch.ones_like(mixing), mixing) * 2. * (1. - pxw) / width2
+    first = sf1[0].clone()
+    first[mask] = torch.real(asd)
+    return torch.cat((first.unsqueeze(0), sf1[1:]), dim=0)
+
+
 class AbsModel:
     """Base class with shared absorption-model configuration.
 
@@ -751,18 +768,28 @@ class H2OAbsModel(AbsModel):
                 delta2 = torch.where(idx_mask, special, delta2)
 
             sd_mask = (width2 > 0) & (torch.abs(df_vec) < (10 * width0))
-            if self.model in ["R21SD", 'R22SD', 'R23SD', 'R24', 'MWL24', 'R20SD']:
-                xc = torch.complex(width0 - 1.5 * width2, df_vec + 1.5 * delta2) / torch.complex(width2, -delta2)
-            else:
-                xc = torch.complex(width0 - 1.5 * width2, df_vec) / width2
-            xrt = torch.sqrt(xc)
-            pxw = 1.77245385090551603 * xrt * _dcerror(-torch.imag(xrt), torch.real(xrt))
-            denom = torch.complex(width2, -delta2) if self.model in ['R20SD', 'R21SD', 'R22SD', 'R23SD', 'R24', 'MWL24'] else width2
-            sd = 2.0 * (1.0 - pxw) / denom
-            res_sd = torch.real(sd) - base
             mask_local = torch.abs(df_vec) < 750.0
-            res_lorentz = mask_local * (width0 / (df_vec ** 2 + wsq) - base)
-            res = torch.where(sd_mask, res_sd, res_lorentz).sum(dim=0)
+            res = mask_local * (width0 / (df_vec ** 2 + wsq) - base)
+            # Evaluate the complex profile only where it contributes. Inactive
+            # lines can have zero width2, which would also give NaN gradients.
+            # Reuse the selected indices for each line parameter.
+            sd_indices = sd_mask.nonzero(as_tuple=True)
+            if sd_indices[0].numel():
+                w0_sd = width0.expand_as(df_vec)[sd_indices]
+                w2_sd = width2.expand_as(df_vec)[sd_indices]
+                df_sd = df_vec[sd_indices]
+                if self.model in ["R21SD", 'R22SD', 'R23SD', 'R24', 'MWL24', 'R20SD']:
+                    d2_sd = delta2.expand_as(df_vec)[sd_indices]
+                    numerator = torch.complex(w0_sd - 1.5 * w2_sd, df_sd + 1.5 * d2_sd)
+                    denom = torch.complex(w2_sd, -d2_sd)
+                else:
+                    numerator = torch.complex(w0_sd - 1.5 * w2_sd, df_sd)
+                    denom = w2_sd
+                xrt = torch.sqrt(numerator / denom)
+                pxw = 1.77245385090551603 * xrt * _dcerror(-torch.imag(xrt), torch.real(xrt))
+                sd = 2.0 * (1.0 - pxw) / denom
+                res[sd_indices] = torch.real(sd) - base.expand_as(df_vec)[sd_indices]
+            res = res.sum(dim=0)
             summ = (s * res * (f_exp / fl) ** 2).sum(dim=0)
         elif self.model in ['R16', 'R03', 'R17', 'R98']:
             ti2 = ti ** 2.5
@@ -1088,15 +1115,7 @@ class O2AbsModel(AbsModel):
             sf1_base = (width*gfac + (freq_exp-fcen)*y) / ((freq_exp-fcen)**2 + width**2)
             sf2 = (width*gfac - (freq_exp+fcen)*y) / ((freq_exp+fcen)**2 + width**2)
 
-            cond0 = torch.abs(freq_exp-fcen) < 10. * width
-            width2 = .076 * width
-            xc = torch.complex(width-1.5*width2, freq_exp-fcen)/width2
-            xrt = torch.sqrt(xc)
-            pxw = 1.77245385090551603 * xrt * _dcerror(-torch.imag(xrt), torch.real(xrt))
-            asd = torch.complex(torch.ones_like(y), y) * 2. * (1.-pxw) / width2
-            sf1_alt = torch.where(cond0, torch.real(asd), sf1_base)
-            mask0 = line_idx == 0
-            sf1 = torch.where(mask0, sf1_alt, sf1_base)
+            sf1 = _o2_speed_dependent_profile(sf1_base, width[0], freq-fcen[0], y[0])
 
             contrib = a * (sf1 + sf2)
             if nlines > 37:
@@ -1153,15 +1172,7 @@ class O2AbsModel(AbsModel):
             sf1_base = (width*gfac + (freq_exp-fcen)*yk) / ((freq_exp-fcen)**2 + width**2)
             sf2 = (width*gfac - (freq_exp+fcen)*yk) / ((freq_exp+fcen)**2 + width**2)
 
-            cond0 = torch.abs(freq_exp-fcen) < 10. * width
-            width2 = .076 * width
-            xc = torch.complex(width - 1.5*width2, (freq_exp-fcen))/width2
-            xrt = torch.sqrt(xc)
-            pxw = 1.77245385090551603 * xrt * _dcerror(-torch.imag(xrt), torch.real(xrt))
-            asd = torch.complex(torch.ones_like(yk), yk) * 2. * (1.-pxw)/width2
-            sf1_alt = torch.where(cond0, torch.real(asd), sf1_base)
-            mask0 = line_idx == 0
-            sf1 = torch.where(mask0, sf1_alt, sf1_base)
+            sf1 = _o2_speed_dependent_profile(sf1_base, width[0], freq-fcen[0], yk[0])
 
             contrib = a * (sf1 + sf2)
             summ = summ + contrib.sum(dim=0)

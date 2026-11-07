@@ -1,7 +1,4 @@
-import os
-import sys
 from collections import Counter
-sys.path.insert(0, os.path.abspath('../src'))
 
 import openMWR
 from pybtex.plugin import register_plugin

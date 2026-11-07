@@ -98,7 +98,7 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
         'lwc': (('time', 'height'), [[0., 0.5, 0.], [0., 0.5, 0.]]),
     }, coords={'time': pd.date_range('2020-01-01', periods=2), 'height': [0., 500., 1000.]})
     options = dict(site='test', project_dir=dataset_project, freqs=np.array([22.24]),
-                   angles=np.array([90.]), num_of_processes=1, absmdl='R20', RT_model=backend)
+                   angles=np.array([90.]), num_of_processes=1, absmdl='R24', RT_model=backend)
     first = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     second = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 1600e6, 'min_effective_radius': 3.0})
     cloudy_radius = (0.5 / (200e6 * 4 / 3 * np.pi * 1e6)) ** (1 / 3) * 1e6

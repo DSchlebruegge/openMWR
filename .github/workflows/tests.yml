@@ -4,18 +4,37 @@ on: [push, pull_request]
 
 jobs:
   tests:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14', '3.15']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m pip install -e '.[test]'
+      - run: python -m pip install build twine
+      - name: Build both distributions
+        run: |
+          python -m build ./torchMWRT
+          python -m build
+      - run: python -m twine check --strict dist/* torchMWRT/dist/*
+      - name: Check standalone torchMWRT
+        run: |
+          python -m pip install torchMWRT/dist/*.whl
+          python - <<'PY'
+          from torchMWRT import AtmProfile, RTModel
+          RTModel(freqs=[22.24], angles=[90.0], absmdl='R24')
+          PY
+      - run: python -m pip install dist/*.whl
+      - run: python -m pip install 'openMWR[test]'
       - run: python -m pytest --cov --cov-report=term --cov-report=json --durations=10
       - run: python -m pytest -m reference
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage
+          name: coverage-${{ matrix.python-version }}
           path: coverage.json

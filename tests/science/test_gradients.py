@@ -18,20 +18,27 @@ def profile():
     }.items()}
 
 
-@pytest.mark.parametrize(('variable', 'index', 'epsilon'), [
-    ('temperature', 2, 1e-3), ('rh', 2, 1e-4), ('lwc', 1, 1e-5), ('iwc', 2, 1e-5),
+@pytest.mark.parametrize(('absorption_model', 'variable', 'index', 'epsilon'), [
+    ('R24', 'temperature', 2, 1e-3), ('R24', 'pressure', 2, 1e-3),
+    ('R24', 'rh', 2, 1e-4), ('R24', 'lwc', 1, 1e-5), ('R24', 'iwc', 2, 1e-5),
+    ('R17', 'temperature', 2, 1e-3),
 ])
-def test_profile_gradients_match_finite_differences(variable, index, epsilon):
+def test_profile_gradients_match_finite_differences(absorption_model, variable, index, epsilon):
     inputs = profile()
     if variable in ('lwc', 'iwc'):
         inputs.pop('iwc' if variable == 'lwc' else 'lwc')
     inputs[variable].requires_grad_()
-    model = RTModel(freqs=np.array([22.24, 31.4]), angles=np.array([50., 90.]), absmdl='R17')
+    # The isolated 118 GHz oxygen and 183 GHz water-vapour lines exercise their
+    # speed-dependent profiles alongside ordinary HATPRO frequencies.
+    model = RTModel(freqs=np.array([22.24, 31.4, 51.26, 58., 118.75, 183.31]),
+                    angles=np.array([50., 90.]),
+                    absmdl=absorption_model)
 
     def loss(values):
         return model.execute(AtmProfile(**values), return_intermediate=True)['tbtotal'].mean()
 
     loss(inputs).backward()
+    assert torch.isfinite(inputs[variable].grad).all()
     gradient = inputs[variable].grad[index].item()
     plus = {name: value.detach().clone() for name, value in inputs.items()}
     minus = {name: value.detach().clone() for name, value in inputs.items()}
@@ -51,7 +58,7 @@ def test_curved_time_batch_gradients_match_finite_differences(from_sat):
               else value for name, value in inputs.items()}
     inputs['temperature'].requires_grad_()
     model = RTModel(freqs=np.array([51.26, 52.28]), angles=np.array([55.]),
-                    absmdl='R17', ray_tracing=True, from_sat=from_sat)
+                    absmdl='R24', ray_tracing=True, from_sat=from_sat)
 
     def loss(temperature):
         return model.execute(AtmProfile(**dict(inputs, temperature=temperature)))['tbtotal'].mean()

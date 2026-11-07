@@ -106,7 +106,7 @@ def test_data_dry_run_and_diagnostic_are_read_only(dataset_project):
     before = {path: path.read_bytes() for path in dataset_project.rglob('*') if path.is_file()}
     dry = run_cli('data', 'test', 'training', 'r20', '-p', str(dataset_project), '-w', '-n')
     assert dry.returncode == 0, dry.stderr
-    assert 'source -> profiles -> r17 -> training -> r20' in dry.stderr
+    assert 'source -> profiles -> r24 -> training -> r20' in dry.stderr
     assert before == {path: path.read_bytes() for path in dataset_project.rglob('*') if path.is_file()}
     missing = run_cli('train', 'test', 'missing', '-p', str(dataset_project))
     assert missing.returncode == 1 and 'Train failed:' in missing.stderr

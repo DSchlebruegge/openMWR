@@ -44,25 +44,25 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     times = pd.date_range('2020-01-01', periods=3, freq='12h').values
     install_raw(dataset_project, times)
     workflow = DatasetWorkflow(dataset_project, 'test')
-    order = workflow.build(['r17', 'r20'], with_dependencies=True)
-    assert order == ['source', 'profiles', 'r17', 'r20']
+    order = workflow.build(['r24', 'r20'], with_dependencies=True)
+    assert order == ['source', 'profiles', 'r24', 'r20']
     assert len(calls) == 6
     profile_path = dataset_file(dataset_project, 'test', 'profiles', '03715')
     old_profiles = xr.load_dataset(profile_path)
     np.testing.assert_allclose(old_profiles.rh.sel(height=0), 8.0)
-    old_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r17', '03715'))
+    old_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     assert np.isfinite(old_rt.TB).all()
     assert not np.array_equal(old_rt.TB.values, xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).TB.values)
 
-    workflow.build('r17', with_dependencies=True)
+    workflow.build('r24', with_dependencies=True)
     assert len(calls) == 6  # Repeating the command performs no microwave/IR work.
     new_times = pd.date_range('2020-01-01', periods=4, freq='12h').values
     install_raw(dataset_project, new_times)
-    workflow.build('r17', with_dependencies=True)
+    workflow.build('r24', with_dependencies=True)
     assert len(calls) == 7
     updated_profiles = xr.load_dataset(profile_path)
     xr.testing.assert_identical(updated_profiles.sel(synop=times), old_profiles)
-    updated_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r17', '03715'))
+    updated_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     xr.testing.assert_identical(updated_rt.sel(time=times), old_rt)
     assert xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).time.size == 3
 
@@ -91,7 +91,7 @@ def test_frequency_shifts_follow_channels_when_the_grid_is_reordered(dataset_pro
 def test_split_creation_update_and_target_only_rebuild(dataset_project):
     times = pd.date_range('2020-01-01', periods=40).values
     workflow = saved_simulation(dataset_project, times)
-    original = dataset_file(dataset_project, 'test', 'r17', '03715').read_bytes()
+    original = dataset_file(dataset_project, 'test', 'r24', '03715').read_bytes()
     workflow.build('training')
     paths = {split: dataset_file(dataset_project, 'test', 'training', '03715', split=split)
              for split in ('training', 'validation', 'test')}
@@ -101,7 +101,7 @@ def test_split_creation_update_and_target_only_rebuild(dataset_project):
     workflow.build('training')
     assert hashes == {key: path.read_bytes() for key, path in paths.items()}
     all_times = pd.date_range('2020-01-01', periods=60).values
-    synthetic_simulation(all_times).to_netcdf(dataset_file(dataset_project, 'test', 'r17', '03715'))
+    synthetic_simulation(all_times).to_netcdf(dataset_file(dataset_project, 'test', 'r24', '03715'))
     workflow.build('training')
     after = {split: xr.load_dataset(path) for split, path in paths.items()}
     for split, data in before.items():
@@ -109,9 +109,9 @@ def test_split_creation_update_and_target_only_rebuild(dataset_project):
     combined = np.concatenate([data.time.values for data in after.values()])
     assert np.unique(combined).size == len(combined) == 60
     # Rebuilding this selected split leaves its upstream simulation untouched.
-    source_bytes = dataset_file(dataset_project, 'test', 'r17', '03715').read_bytes()
+    source_bytes = dataset_file(dataset_project, 'test', 'r24', '03715').read_bytes()
     workflow.build('training', rebuild=True)
-    assert dataset_file(dataset_project, 'test', 'r17', '03715').read_bytes() == source_bytes
+    assert dataset_file(dataset_project, 'test', 'r24', '03715').read_bytes() == source_bytes
     assert source_bytes != original
     # Rebuilding gives exactly the same memberships and profile values.
     for split, data in after.items():
@@ -125,8 +125,8 @@ def test_calendar_split_groups_whole_days_across_sources_and_months(dataset_proj
     times = np.sort(np.concatenate([dates.values, (dates + pd.Timedelta(hours=12)).values]))
     workflow = saved_simulation(dataset_project, times)
     other = synthetic_simulation(times).assign_coords(station=['02290'])
-    other.to_netcdf(dataset_file(dataset_project, 'test', 'r17', '02290'))
-    workflow.record('r17')
+    other.to_netcdf(dataset_file(dataset_project, 'test', 'r24', '02290'))
+    workflow.record('r24')
     workflow.build('training')
     expected = {'test': ['2020-01-01', '2020-01-03', '2020-02-02', '2020-03-01'],
                 'validation': ['2020-01-15', '2020-01-17', '2020-02-16'],
@@ -150,7 +150,7 @@ def test_short_calendar_period_reports_empty_partition_before_writing(dataset_pr
 def test_split_period_selects_all_three_sets_before_assignment(dataset_project):
     times = pd.date_range('2019-12-31', '2020-02-02', freq='12h').values
     workflow = saved_simulation(dataset_project, times)
-    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r17'},
+    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r24'},
            split={'start_date': '2020-01-02', 'end_date': '2020-01-31'})
     workflow.build('training')
     paths = [dataset_file(dataset_project, 'test', 'training', '03715', split=split)
@@ -160,11 +160,11 @@ def test_split_period_selects_all_three_sets_before_assignment(dataset_project):
     np.testing.assert_array_equal(combined, pd.date_range('2020-01-02', '2020-01-31T12:00', freq='12h').values)
     # Source updates outside the selected period do not add samples to any split.
     extra = pd.date_range('2019-12-31', '2020-02-15', freq='12h').values
-    synthetic_simulation(extra).to_netcdf(dataset_file(dataset_project, 'test', 'r17', '03715'))
+    synthetic_simulation(extra).to_netcdf(dataset_file(dataset_project, 'test', 'r24', '03715'))
     workflow.build('training')
     for original, path in zip(before, paths):
         xr.testing.assert_identical(original, xr.load_dataset(path))
-    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r17'},
+    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r24'},
            split={'start_date': '2020-01-02', 'end_date': '2020-01-30'})
     with pytest.raises(ValueError, match='end_date changed'):
         DatasetWorkflow(dataset_project, 'test').build('training')
@@ -177,7 +177,7 @@ def test_changed_settings_require_rebuild_before_any_deletion(dataset_project):
     saved_simulation(dataset_project, times).build('training')
     path = dataset_file(dataset_project, 'test', 'training', '03715', split='training')
     original = path.read_bytes()
-    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r17'}, split={'test_days_of_month': {'first': 1, 'last': 6}})
+    recipe(dataset_project, 'training', kind='split', inputs={'simulation': 'r24'}, split={'test_days_of_month': {'first': 1, 'last': 6}})
     with pytest.raises(ValueError, match='settings or input definitions changed') as error:
         DatasetWorkflow(dataset_project, 'test').build('training')
     assert 'training: test_days_of_month.last changed from 3 to 6' in str(error.value)
@@ -191,8 +191,8 @@ def test_changed_settings_require_rebuild_before_any_deletion(dataset_project):
     assert path.read_bytes() != original
     # Rebuilt input identity also requires downstream regeneration.
     workflow = DatasetWorkflow(dataset_project, 'test')
-    workflow.record('r17', rebuilt=True)
-    with pytest.raises(ValueError, match='input r17 was rebuilt'):
+    workflow.record('r24', rebuilt=True)
+    with pytest.raises(ValueError, match='input r24 was rebuilt'):
         workflow.build('training')
 
 
@@ -212,9 +212,9 @@ def test_rebuild_hint_repairs_only_the_affected_chain(dataset_project, monkeypat
     r20_bytes = r20_path.read_bytes()
     targets = ['training', 'r20']
     options = {}
-    expected = ['r17', 'training']
+    expected = ['r24', 'training']
     if change == 'setting':
-        path = dataset_project / 'sites/test/datasets/r17.toml'
+        path = dataset_project / 'sites/test/datasets/r24.toml'
         values = tomllib.loads(path.read_text())
         values['radiative_transfer']['absorption_model'] = 'R20'
         path.write_text(tomli_w.dumps(values))
@@ -225,22 +225,22 @@ def test_rebuild_hint_repairs_only_the_affected_chain(dataset_project, monkeypat
         path.write_text(tomli_w.dumps(values))
         expected = ['training']
     elif change == 'corrupt_input':
-        (dataset_project / 'data/sites/test/r17/state.json').write_text('{')
+        (dataset_project / 'data/sites/test/r24/state.json').write_text('{')
     else:
         targets = ['profiles', 'training']
         options = {'with_dependencies': True, 'rebuild': True}
-        expected = ['profiles', 'r17', 'training']
+        expected = ['profiles', 'r24', 'training']
     before = {path: path.read_bytes() for path in (dataset_project / 'data').rglob('*') if path.is_file()}
     with pytest.raises(ValueError) as error:
         DatasetWorkflow(dataset_project, 'test').build(targets, **options)
     assert before == {path: path.read_bytes() for path in (dataset_project / 'data').rglob('*') if path.is_file()}
     message = str(error.value)
     if change == 'setting':
-        assert 'r17: absorption_model changed from "R17" to "R20"' in message
+        assert 'r24: absorption_model changed from "R24" to "R20"' in message
     elif change == 'input_name':
-        assert 'training: inputs.simulation changed from "r17" to "r20"' in message
+        assert 'training: inputs.simulation changed from "r24" to "r20"' in message
     elif change == 'corrupt_input':
-        assert str(dataset_project / 'data/sites/test/r17/state.json') in message
+        assert str(dataset_project / 'data/sites/test/r24/state.json') in message
         assert 'processing history cannot be verified' in message
     hint = rebuild_hint(error.value)
     assert hint[3:hint.index('--project-dir')] == expected
@@ -281,7 +281,7 @@ def test_missing_or_damaged_state_has_a_working_recovery_hint(dataset_project, d
         hint = rebuild_hint(error.value)
         assert hint[3:hint.index('--project-dir')] == ['training']
     assert files == {p: p.read_bytes() for p in (dataset_project / 'data').rglob('*') if p.is_file()}
-    simulation_path = dataset_file(dataset_project, 'test', 'r17', '03715')
+    simulation_path = dataset_file(dataset_project, 'test', 'r24', '03715')
     simulation_bytes = simulation_path.read_bytes()
     main(hint[1:])
     assert simulation_path.read_bytes() == simulation_bytes
@@ -302,7 +302,7 @@ def test_readiness_checks_selected_sources_and_splits(dataset_project):
     with pytest.raises(ValueError, match='subset'):
         workflow.require('training', sources=['missing'])
     with pytest.raises(ValueError, match='split dataset'):
-        workflow.require('r17', splits=('training',))
+        workflow.require('r24', splits=('training',))
     with pytest.raises(ValueError, match='splits must select'):
         workflow.require('training', splits=('typo',))
 
@@ -423,9 +423,9 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_
     times = pd.date_range('2020-01-01', periods=3, freq='12h').values
     install_raw(dataset_project, times)
     workflow = DatasetWorkflow(dataset_project, 'test')
-    workflow.build('r17', with_dependencies=True)
+    workflow.build('r24', with_dependencies=True)
     recipe(dataset_project, 'observations', kind='hatpro')
-    recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r17'})
+    recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r24'})
     measured_times = times - np.timedelta64(75, 'm')
     measured = xr.Dataset({'TB': (('time', 'frq'), np.full((3, 1), 100.)),
                           'surface_p': ('time', [740.] * 3), 'rain_flag': ('time', [0., 0., 0.])},
@@ -475,7 +475,7 @@ def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_
 variables = ["surface_p"]
 periods = [{ start_date = "2020-01-01", end_date = "2020-01-01" }]
 ''')
-    recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r17'},
+    recipe(dataset_project, 'comparison', kind='analysis', inputs={'observations': 'observations', 'reference': 'r24'},
            analysis={'required_observations': ['TB', 'surface_p']})
     before = output.read_bytes()
     filtered = load_analysis_dataset(dataset_project, 'test', 'comparison')
