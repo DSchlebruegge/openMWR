@@ -18,7 +18,7 @@ they do not establish infrared numerical accuracy.
 
 CI uses Python 3.11, 3.14 and 3.15. Each job builds a source archive and a wheel
 from that archive for both distributions and checks their metadata. It installs
-torchMWRT first and constructs an RT model without openMWR installed, then
+torchMWRT first and calculates one R24 profile without openMWR installed, then
 installs openMWR and runs this shared suite once against both wheels. This also
 checks that packaged templates, grids and PyRTlib coefficients are available
 without an editable checkout.
@@ -68,6 +68,8 @@ Most comparisons retain `rtol=5e-5, atol=1e-6 K`; the radiosonde cases use
 `rtol=0, atol=1e-8 K`. Gradient checks compare autograd with finite differences
 for temperature, pressure, humidity and cloud water in R24, including batched
 curved paths. A separate R17 case covers the older absorption formulation.
+Water-vapour input checks compare scalar, profile and batched calculations,
+including different frequency-grid ranks and zero humidity.
 
 For an explicit check against the installed PyRTlib version:
 

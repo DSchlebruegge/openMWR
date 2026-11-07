@@ -608,8 +608,9 @@ class H2OAbsModel(AbsModel):
 
         Notes
         -----
-        Inputs are broadcast with ``torch.broadcast_tensors`` and line-list
-        coefficients are moved to input device/dtype before computation.
+        Atmospheric inputs are broadcast together, with frequency broadcasting
+        deferred until needed. Line-list coefficients are moved to input
+        device/dtype before computation.
         Compared with pyrtlib's scalar flow, torchMWRT avoids hard early returns
         for non-positive vapor density and instead masks outputs, preserving
         differentiability and shape consistency.
@@ -627,7 +628,13 @@ class H2OAbsModel(AbsModel):
         - :cite:alp:`Galanina-2022`
         """
         amu = self.amu if amu is None else amu
-        pdrykpa, vx, ekpa, frq = torch.broadcast_tensors(pdrykpa, vx, ekpa, frq)
+        pdrykpa, vx, ekpa = torch.broadcast_tensors(pdrykpa, vx, ekpa)
+        # Match ranks without repeating atmospheric quantities at each frequency.
+        ndim = len(torch.broadcast_shapes(pdrykpa.shape, frq.shape))
+        pdrykpa, vx, ekpa, frq = (
+            value.reshape((1,) * (ndim - value.ndim) + value.shape)
+            for value in (pdrykpa, vx, ekpa, frq)
+        )
         f2 = frq * frq
         self.h2oll.to(device=pdrykpa.device, dtype=pdrykpa.dtype)
         if amu:
@@ -692,7 +699,7 @@ class H2OAbsModel(AbsModel):
             # con_frgn = self.h2oll.cf * pda * pvap * f * f * ti**self.h2oll.xcf  # foreign continuum from earlier version
             con_frgn = 7.1e-10 * (300./t)**4.4 * f**1.96 * pda * pvap
             con = con_self + con_frgn
-        else:
+        elif self.model not in ['R23SD', 'R24']:
             con = (self.h2oll.cf * pda * ti ** self.h2oll.xcf + self.h2oll.cs * pvap * ti ** self.h2oll.xcs) * \
                 pvap * f2
         # 2019/03/18 *********************************************************
@@ -722,8 +729,7 @@ class H2OAbsModel(AbsModel):
             ti2 = torch.exp(2.5 * tiln)
             if self.model in ['R23SD', 'R24']:
                 if self.h2oll.cs > 0:
-                    con = self.h2oll.cs * ti * self.h2oll.xcs
-                    npp_cs = con
+                    npp_cs = self.h2oll.cs * ti * self.h2oll.xcs
                 else:
                     npp_cs = self.h2o_continuum(frq, vx, 1)
             tiln_exp = tiln.unsqueeze(0)
@@ -790,7 +796,7 @@ class H2OAbsModel(AbsModel):
                 sd = 2.0 * (1.0 - pxw) / denom
                 res[sd_indices] = torch.real(sd) - base.expand_as(df_vec)[sd_indices]
             res = res.sum(dim=0)
-            summ = (s * res * (f_exp / fl) ** 2).sum(dim=0)
+            summ = ((s / fl ** 2) * res).sum(dim=0) * f2
         elif self.model in ['R16', 'R03', 'R17', 'R98']:
             ti2 = ti ** 2.5
             ti2_exp = ti2.unsqueeze(0)
@@ -814,7 +820,7 @@ class H2OAbsModel(AbsModel):
             base = width / (562500.0 + wsq)
             mask = torch.abs(df_vec) <= 750.0
             res = (mask * (width / (df_vec ** 2 + wsq) - base)).sum(dim=0)
-            summ = (s * res * (f_exp / fl) ** 2).sum(dim=0)
+            summ = ((s / fl ** 2) * res).sum(dim=0) * f2
         elif self.model in ['R19', 'R20']:
             tiln = torch.log(ti)
             ti2 = ti ** 2.5
@@ -842,7 +848,7 @@ class H2OAbsModel(AbsModel):
             base = width / (562500.0 + wsq)
             mask = torch.abs(df_vec) < 750.0
             res = (mask * (width / (df_vec ** 2 + wsq) - base)).sum(dim=0)
-            summ = (s * res * (f_exp / fl) ** 2).sum(dim=0)
+            summ = ((s / fl ** 2) * res).sum(dim=0) * f2
         elif self.model == 'R18':
             ti2 = ti ** 2.5
             ti2_exp = ti2.unsqueeze(0)
@@ -866,7 +872,7 @@ class H2OAbsModel(AbsModel):
             base = width / (562500.0 + wsq)
             mask = torch.abs(df_vec) < 750.0
             res = (mask * (width / (df_vec ** 2 + wsq) - base)).sum(dim=0)
-            summ = (s * res * (f_exp / fl) ** 2).sum(dim=0)
+            summ = ((s / fl ** 2) * res).sum(dim=0) * f2
         # separate the following original equ. into line and continuum
         # terms, and change the units from np/km to ppm
         # abh2o = .3183e-4*den*sum + con
@@ -1071,7 +1077,7 @@ class O2AbsModel(AbsModel):
 
             sf1 = (df + (freq_exp - fcen) * y) / ((freq_exp - fcen) ** 2 + df * df)
             sf2 = (df - (freq_exp + fcen) * y) / ((freq_exp + fcen) ** 2 + df * df)
-            contrib = (strr * (sf1 + sf2) * (freq_exp / fcen) ** 2).sum(dim=0)
+            contrib = ((strr / fcen ** 2) * (sf1 + sf2)).sum(dim=0) * freq2
             summ = summ + contrib
         elif self.model in ['R17', 'R18', 'R19', 'R19SD']:
             fcen = _line_param(self.o2ll.f)
@@ -1081,7 +1087,7 @@ class O2AbsModel(AbsModel):
 
             sf1 = (df + (freq_exp - fcen) * y) / ((freq_exp - fcen) ** 2 + df * df)
             sf2 = (df - (freq_exp + fcen) * y) / ((freq_exp + fcen) ** 2 + df * df)
-            contrib = (strr * (sf1 + sf2) * (freq_exp / fcen) ** 2).sum(dim=0)
+            contrib = ((strr / fcen ** 2) * (sf1 + sf2)).sum(dim=0) * freq2
             summ = summ + contrib
         elif self.model in ['R23']:
             line_idx = torch.arange(nlines, device=freq.device).view(line_shape)
@@ -1201,7 +1207,7 @@ class O2AbsModel(AbsModel):
             d2 = del2 * del2 + df * df
             sf1 = (df * gfac + del1 * y) / d1
             sf2 = (df * gfac - del2 * y) / d2
-            summ = summ + (strr * (sf1 + sf2) * (freq_exp / f_l) ** 2).sum(dim=0)
+            summ = summ + ((strr / f_l ** 2) * (sf1 + sf2)).sum(dim=0) * freq2
 
         o2abs = 1.6097e+11 * summ * presda * th ** 3
         if self.model in ['R23']:

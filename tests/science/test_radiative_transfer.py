@@ -6,9 +6,11 @@ import json
 
 import numpy as np
 import pytest
+import torch
 import xarray as xr
 
 from torchMWRT import AtmProfile
+from torchMWRT.absorption_model import H2OAbsModel
 from tests.fixtures.radiative_transfer import DATA, FREQUENCIES, profile_inputs, torch_brightness
 
 
@@ -56,6 +58,33 @@ def test_time_batch_preserves_coordinates_and_reference_values(ray_tracing):
     assert result.dims == ('time', 'frq', 'ang')
     np.testing.assert_array_equal(result.time, batch['temperature'].time)
     np.testing.assert_allclose(result, [case['tb_K'] for case in cases], rtol=5e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize('absorption_model', ['R24', 'R23SD', 'R17'])
+def test_water_vapour_broadcasting_preserves_scalar_values(absorption_model):
+    frequencies = torch.tensor([22.24, 58., 183.31], dtype=torch.float64).reshape(3, 1)
+    dry = torch.tensor([[90., 60.], [80., 50.]], dtype=torch.float64).unsqueeze(1)
+    vx = torch.tensor(300. / 280., dtype=torch.float64)
+    vapour = torch.tensor([1., 0.], dtype=torch.float64)
+    model = H2OAbsModel(absorption_model, freqs=frequencies, dtype=dry.dtype, device='cpu')
+    batched = model.h2o_absorption(dry, vx, vapour, frequencies)
+    single_profile = model.h2o_absorption(dry[0, 0], vx, vapour, frequencies)
+    single_state = model.h2o_absorption(dry[0, 0, 0], vx, vapour[0], frequencies)
+    for grid, profile, state in zip(batched, single_profile, single_state):
+        assert grid.shape == (2, 3, 2)
+        assert profile.shape == (3, 2)
+        assert state.shape == (3, 1)
+        torch.testing.assert_close(profile, grid[0], rtol=1e-12, atol=1e-14)
+        torch.testing.assert_close(state[:, 0], grid[0, :, 0], rtol=1e-12, atol=1e-14)
+        assert (grid[..., 1] == 0).all()
+    for batch in range(2):
+        for channel in range(3):
+            for level in range(2):
+                scalar = model.h2o_absorption(dry[batch, 0, level], vx, vapour[level],
+                                             frequencies[channel, 0])
+                for grid, value in zip(batched, scalar):
+                    torch.testing.assert_close(grid[batch, channel, level], value,
+                                               rtol=1e-12, atol=1e-14)
 
 
 def test_profile_orientation_shapes_and_explicit_humidity():

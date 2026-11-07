@@ -26,8 +26,22 @@ jobs:
         run: |
           python -m pip install torchMWRT/dist/*.whl
           python - <<'PY'
+          from importlib.util import find_spec
+
+          import torch
           from torchMWRT import AtmProfile, RTModel
-          RTModel(freqs=[22.24], angles=[90.0], absmdl='R24')
+
+          assert find_spec('openMWR') is None
+          profile = AtmProfile(
+              height=torch.tensor([0., 1000., 2000.], dtype=torch.float64),
+              temperature=torch.tensor([290., 283., 276.], dtype=torch.float64),
+              pressure=torch.tensor([1010., 900., 800.], dtype=torch.float64),
+              rh=torch.tensor([.6, .5, .4], dtype=torch.float64),
+          )
+          model = RTModel(freqs=[22.24, 58.0], angles=[90.0], absmdl='R24')
+          result = model.execute(profile)['tbtotal']
+          assert result.shape == (2, 1)
+          assert torch.isfinite(result).all()
           PY
       - run: python -m pip install dist/*.whl
       - run: python -m pip install 'openMWR[test]'

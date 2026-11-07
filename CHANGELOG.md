@@ -10,6 +10,10 @@
 - Use R24 in the RT example and primary numerical checks. Evaluate complex
   speed-dependent line profiles only where they contribute, reducing calculation
   time and memory use and avoiding NaN gradients from inactive lines.
+- Compute frequency-independent water-vapour quantities once per atmospheric
+  state and skip unused generic continuum calculations for R23SD/R24, reducing
+  repeated work and memory use across channels. Factor common frequency terms
+  out of spectral-line sums to reduce repeated calculations in other models too.
 - Read binary RPG retrieval products alongside binary HATPRO measurements.
 - Restrict daily HATPRO observations to the requested UTC day and preserve
   missing predictions during smoothing. Time-series plots can show long gaps.
