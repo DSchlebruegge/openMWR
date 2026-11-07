@@ -1,0 +1,84 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Check release versions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          tag = os.environ['RELEASE_TAG']
+          for path in (Path('pyproject.toml'), Path('torchMWRT/pyproject.toml')):
+              project = tomllib.loads(path.read_text())['project']
+              if project['version'] != tag:
+                  raise SystemExit(
+                      f"{project['name']} version {project['version']} does not match release tag {tag}."
+                  )
+          PY
+      - run: python -m pip install build twine
+      - name: Build both distributions
+        run: |
+          python -m build ./torchMWRT
+          python -m build
+          python -m twine check --strict torchMWRT/dist/* dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: torchmwrt-distributions
+          path: torchMWRT/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v5
+        with:
+          name: openmwr-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-torchmwrt:
+    name: Publish torchMWRT
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/torchMWRT
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: torchmwrt-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-openmwr:
+    name: Publish openMWR
+    needs: publish-torchmwrt
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/openMWR
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: openmwr-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
