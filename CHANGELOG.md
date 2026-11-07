@@ -1,5 +1,12 @@
 # Release notes
 
+## Unreleased
+
+- Convert ERA5 mixed-phase relative humidity to water-relative humidity and
+  specific cloud liquid water to g/m³ before profile interpolation. Existing
+  ERA5 profiles, simulations and paired analyses require rebuilding. Raw
+  downloads can be reused.
+
 ## 0.2.1
 
 - Publish openMWR and torchMWRT as separate packages from the shared repository.

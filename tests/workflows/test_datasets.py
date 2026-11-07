@@ -386,6 +386,8 @@ def test_era5_profiles_are_reusable_and_incremental(dataset_project):
     output = dataset_file(dataset_project, 'test', 'era5_profiles', 'era5')
     old = xr.load_dataset(output)
     np.testing.assert_allclose(old.surface_T, 280.)
+    assert old.rh.attrs['reference'] == 'water'
+    assert old.lwc.attrs['units'] == 'g/m^3'
     assert {'ah','TD','iwv','lwp','doy_sin'} <= set(old.data_vars)
     assert 'TB' not in old
     original = output.read_bytes()
@@ -414,6 +416,25 @@ def test_era5_profiles_are_reusable_and_incremental(dataset_project):
     DatasetWorkflow(dataset_project, 'test').build('era5_profiles', rebuild=True)
     assert xr.load_dataset(output).time.size == 3
     assert raw_file.read_bytes() == raw_bytes
+
+    # Older preparation definitions cannot be extended or consumed silently.
+    state_file = output.parent / 'state.json'
+    state = json.loads(state_file.read_text())
+    del state['definition']['settings']['humidity_reference']
+    del state['definition']['settings']['cloud_water_units']
+    state_file.write_text(json.dumps(state))
+    before = output.read_bytes()
+    with pytest.raises(ValueError, match='humidity_reference|cloud_water_units'):
+        DatasetWorkflow(dataset_project, 'test').build('era5_profiles')
+    assert output.read_bytes() == before
+    DatasetWorkflow(dataset_project, 'test').build('era5_profiles', rebuild=True)
+    # The low-level API also rejects appending to an unconverted profile file.
+    old_conventions = xr.load_dataset(output)
+    old_conventions.rh.attrs.pop('reference')
+    old_conventions.to_netcdf(output)
+    with pytest.raises(ValueError, match='moisture conventions require a rebuild'):
+        ERA5Processor('test', dataset_project, start_date='2020-01-01', end_date='2020-01-01',
+                      profiles_dataset='era5_profiles').create_profile_dataset([0., 1000., 2000.])
 
 
 def test_named_analysis_uses_its_inputs_and_refreshes_only_when_changed(dataset_project, monkeypatch):

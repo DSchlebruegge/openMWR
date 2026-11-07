@@ -377,6 +377,8 @@ class DatasetWorkflow:
                     settings['scale_rh_clear_sky_seed'] = None
             elif set(preparation) - {'heights'}:
                 raise ValueError(f'{name}: ERA5 profile preparation accepts heights; radiosonde preparation options do not apply.')
+            else:
+                settings.update(humidity_reference='water', cloud_water_units='g/m^3')
         elif kind == 'simulation':
             rt = values.get('radiative_transfer', {})
             settings.update(backend=rt['backend'],

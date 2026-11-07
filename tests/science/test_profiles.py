@@ -14,6 +14,25 @@ from openMWR.paths import dataset_file, radiosonde_year_file
 
 from tests.fixtures.datasets import dataset_project, raw_profiles
 
+def test_era5_moisture_uses_water_relative_humidity_and_volumetric_cloud_water():
+    from openMWR.era5 import _convert_era5_moisture
+
+    raw = xr.Dataset({'T': ('p', [283.16, 263.16, 243.16]),
+                      'rh': ('p', [80., 80., 80.]),
+                      'lwc': ('p', [0.0001, 0.0002, 0.])},
+                     coords={'p': [900., 700., 500.]})
+    raw.lwc.attrs['units'] = 'kg kg**-1'
+    original = raw.copy(deep=True)
+    result = _convert_era5_moisture(raw)
+    # Frozen IFS mixed-phase Tetens values and moist ideal-gas density,
+    # evaluated independently with 45-digit decimal arithmetic.
+    np.testing.assert_allclose(result.rh, [80., 74.90484720953636, 59.86739415346871], rtol=1e-12)
+    np.testing.assert_allclose(result.lwc, [0.11026709944912659, 0.1851121700408729, 0.], rtol=1e-12)
+    assert result.rh.attrs['reference'] == 'water'
+    assert result.lwc.attrs['units'] == 'g/m^3'
+    xr.testing.assert_identical(raw, original)
+
+
 def test_cloud_threshold_and_adiabatic_parameters_change_liquid_water():
     from openMWR.cloud import CloudColumn, CloudModelConfig
     from openMWR.radiosonde import add_cloud_to_ds

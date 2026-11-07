@@ -1,5 +1,6 @@
 import os
 import logging
+import numpy as np
 import xarray as xr
 import pandas as pd
 import cdsapi
@@ -13,12 +14,39 @@ from openMWR.parallel import run_pool
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.radiosonde import add_derived_data
 from openMWR.paths import dataset_file, era5_cache_file
+from openMWR import consts
 
 # deactivate cdsapi-Logger
 # cds_logger = logging.getLogger("cdsapi")
 # for h in cds_logger.handlers[:]:
 #     cds_logger.removeHandler(h)
 # cds_logger.propagate = True
+
+
+def _convert_era5_moisture(ds):
+    """Convert native pressure-level moisture before vertical interpolation.
+
+    ERA5 parameter 157 uses mixed-phase saturation (IFS CY41R2, Part IV,
+    Appendix 7.A). Parameter 246 is kg of liquid water per kg of moist air.
+    Internal profiles use water-relative RH (%) and liquid water in g/m³.
+    https://codes.ecmwf.int/grib/param-db/157
+    https://codes.ecmwf.int/grib/param-db/246
+    """
+    ds = ds.copy()
+    temperature = ds.T
+    water = 611.21 * np.exp(17.502 * (temperature - 273.16) / (temperature - 32.19))
+    ice = 611.21 * np.exp(22.587 * (temperature - 273.16) / (temperature + 0.7))
+    liquid_fraction = ((temperature - 250.16) / 23.0).clip(0, 1) ** 2
+    mixed = liquid_fraction * water + (1 - liquid_fraction) * ice
+    vapour_pressure = (ds.rh / 100 * mixed).clip(min=0)
+    density = ((ds.p * 100 - vapour_pressure) / consts.R_d
+               + vapour_pressure / consts.R_v) / temperature
+    ds['rh'] = ds.rh * mixed / water
+    ds['rh'].attrs = {'long_name': 'Relative humidity with respect to liquid water',
+                      'standard_name': 'relative_humidity', 'units': '%', 'reference': 'water'}
+    ds['lwc'] = ds.lwc * density * 1000
+    ds['lwc'].attrs = {'long_name': 'Cloud liquid water content', 'units': 'g/m^3'}
+    return ds
 
 
 def _change_height_coord_for_forward_calc(ds_date, new_heights):
@@ -169,11 +197,16 @@ class ERA5Processor:
             time=slice(self.start_date, self.end_date + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)))
         old = xr.load_dataset(self.profile_file) if self.update_only and self.profile_file.is_file() else None
         if old is not None:
+            if old.rh.attrs.get('reference') != 'water' or old.lwc.attrs.get('units') != 'g/m^3':
+                raise ValueError(f'{self.profile_file}: ERA5 moisture conventions require a rebuild. '
+                                 'Rebuild this profile dataset and its simulations/analyses, '
+                                 'or use update_only=False for direct Python preparation.')
             raw = raw.sel(time=~raw.time.isin(old.time))
         if raw.time.size == 0:
             if old is not None:
                 return old
             raise ValueError('No ERA5 profiles in the selected source coverage.')
+        raw = _convert_era5_moisture(raw)
         raw['height'] = raw['height'] - self.site_config.require('mwr_height')
         new = run_pool(raw, num_of_processes, _change_height_coord_for_forward_calc, new_heights)
         new['rh'] = new['rh'].where(new['rh'] > 0.1, 0.1)

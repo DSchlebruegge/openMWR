@@ -118,6 +118,9 @@ recipe comments. `"fully_adiabatic"` keeps the adiabatic liquid water content.
 `[preparation.quality]` specifies `min_top_height` in metres above sea level before
 rebasing, and `min_levels` as distinct valid source levels before interpolation.
 ERA5 uses its native cloud water and does not accept these radiosonde settings.
+Preparation converts ERA5 mixed-phase RH to water-relative RH and cloud liquid
+water from kg/kg to g/m³ before interpolating to the height grid. Raw caches
+retain the downloaded conventions.
 
 `[radiative_transfer.infrared]` specifies `droplet_number_density` in m^-3 and
 `min_effective_radius` in micrometres. The minimum radius must be at least 2.5 and
