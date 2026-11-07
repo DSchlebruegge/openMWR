@@ -49,6 +49,8 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     assert len(calls) == 6
     profile_path = dataset_file(dataset_project, 'test', 'profiles', '03715')
     old_profiles = xr.load_dataset(profile_path)
+    assert old_profiles.surface_altitude.item() == 484.
+    assert old_profiles.surface_altitude.attrs['units'] == 'm'
     np.testing.assert_allclose(old_profiles.rh.sel(height=0), 8.0)
     old_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     assert np.isfinite(old_rt.TB).all()
@@ -65,6 +67,20 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     updated_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     xr.testing.assert_identical(updated_rt.sel(time=times), old_rt)
     assert xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).time.size == 3
+
+    # A processing record predating the explicit altitude cannot be reused.
+    state_path = profile_path.parent / 'state.json'
+    state = json.loads(state_path.read_text())
+    del state['definition']['settings']['height_reference']
+    state_path.write_text(json.dumps(state))
+    with pytest.raises(ValueError, match='height_reference'):
+        workflow.require('profiles')
+    state_path = dataset_file(dataset_project, 'test', 'r24', '03715').parent / 'state.json'
+    state = json.loads(state_path.read_text())
+    del state['definition']['inputs']['profiles']['settings']['height_reference']
+    state_path.write_text(json.dumps(state))
+    with pytest.raises(ValueError, match='height_reference'):
+        workflow.require('r24')
 
 
 def test_frequency_shifts_follow_channels_when_the_grid_is_reordered(dataset_project, monkeypatch):
@@ -385,6 +401,8 @@ def test_era5_profiles_are_reusable_and_incremental(dataset_project):
     workflow.build('era5_profiles')
     output = dataset_file(dataset_project, 'test', 'era5_profiles', 'era5')
     old = xr.load_dataset(output)
+    assert old.surface_altitude.item() == 550.
+    assert old.surface_altitude.attrs['units'] == 'm'
     np.testing.assert_allclose(old.surface_T, 280.)
     assert old.rh.attrs['reference'] == 'water'
     assert old.lwc.attrs['units'] == 'g/m^3'

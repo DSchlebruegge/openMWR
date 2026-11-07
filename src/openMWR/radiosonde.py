@@ -264,6 +264,9 @@ def create_radiosonde_dataset_for_RT(
 
     if update_only:
         ds_old = xr.load_dataset(target_file)
+        if 'surface_altitude' not in ds_old.coords:
+            raise ValueError(f'{target_file}: missing profile-base altitude. Rebuild this profile dataset '
+                             'and its simulations, or use update_only=False for direct Python preparation.')
 
     #Find all files for the station
     station_dir = radiosonde_station_dir(project_dir, station_id)
@@ -354,6 +357,8 @@ def create_radiosonde_dataset_for_RT(
 
             # Interpolate to fixed heights
             ds_date = change_coord_of_ds(ds_date, heights, extrapolate_lower_end=True, extrapolate_upper_end=False)
+            ds_date = ds_date.assign_coords(surface_altitude=xr.DataArray(
+                float(cut_off_height), attrs={'units': 'm', 'standard_name': 'surface_altitude'}))
 
             ds_date = ds_date.expand_dims(synop=[ds_date.synop.values])
             ds_list.append(ds_date)
@@ -492,6 +497,9 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
 
     if update_only:
         ds_old = xr.load_dataset(file)
+        if 'surface_altitude' not in ds_old.coords:
+            raise ValueError(f'{file}: missing profile-base altitude. Rebuild this simulation dataset '
+                             'or use update_only=False for direct Python RT.')
         ds_RS = ds_RS.sel(time = np.setdiff1d(ds_RS.time.values, ds_old.time.values))
         if ds_RS.time.size == 0:
             logger.info("No new radiosonde data found. Skipping RT calculation.")

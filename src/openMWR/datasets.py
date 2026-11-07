@@ -365,6 +365,7 @@ class DatasetWorkflow:
             preparation = values.get('preparation', {})
             settings['heights'] = preparation['heights']
             settings['mwr_height'] = self.site_settings['mwr_height']
+            settings['height_reference'] = 'surface_altitude'
             if self.source_kind(name) == 'radiosonde':
                 require_keys(preparation, ('cloud', 'quality', 'incomplete_profiles'), f'{name}.preparation')
                 if values.get('execution', {}).get('processes', 1) != 1:

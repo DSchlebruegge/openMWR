@@ -201,6 +201,9 @@ class ERA5Processor:
                 raise ValueError(f'{self.profile_file}: ERA5 moisture conventions require a rebuild. '
                                  'Rebuild this profile dataset and its simulations/analyses, '
                                  'or use update_only=False for direct Python preparation.')
+            if 'surface_altitude' not in old.coords:
+                raise ValueError(f'{self.profile_file}: missing profile-base altitude. Rebuild this profile dataset '
+                                 'and its simulations, or use update_only=False for direct Python preparation.')
             raw = raw.sel(time=~raw.time.isin(old.time))
         if raw.time.size == 0:
             if old is not None:
@@ -209,6 +212,8 @@ class ERA5Processor:
         raw = _convert_era5_moisture(raw)
         raw['height'] = raw['height'] - self.site_config.require('mwr_height')
         new = run_pool(raw, num_of_processes, _change_height_coord_for_forward_calc, new_heights)
+        new = new.assign_coords(surface_altitude=xr.DataArray(
+            float(self.site_config.require('mwr_height')), attrs={'units': 'm', 'standard_name': 'surface_altitude'}))
         new['rh'] = new['rh'].where(new['rh'] > 0.1, 0.1)
         new = add_derived_data(new)
         for var in ('T', 'rh', 'p'):
@@ -228,6 +233,9 @@ class ERA5Processor:
         profiles = xr.load_dataset(self.profile_file)
         old = xr.load_dataset(self.forward_calc_file) if self.update_only and self.forward_calc_file.is_file() else None
         if old is not None:
+            if 'surface_altitude' not in old.coords:
+                raise ValueError(f'{self.forward_calc_file}: missing profile-base altitude. Rebuild this simulation '
+                                 'dataset or use update_only=False for direct Python RT.')
             profiles = profiles.sel(time=~profiles.time.isin(old.time))
         if profiles.time.size == 0:
             if old is not None:

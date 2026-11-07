@@ -32,6 +32,11 @@ def installation():
             "import sys\nfrom pathlib import Path\n"
             "text = sys.stdin.read()\n"
             f"Path({str(recorded_input)!r}).write_text(text)\n"
+            "for key, name in [('wc_file', 'cloud.txt'), ('radiosonde', 'radiosonde.txt')]:\n"
+            "    line = next((line for line in text.splitlines() if line.startswith(key + ' ')), None)\n"
+            "    if line:\n"
+            "        path = line.split()[2 if key == 'wc_file' else 1]\n"
+            f"        (Path({str(root)!r}) / name).write_text(Path(path).read_text())\n"
             "umu = next((line.split()[1:] for line in text.splitlines() "
             "if line.startswith('umu ')), [0])\n"
             "print(' '.join(['199.0'] * len(umu)))\n"
@@ -136,22 +141,29 @@ def test_relative_data_path_keeps_uvspec_working_directory(tmp_path, monkeypatch
     assert f"data_files_path {data}\n" in recorded.read_text()
 
 
-@pytest.mark.parametrize("gen,band,angles", [("G4", "9200 10600", [90.0]),
-                                           ("G5", "9600 11500", [30.0, 90.0])])
-def test_ir_uses_discovered_atmosphere(tmp_path, monkeypatch, installation, gen, band, angles):
+@pytest.mark.parametrize("gen,band,altitude,angles", [("G4", "9200 10600", 2656., [90.0]),
+                                                    ("G5", "9600 11500", 484., [30.0, 90.0])])
+def test_ir_uses_profile_altitude_and_discovered_atmosphere(tmp_path, monkeypatch, installation, gen, band, altitude, angles):
     executable, data, recorded = installation(tmp_path / "install", "share/libRadtran/data")
     monkeypatch.setenv("PATH", str(executable.parent))
     project_dir = tmp_path / "retrieval_project"
     create_site("test", project_dir, instrument_generation=gen)
     result = calculate_IR_band_TB(
         "test", project_dir,
-        z_km=[0.0, 1.0], T_K=[290.0, 280.0], rh_100=[50.0, 50.0],
-        p_hPa=[1000.0, 900.0], lwc_gpm3=[0.0, 0.0],
-        effective_droplet_radius_mum=[10.0, 10.0], ang=np.array(angles),
+        z_km=[0.5, 1.5, 14.9, 15.0], T_K=[290.0, 280.0, 230.0, 229.0], rh_100=[50.0] * 4,
+        p_hPa=[900.0, 800.0, 200.0, 190.0], lwc_gpm3=[0.0, 0.1, 0.0, 0.0],
+        effective_droplet_radius_mum=[10.0] * 4, ang=np.array(angles), surface_altitude=altitude,
     )
     np.testing.assert_array_equal(result, 199.0 if len(angles) == 1 else [199.0, 199.0])
     text = recorded.read_text()
     assert f"atmosphere_file {data / 'atmmod/afglus.dat'}\n" in text
     assert f"data_files_path {data}\n" in text
     assert f"wavelength {band}\n" in text
+    assert f"altitude {altitude / 1000 + 0.5}\n" in text
+    assert "zout 0\n" in text
+    cloud = np.loadtxt(recorded.parent / 'cloud.txt')
+    np.testing.assert_allclose(cloud[:, 0], np.array([14.9, 1.5, 0.5]) + altitude / 1000)
+    np.testing.assert_allclose(cloud[:, 1:], [[0., 10.], [0.1, 10.], [0., 10.]])
+    radio = np.loadtxt(recorded.parent / 'radiosonde.txt')
+    np.testing.assert_allclose(radio, [[190., 229., 50.], [200., 230., 50.], [800., 280., 50.], [900., 290., 50.]])
     assert not list((project_dir / "data/libRadtran").iterdir())

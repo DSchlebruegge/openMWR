@@ -1,8 +1,7 @@
 import xarray as xr
 import numpy as np
 import pandas as pd
-import os
-import time
+import tempfile
 import logging
 from pathlib import Path
 import warnings
@@ -11,7 +10,6 @@ from pyrtlib.tb_spectrum import TbCloudRTE
 from torchMWRT import RTModel, AtmProfile
 
 from openMWR.libRadtran import get_libradtran_paths, libRadtran
-from openMWR.utils import remove_files_in_dir
 from openMWR.parallel import run_pool
 from openMWR.config import check_infrared
 from openMWR.site import load_site_config
@@ -33,7 +31,7 @@ warnings.filterwarnings(
     module="pyrtlib.rt_equation"
 ) #only important for cloud radiating temperature, which is not used here
 
-def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, *, ang, site_config=None):
+def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, *, ang, surface_altitude, site_config=None):
     """
     Calculate band-integrated infrared brightness temperatures with libRadtran.
 
@@ -44,7 +42,7 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     project_dir : str
         Working-project root containing data/ and sites/.
     z_km : array-like
-        Heights in kilometers for each model level.
+        Heights in kilometers above the profile base for each model level.
     T_K : array-like
         Air temperature profile in kelvin.
     rh_100 : array-like
@@ -57,6 +55,10 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
         Effective droplet radius in micrometers at each level.
     ang : array-like, optional
         Elevation angles in degrees; zenith-only by default.
+    surface_altitude : float
+        Altitude of the profile base in metres above sea level. This is the
+        launch-station altitude for uncut radiosondes, or the instrument
+        altitude for profiles rebased to the instrument.
 
     Returns
     -------
@@ -75,14 +77,10 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     if not atmosphere_file.is_file():
         raise FileNotFoundError(f"libRadtran standard atmosphere not found at: {atmosphere_file}")
 
-    zeitstempel_ns = time.time_ns()
-
     libRadtran_data_dir = Path(libRadtran_dir(project_dir)).resolve()
-    os.makedirs(libRadtran_data_dir, exist_ok=True)
-    
-    radio_file = libRadtran_data_dir / f"radio_{zeitstempel_ns}.dat"
-
-    wc_file = libRadtran_data_dir / f"wc_{zeitstempel_ns}.dat"
+    libRadtran_data_dir.mkdir(parents=True, exist_ok=True)
+    if not np.isfinite(surface_altitude):
+        raise ValueError('surface_altitude must be finite (metres above sea level).')
     
     df = pd.DataFrame({
         'z_km': z_km,
@@ -96,12 +94,14 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     df = df.sort_values(by='p_hPa')
     df = df.drop_duplicates(subset=['p_hPa'])
 
-    df.to_csv(radio_file, index=False, columns=['p_hPa','T_K','rh_100'], sep=' ', header=False)
-
+    # libRadtran anchors the highest-pressure level at altitude, then derives
+    # geometric heights from p/T. Its cloud-file heights are above sea level.
+    altitude_km = surface_altitude / 1000
+    bottom_altitude_km = altitude_km + df.iloc[-1]['z_km']
+    radio = df[['p_hPa', 'T_K', 'rh_100']]
     df = df.sort_values(by='z_km', ascending=False)
     df = df[df['z_km'] < 15]
-
-    df.to_csv(wc_file, index=False, columns=['z_km', 'lwc_gpm3', 'effective_droplet_radius_mum'], sep=' ', header=False)
+    df = df.assign(z_km=df['z_km'] + altitude_km)
 
     umu = np.cos(np.radians(90 + ang))
 
@@ -110,7 +110,12 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     elif gen == 'G4':
         wavelengths = '9200 10600'
     
-    try:
+    # Each invocation owns its scratch files, including concurrent site builds.
+    with tempfile.TemporaryDirectory(dir=libRadtran_data_dir) as directory:
+        radio_file = Path(directory) / 'radiosonde.dat'
+        wc_file = Path(directory) / 'cloud.dat'
+        radio.to_csv(radio_file, index=False, sep=' ', header=False)
+        df.to_csv(wc_file, index=False, columns=['z_km', 'lwc_gpm3', 'effective_droplet_radius_mum'], sep=' ', header=False)
         df_rad, stderr = libRadtran(
             atmosphere_file = str(atmosphere_file),
             data_files_path = str(installation_data_dir),
@@ -121,16 +126,13 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
             radiosonde = f'{str(radio_file)} h2o RH',
             radiosonde_levels_only = True,
             wc_file = f'1D {str(wc_file)}',
+            altitude = bottom_altitude_km,
+            zout = 0,
             umu = umu[::-1], # -0.5 np.array([-1, -0.5]
             output_quantity = 'brightness',
             output_user = 'uu',
             quiet = True
             )
-    except Exception as e:
-        raise e
-    finally:
-        for f in [radio_file, wc_file]:
-            os.remove(f)
 
     if len(umu) > 1:
         return df_rad['uu'].iloc[0].loc[umu]
@@ -206,7 +208,8 @@ def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str, infrared: dic
     lwc_gpm3 = ds_date.lwc.values
 
     effective_droplet_radius_mum = _effective_droplet_radius_mum(lwc_gpm3, **infrared)
-    TB_IR = calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum, ang=np.array([90.]), site_config=site_config)
+    TB_IR = calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, effective_droplet_radius_mum,
+                               ang=np.array([90.]), surface_altitude=ds_date.surface_altitude.item(), site_config=site_config)
     return xr.DataArray(TB_IR)
 
 def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config):
@@ -417,7 +420,8 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         Input atmospheric profiles. Required data variables are ``T`` (K),
         ``rh`` (%), ``p`` (hPa), and ``lwc`` (g m^-3), defined on ``height``.
         A ``height`` coordinate (m) is required. For multi-profile execution,
-        a ``time`` dimension is expected.
+        a ``time`` dimension is expected. ``surface_altitude`` gives the profile
+        base in metres above sea level, as a scalar or per-time coordinate.
     site : str
         Site name used for infrared calculations.
     project_dir : str
@@ -445,6 +449,9 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
     """
 
     check_infrared(infrared)
+    if 'surface_altitude' not in ds or not bool(np.isfinite(ds.surface_altitude).all()):
+        raise ValueError('RT requires finite surface_altitude (profile-base metres above sea level). '
+                         'Rebuild prepared profiles or set this coordinate for custom Python inputs.')
     for var in ('T', 'p', 'rh', 'lwc'):
         if not bool(np.isfinite(ds[var]).all()):
             raise ValueError(f'RT requires complete profiles: {var} contains missing or non-finite values.')
@@ -463,10 +470,5 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         ds_new.attrs['freq_shift'] = freq_shift.tolist()
 
     logger.info('Finished RT')
-
-    # Remove temporary libRadtran files
-    libRadtran_data_dir = libRadtran_dir(project_dir)
-    if os.path.isdir(libRadtran_data_dir):
-        remove_files_in_dir(libRadtran_data_dir)
 
     return ds_new

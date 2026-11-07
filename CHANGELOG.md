@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Anchor libRadtran atmospheres and cloud heights at each profile's actual
+  altitude above sea level. Prepared profiles record their base altitude,
+  including uncut radiosondes whose base differs from the instrument.
+  Existing profiles, simulations, training splits and paired analyses require
+  rebuilding from local raw caches. Microwave RT and saved models are unchanged.
+  Concurrent RT builds keep separate temporary libRadtran inputs.
 - Convert ERA5 mixed-phase relative humidity to water-relative humidity and
   specific cloud liquid water to g/m³ before profile interpolation. Existing
   ERA5 profiles, simulations and paired analyses require rebuilding. Raw

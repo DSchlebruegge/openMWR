@@ -84,11 +84,13 @@ def test_profile_quality_limits_select_source_profiles_before_interpolation(data
     np.testing.assert_array_equal(selected.synop, times[2:])
     values = workflow.recipe('profiles').values
     values['preparation']['quality'] = {'min_top_height': 10000, 'min_levels': 400}
+    values['preparation']['cut_off_at_mwr_height'] = True
     (dataset_project / 'sites/test/datasets/profiles.toml').write_text(tomli_w.dumps(values))
     with pytest.raises(ValueError, match='scientific settings'):
         DatasetWorkflow(dataset_project, 'test').build('profiles')
     DatasetWorkflow(dataset_project, 'test').build('profiles', rebuild=True)
     selected = xr.load_dataset(dataset_file(dataset_project, 'test', 'profiles', '03715'))
+    assert selected.surface_altitude.item() == 550.
     np.testing.assert_array_equal(selected.synop, times if completion == 'monthly_mean' else times[2:])
     assert np.isfinite(selected[['T', 'p', 'rh', 'lwc']].to_array()).all()
 
@@ -109,13 +111,22 @@ def test_monthly_completion_rejects_profiles_without_upper_level_reference(datas
 def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dataset_project, monkeypatch, backend):
     import openMWR.run_RT as rt
 
-    monkeypatch.setattr(rt, 'calculate_IR_band_TB', lambda *args, **kwargs: float(np.mean(args[-1])))
+    altitudes = []
+    def infrared(*args, **kwargs):
+        altitudes.append(kwargs['surface_altitude'])
+        return float(np.mean(args[-1]))
+    monkeypatch.setattr(rt, 'calculate_IR_band_TB', infrared)
     profiles = xr.Dataset({
         'T': (('time', 'height'), [[285., 282., 279.], [285., 282., 279.]]),
         'p': (('time', 'height'), [[1000., 950., 900.], [1000., 950., 900.]]),
         'rh': (('time', 'height'), [[80., 80., 80.], [80., 80., 80.]]),
         'lwc': (('time', 'height'), [[0., 0.5, 0.], [0., 0.5, 0.]]),
-    }, coords={'time': pd.date_range('2020-01-01', periods=2), 'height': [0., 500., 1000.]})
+    }, coords={'time': pd.date_range('2020-01-01', periods=2), 'height': [0., 500., 1000.],
+               'surface_altitude': ('time', [484., 2656.])})
+    scratch = dataset_project / 'data/libRadtran'
+    scratch.mkdir(exist_ok=True)
+    other_build = scratch / 'other-build.dat'
+    other_build.write_text('Input owned by another running build')
     options = dict(site='test', project_dir=dataset_project, freqs=np.array([22.24]),
                    angles=np.array([90.]), num_of_processes=1, absmdl='R24', RT_model=backend)
     first = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
@@ -124,6 +135,11 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
     np.testing.assert_allclose(first.TB_IR, (2 * 2.5 + cloudy_radius) / 3)
     np.testing.assert_allclose(second.TB_IR, (2 * 3.0 + cloudy_radius / 2) / 3)
     xr.testing.assert_equal(first.TB, second.TB)
+    assert altitudes == [484., 2656., 484., 2656.]
+    assert other_build.read_text() == 'Input owned by another running build'
+    with pytest.raises(ValueError, match='RT requires finite surface_altitude'):
+        rt.run_RT(profiles.drop_vars('surface_altitude'), **options,
+                  infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     invalid = profiles.copy(deep=True)
     invalid['T'][0, -1] = np.nan
     with pytest.raises(ValueError, match='RT requires complete profiles'):

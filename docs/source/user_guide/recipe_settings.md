@@ -126,6 +126,13 @@ retain the downloaded conventions.
 `min_effective_radius` in micrometres. The minimum radius must be at least 2.5 and
 below 60. Calculated radii at or above 60 are rejected before RT, matching
 libRadtran's Hu-Stamnes cloud optics.
+Prepared profiles record `surface_altitude` in metres above sea level. Uncut
+radiosondes use the launch-station altitude. Profiles cut off at instrument
+height and ERA5 profiles use `mwr_height`. If a radiosonde station is higher
+than the instrument, its altitude remains the profile base. Infrared RT uses
+this altitude for the atmosphere and converts cloud heights to sea-level
+coordinates. Custom Python profiles passed to `run_RT` must also provide
+`surface_altitude` as a scalar or per-time coordinate.
 
 Optional `[radiative_transfer.frequency_shift]` maps nominal channel frequencies
 to offsets in GHz. Offsets are subtracted before RT. Omitted channels have zero
