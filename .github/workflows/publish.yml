@@ -56,7 +56,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: pypi
+      name: pypi-torchmwrt
       url: https://pypi.org/p/torchMWRT
     permissions:
       id-token: write
@@ -72,7 +72,7 @@ jobs:
     needs: publish-torchmwrt
     runs-on: ubuntu-latest
     environment:
-      name: pypi
+      name: pypi-openmwr
       url: https://pypi.org/p/openMWR
     permissions:
       id-token: write
