@@ -176,6 +176,9 @@ unavailable comparison values remain missing, without interpolation.
 `auto` selects by file presence, without comparing modification times. Use
 `hatpro_format = "binary"` when NetCDF exports can lag behind the binary files.
 Unsupported binary file codes and incomplete records are reported as errors.
+Measured channels are ordered by frequency. Unsupported frequency metadata is
+rejected rather than replaced. If a NetCDF export has incorrect frequency
+labels, use the binary files with valid headers.
 
 Daily import skips empty zenith selections and BLS scans missing standard HATPRO
 angles. `build.log` reports the reason, including missing and measured scan

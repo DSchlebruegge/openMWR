@@ -186,6 +186,7 @@ With the generated settings, preparation:
 - Changes the height coordinate to height above the radiosonde station.
 - Interpolates to the selected height grid.
 - Completes missing upper levels using monthly means of the available profiles.
+- Rejects profiles whose pressure is nonpositive or does not decrease strictly with height.
 - Adds derived quantities, including liquid water path (LWP) and integrated water vapour (IWV).
 
 Temperature and humidity thresholds identify possible liquid-cloud layers in

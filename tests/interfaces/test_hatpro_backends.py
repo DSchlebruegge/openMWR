@@ -43,10 +43,39 @@ def configure(tmp_path, **changes):
     path.write_text(tomli_w.dumps(values))
 
 
+def test_importers_reorder_frequency_values_together_and_reject_unknown_channels(tmp_path, monkeypatch):
+    date, _ = project(tmp_path)
+    measured = load_hatpro_day(date, 'test', tmp_path, ['BRT', 'BLB'])
+    expected = {importer: importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False).TB
+                for importer in (import_hatpro_data, import_hatpro_data_bls)}
+    reversed_channels = {name: data.isel(frq=slice(None, None, -1)) for name, data in measured.items()}
+    monkeypatch.setattr(hatpro_data, 'load_hatpro_day', lambda *args, **kwargs: reversed_channels)
+    for importer, tb in expected.items():
+        xr.testing.assert_identical(importer(date, 'test', tmp_path, mean_one_min=True, include_rpg=False).TB, tb)
+    for name, data in reversed_channels.items():
+        frequencies = data.frq.values.copy()
+        frequencies[0] = 59.
+        reversed_channels[name] = data.assign_coords(frq=frequencies)
+    for importer in expected:
+        with pytest.raises(ValueError, match='Unsupported HATPRO frequencies'):
+            importer(date, 'test', tmp_path, include_rpg=False)
+
+
 @pytest.mark.parametrize('variant', ['legacy', 'modern'])
 @pytest.mark.parametrize('include_rpg', [False, True])
 def test_real_binary_and_manufacturer_exports_give_the_same_daily_observations(tmp_path, variant, include_rpg):
     date, raw = project(tmp_path, variant, rpg=include_rpg)
+    if variant == 'legacy':
+        configure(tmp_path, hatpro_format='netcdf')
+        with pytest.raises(ValueError, match='Unsupported HATPRO frequencies'):
+            import_hatpro_data(date, 'test', tmp_path, include_rpg=False)
+        # The manufacturer's frequency field contains TB minima. Repair only
+        # this temporary comparison copy using the independent binary header.
+        binary_frequencies = read_hatpro_file(next(raw.glob('*.BRT'))).frq.values
+        path = next(raw.glob('*.BRT.NC'))
+        reference = xr.load_dataset(path)
+        reference['frequencies'].values[:] = binary_frequencies
+        reference.to_netcdf(path)
     if include_rpg:
         # Independent manufacturer exports verify every stored value, timestamp
         # and height, before matching, filtering or derived calculations.

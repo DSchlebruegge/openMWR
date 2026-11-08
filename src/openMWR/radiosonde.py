@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 from openMWR.cloud import CloudColumn, CloudModelConfig
 from openMWR.config import check_cloud, check_profile_quality
 from openMWR.atm import dewpoint_from_absolute_humidity, calc_absolute_humidity
-from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, match_analysis_data
+from openMWR.xr_utils import change_coord_of_ds, integrate, add_time_data, match_analysis_data, valid_profile_pressure
 from openMWR.site import load_site_config, get_invalid_measurements
 from openMWR.run_RT import run_RT
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
@@ -87,6 +87,7 @@ def add_derived_data(ds: xr.Dataset) -> xr.Dataset:
 
     ds['iwv'] = integrate(ds['ah'], 'height')
     ds['iwv'].attrs["units"] = "kg/m^2"
+    ds.attrs['column_integration'] = 'trapezoidal'
 
     return ds
 
@@ -267,6 +268,9 @@ def create_radiosonde_dataset_for_RT(
         if 'surface_altitude' not in ds_old.coords:
             raise ValueError(f'{target_file}: missing profile-base altitude. Rebuild this profile dataset '
                              'and its simulations, or use update_only=False for direct Python preparation.')
+        if ds_old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(ds_old.p).all()):
+            raise ValueError(f'{target_file}: column integration or pressure quality requires a rebuild. '
+                             'Rebuild this profile dataset and its dependents, or use update_only=False.')
 
     #Find all files for the station
     station_dir = radiosonde_station_dir(project_dir, station_id)
@@ -405,6 +409,17 @@ def create_radiosonde_dataset_for_RT(
     if not ds_new.sizes['synop']:
         raise ValueError('No complete profiles remain for RT. Review the height grid, source coverage or incomplete_profiles setting.')
 
+    pressure_ok = valid_profile_pressure(ds_new.p)
+    if not bool(pressure_ok.all()):
+        rejected_dates = ds_new.synop.values[~pressure_ok.values]
+        logger.warning('Rejected %s profiles: pressure must be positive and strictly decreasing with height. '
+                       'UTC synops (first 10): %s', len(rejected_dates), rejected_dates[:10])
+        ds_new = ds_new.sel(synop=pressure_ok)
+        if lwc_reference is not None:
+            lwc_reference = lwc_reference.sel(synop=ds_new.synop)
+    if not ds_new.sizes['synop']:
+        raise ValueError('No profiles with positive pressure strictly decreasing with height remain for RT.')
+
     if scale_rh_clear_sky:
         ds_new = _scale_rh_profiles_for_clear_sky_cases(
             ds_new,
@@ -494,6 +509,8 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
     RS_file = dataset_file(project_dir, site, profiles_dataset, station_id)
 
     ds_RS = xr.load_dataset(RS_file)
+    if ds_RS.attrs.get('column_integration') != 'trapezoidal':
+        raise ValueError(f'{RS_file}: column integration requires a rebuild. Rebuild the prepared profiles before RT.')
 
     ds_RS = ds_RS.rename(synop = 'time')
 
@@ -505,6 +522,9 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         if ds_old.attrs.get('ray_tracing') != int(ray_tracing):
             raise ValueError(f'{file}: ray-tracing settings differ or are missing. Rebuild this simulation '
                              'dataset or use update_only=False for direct Python RT.')
+        if ds_old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(ds_old.p).all()):
+            raise ValueError(f'{file}: column integration or pressure quality requires a rebuild. '
+                             'Rebuild this simulation and its dependents, or use update_only=False.')
         ds_RS = ds_RS.sel(time = np.setdiff1d(ds_RS.time.values, ds_old.time.values))
         if ds_RS.time.size == 0:
             logger.info("No new radiosonde data found. Skipping RT calculation.")

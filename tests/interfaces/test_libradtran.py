@@ -167,3 +167,10 @@ def test_ir_uses_profile_altitude_and_discovered_atmosphere(tmp_path, monkeypatc
     radio = np.loadtxt(recorded.parent / 'radiosonde.txt')
     np.testing.assert_allclose(radio, [[190., 229., 50.], [200., 230., 50.], [800., 280., 50.], [900., 290., 50.]])
     assert not list((project_dir / "data/libRadtran").iterdir())
+    with pytest.raises(ValueError, match='positive pressure strictly decreasing with height'):
+        calculate_IR_band_TB(
+            'test', project_dir, z_km=[0., .01, 1.], T_K=[259., 260., 253.], rh_100=[80.] * 3,
+            p_hPa=[717., 718., 700.], lwc_gpm3=[0.] * 3, effective_droplet_radius_mum=[2.5] * 3,
+            ang=np.array(angles), surface_altitude=altitude,
+        )
+    assert recorded.read_text() == text

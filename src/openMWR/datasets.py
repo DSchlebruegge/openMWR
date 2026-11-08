@@ -357,7 +357,7 @@ class DatasetWorkflow:
                 offset = self.site_settings.get('hatpro_time_offset_hours')
                 settings.update(import_retrieval_data=values.get('observations', {}).get('include_rpg', False),
                                 hatpro_data_dir=self.site_settings.get('hatpro_data_dir'), gen=self.site_settings.get('instrument_generation'),
-                                hatpro_format=format)
+                                hatpro_format=format, infrared_alignment='independent_minute_means')
                 if offset is not None:
                     settings['hatpro_time_offset_hours'] = offset
                 periods = self.site_settings.get('invalid_measurements', [])
@@ -368,6 +368,8 @@ class DatasetWorkflow:
             settings['heights'] = preparation['heights']
             settings['mwr_height'] = self.site_settings['mwr_height']
             settings['height_reference'] = 'surface_altitude'
+            settings['column_integration'] = 'trapezoidal'
+            settings['pressure_filter'] = 'positive_strictly_decreasing'
             if self.source_kind(name) == 'radiosonde':
                 require_keys(preparation, ('cloud', 'quality', 'incomplete_profiles'), f'{name}.preparation')
                 if values.get('execution', {}).get('processes', 1) != 1:

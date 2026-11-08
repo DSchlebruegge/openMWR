@@ -1,12 +1,14 @@
 """Variable-specific validity, inclusive UTC periods and paired sample selection."""
 
+from datetime import datetime
+
 import numpy as np
 import pytest
 import xarray as xr
 
 from openMWR.config import check_invalid_measurements
 from openMWR.observations import mask_invalid_measurements, valid_observation_times, reference_source
-from openMWR.xr_utils import match_analysis_data, mean_n_min
+from openMWR.xr_utils import add_time_data, match_analysis_data, mean_n_min
 
 
 def test_reference_selection_infers_only_an_unambiguous_background():
@@ -21,6 +23,44 @@ def test_reference_selection_infers_only_an_unambiguous_background():
         reference_source(paired.sel(data_source=['hatpro']))
     with pytest.raises(ValueError, match='distinct reference sources'):
         reference_source(paired.sel(data_source=['hatpro', 'era5', 'era5']))
+
+
+def test_time_features_are_independent_of_datetime_resolution():
+    reference = None
+    for unit in ('s', 'us', 'ns'):
+        data = xr.Dataset(coords={'time': np.array(['1970-01-01', '2026-01-01'], dtype=f'datetime64[{unit}]')})
+        features = add_time_data(data)
+        np.testing.assert_allclose(features.years_since_1970, [0., 56.])
+        if reference is not None:
+            for name in ('years_since_1970', 'doy_sin', 'doy_cos'):
+                np.testing.assert_array_equal(features[name], reference[name])
+        reference = features
+
+
+def test_staggered_infrared_is_masked_and_averaged_before_alignment_to_zenith_minutes(tmp_path, monkeypatch):
+    from openMWR import hatpro_data
+    from openMWR.site import create_site
+
+    create_site('test', tmp_path, instrument_generation='G5', hatpro_data_dir='unused',
+                invalid_measurements=[dict(variables=['TB_IR'], periods=[
+                    dict(start_time='2024-01-02T00:00:05Z', end_time='2024-01-02T00:00:06Z')])])
+    frequencies = [22.24, 23.04, 23.84, 25.44, 26.24, 27.84, 31.4,
+                   51.26, 52.28, 53.86, 54.94, 56.66, 57.3, 58.]
+    times = np.array(['2024-01-02T00:00:00', '2024-01-02T00:00:10', '2024-01-02T00:01:00'],
+                     dtype='datetime64[ns]')
+    brt = xr.Dataset({'TB': (('time', 'frq'), np.full((3, 14), 100.)),
+                      'elevation_angle': ('time', [90., 90., 30.]),
+                      'rain_flag': ('time', [0., 0., 0.])}, coords={'time': times, 'frq': frequencies})
+    infrared = xr.Dataset({'TB_IR': (('time', 'wavelength'), [[124.], [242.], [250.], [260.]])},
+        coords={'time': np.array(['2024-01-02T00:00:05', '2024-01-02T00:00:15',
+                                 '2024-01-02T00:01:05', '2024-01-03T00:00:00'], dtype='datetime64[ns]'),
+                'wavelength': [10.5]})
+    monkeypatch.setattr(hatpro_data, 'load_hatpro_day', lambda *args, **kwargs: {'BRT': brt, 'IRT': infrared})
+    day = hatpro_data.import_hatpro_data(datetime(2024, 1, 2), 'test', tmp_path,
+                                       mean_one_min=True, include_rpg=False)
+    np.testing.assert_array_equal(day.time, times[:1])
+    np.testing.assert_allclose(day.TB_IR, [242.])
+    np.testing.assert_allclose(day.TB, 100.)
 
 
 def test_invalid_period_preserves_other_variables_and_cannot_be_bridged_by_matching():

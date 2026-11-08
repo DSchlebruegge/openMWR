@@ -9,7 +9,7 @@ from pathlib import Path
 
 from openMWR.site import load_site_config, get_invalid_measurements
 from openMWR.run_RT import run_RT
-from openMWR.xr_utils import change_coord_of_ds, add_time_data, match_analysis_data
+from openMWR.xr_utils import change_coord_of_ds, add_time_data, match_analysis_data, valid_profile_pressure
 from openMWR.parallel import run_pool
 from openMWR.hatpro_data import change_height_coord_of_ds_hatpro
 from openMWR.radiosonde import add_derived_data
@@ -204,6 +204,9 @@ class ERA5Processor:
             if 'surface_altitude' not in old.coords:
                 raise ValueError(f'{self.profile_file}: missing profile-base altitude. Rebuild this profile dataset '
                                  'and its simulations, or use update_only=False for direct Python preparation.')
+            if old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(old.p).all()):
+                raise ValueError(f'{self.profile_file}: column integration or pressure quality requires a rebuild. '
+                                 'Rebuild this profile dataset and its dependents, or use update_only=False.')
             raw = raw.sel(time=~raw.time.isin(old.time))
         if raw.time.size == 0:
             if old is not None:
@@ -214,6 +217,14 @@ class ERA5Processor:
         new = run_pool(raw, num_of_processes, _change_height_coord_for_forward_calc, new_heights)
         new = new.assign_coords(surface_altitude=xr.DataArray(
             float(self.site_config.require('mwr_height')), attrs={'units': 'm', 'standard_name': 'surface_altitude'}))
+        pressure_ok = valid_profile_pressure(new.p)
+        if not bool(pressure_ok.all()):
+            rejected_dates = new.time.values[~pressure_ok.values]
+            self.logger.warning('Rejected %s profiles: pressure must be positive and strictly decreasing with height. '
+                                'UTC times (first 10): %s', len(rejected_dates), rejected_dates[:10])
+            new = new.sel(time=pressure_ok)
+        if not new.sizes['time'] and old is None:
+            raise ValueError('No profiles with positive pressure strictly decreasing with height remain for RT.')
         new['rh'] = new['rh'].where(new['rh'] > 0.1, 0.1)
         new = add_derived_data(new)
         for var in ('T', 'rh', 'p'):
@@ -236,6 +247,9 @@ class ERA5Processor:
         if not self.profile_file.is_file():
             raise FileNotFoundError(f'ERA5 prepared profiles missing: {self.profile_file}')
         profiles = xr.load_dataset(self.profile_file)
+        if profiles.attrs.get('column_integration') != 'trapezoidal':
+            raise ValueError(f'{self.profile_file}: column integration requires a rebuild. '
+                             'Rebuild the prepared profiles before RT.')
         old = xr.load_dataset(self.forward_calc_file) if self.update_only and self.forward_calc_file.is_file() else None
         if old is not None:
             if 'surface_altitude' not in old.coords:
@@ -244,6 +258,9 @@ class ERA5Processor:
             if old.attrs.get('ray_tracing') != int(ray_tracing):
                 raise ValueError(f'{self.forward_calc_file}: ray-tracing settings differ or are missing. Rebuild '
                                  'this simulation dataset or use update_only=False for direct Python RT.')
+            if old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(old.p).all()):
+                raise ValueError(f'{self.forward_calc_file}: column integration or pressure quality requires a rebuild. '
+                                 'Rebuild this simulation and its dependents, or use update_only=False.')
             profiles = profiles.sel(time=~profiles.time.isin(old.time))
         if profiles.time.size == 0:
             if old is not None:

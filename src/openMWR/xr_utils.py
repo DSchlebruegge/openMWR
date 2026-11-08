@@ -4,9 +4,12 @@ from openMWR.paths import dataset_file
 
 def _get_indices_to_interpolate(old_coord: np.ndarray, new_coord: np.ndarray, extrapolate_lower_end=False, extrapolate_upper_end=False):
     delta_new_coord = np.diff(new_coord) / 2
-    mid_level = np.concatenate(([new_coord[0] - delta_new_coord[0]], 
-                                new_coord[:-1] + delta_new_coord, 
-                                [new_coord[-1] + delta_new_coord[-1]]))
+    if len(new_coord) == 1:
+        mid_level = np.array([new_coord[0], new_coord[0]])
+    else:
+        mid_level = np.concatenate(([new_coord[0] - delta_new_coord[0]],
+                                    new_coord[:-1] + delta_new_coord,
+                                    [new_coord[-1] + delta_new_coord[-1]]))
     
     indices_to_interpolate = []
 
@@ -19,7 +22,7 @@ def _get_indices_to_interpolate(old_coord: np.ndarray, new_coord: np.ndarray, ex
         if indices_lower.size == 0 and not extrapolate_lower_end:
             indices_to_interpolate.append(np.array([]))
             continue
-        if indices_upper.size == 0 and not extrapolate_upper_end:
+        if h > old_coord.max() and not extrapolate_upper_end:
             indices_to_interpolate.append(np.array([]))
             continue
 
@@ -184,7 +187,13 @@ def integrate(da: xr.DataArray, dim: str):
     """
     Integrate a DataArray along a specified dimension using the trapezoidal rule.
     """
-    return (da * da[dim].diff(dim, label='lower')).sum(dim=dim)
+    return da.integrate(dim)
+
+
+def valid_profile_pressure(pressure: xr.DataArray) -> xr.DataArray:
+    """Select finite, positive pressure profiles decreasing strictly with height."""
+    return ((np.isfinite(pressure) & (pressure > 0)).all('height')
+            & (pressure.diff('height') < 0).all('height'))
 
 def swap_dims_and_rename(ds, old_dim="altitude_layer", old_var="altitude", new_dim="height"):
     """
@@ -310,7 +319,8 @@ def add_time_data(ds, time_dim='time'):
     """
     ds['doy_cos'] = np.cos(2*np.pi/365.25 * (ds[time_dim].dt.dayofyear+10)) # +10 so 21.12 is the zero point
     ds['doy_sin'] = np.sin(2*np.pi/365.25 * (ds[time_dim].dt.dayofyear+10))
-    ds['years_since_1970'] = ds[time_dim].astype('int64').astype('float64') * 1e-9 / 60 / 60 / 24 / 365.25
+    ds['years_since_1970'] = ((ds[time_dim] - np.datetime64('1970-01-01'))
+                              / np.timedelta64(1, 's') / (365.25 * 24 * 60 * 60))
 
     return ds
 

@@ -10,9 +10,23 @@ import xarray as xr
 
 from openMWR.datasets import DatasetWorkflow
 from openMWR.paths import dataset_file, radiosonde_year_file
+from openMWR.xr_utils import change_coord_of_da, integrate
 
 
 from tests.fixtures.datasets import dataset_project, raw_profiles
+
+
+def test_profile_interpolation_preserves_endpoints_and_trapezoidal_columns():
+    profile = xr.DataArray([0., 1., 0.], dims='height', coords={'height': [0., 100., 300.]})
+    xr.testing.assert_identical(change_coord_of_da(profile, profile.height.values), profile)
+    np.testing.assert_allclose(change_coord_of_da(profile, [100.]), [1.])
+    assert integrate(profile, 'height').item() == 150.
+    assert np.isnan(integrate(profile.where(profile.height != 100.), 'height'))
+    target = [-10., 0., 300., 310.]
+    np.testing.assert_allclose(change_coord_of_da(profile, target), [np.nan, 0., 0., np.nan])
+    np.testing.assert_allclose(change_coord_of_da(profile, target, extrapolate_lower_end=True,
+                                                extrapolate_upper_end=True), [-.1, 0., 0., -.05])
+
 
 def test_era5_moisture_uses_water_relative_humidity_and_volumetric_cloud_water():
     from openMWR.era5 import _convert_era5_moisture
@@ -62,6 +76,10 @@ def test_cloud_threshold_and_adiabatic_parameters_change_liquid_water():
     warmer_threshold = add_cloud_to_ds(profile.copy(), rh_threshold=0.96, min_temperature=283.,
                                       adiabatic_fraction='none').lwc
     assert warmer_threshold.max() == 0
+    # The first clear level can also be the final level of a shorter profile.
+    short = add_cloud_to_ds(profile.isel(height=slice(0, 17)).copy(), rh_threshold=0.96,
+                           min_temperature=253.15, adiabatic_fraction='power_law', a=0.7, b=2.3).lwc
+    xr.testing.assert_equal(short, standard.sel(height=short.height))
 
 
 @pytest.mark.parametrize('completion', ['monthly_mean', 'filter'])
@@ -91,7 +109,9 @@ def test_profile_quality_limits_select_source_profiles_before_interpolation(data
     DatasetWorkflow(dataset_project, 'test').build('profiles', rebuild=True)
     selected = xr.load_dataset(dataset_file(dataset_project, 'test', 'profiles', '03715'))
     assert selected.surface_altitude.item() == 550.
-    np.testing.assert_array_equal(selected.synop, times if completion == 'monthly_mean' else times[2:])
+    # The compressed shallow ascent has pressure below the monthly completion
+    # at its join, so the pressure filter also rejects it after filling.
+    np.testing.assert_array_equal(selected.synop, times[1:] if completion == 'monthly_mean' else times[2:])
     assert np.isfinite(selected[['T', 'p', 'rh', 'lwc']].to_array()).all()
 
 
@@ -105,6 +125,21 @@ def test_monthly_completion_rejects_profiles_without_upper_level_reference(datas
     with pytest.raises(ValueError, match='No complete profiles remain for RT'):
         DatasetWorkflow(dataset_project, 'test').build('profiles')
     assert not dataset_file(dataset_project, 'test', 'profiles', '03715').is_file()
+
+
+def test_preparation_rejects_pressure_increases_plateaus_and_nonpositive_values(dataset_project, caplog):
+    times = pd.date_range('2020-01-01', periods=4, freq='12h').values
+    raw = raw_profiles(times)
+    raw['p'][0, :20] = np.linspace(900., 1000., 20)
+    raw['p'][1, :20] = 950.
+    raw['p'][2, :20] = -1.
+    path = radiosonde_year_file(dataset_project, '03715', 2020)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw.to_netcdf(path)
+    DatasetWorkflow(dataset_project, 'test').build('profiles')
+    selected = xr.load_dataset(dataset_file(dataset_project, 'test', 'profiles', '03715'))
+    np.testing.assert_array_equal(selected.synop, times[3:])
+    assert 'Rejected 3 profiles: pressure must be positive and strictly decreasing' in caplog.text
 
 
 @pytest.mark.parametrize('backend', ['torchMWRT', 'pyrtlib'])
@@ -131,11 +166,12 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
                    angles=np.array([4.2, 90.]), num_of_processes=1, absmdl='R24', RT_model=backend,
                    ray_tracing=True)
     first = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
-    second = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 1600e6, 'min_effective_radius': 3.0})
+    second = rt.run_RT(profiles, **{**options, 'angles': options['angles'][::-1].copy()},
+                       infrared={'droplet_number_density': 1600e6, 'min_effective_radius': 3.0})
     cloudy_radius = (0.5 / (200e6 * 4 / 3 * np.pi * 1e6)) ** (1 / 3) * 1e6
     np.testing.assert_allclose(first.TB_IR, (2 * 2.5 + cloudy_radius) / 3)
     np.testing.assert_allclose(second.TB_IR, (2 * 3.0 + cloudy_radius / 2) / 3)
-    xr.testing.assert_equal(first.TB, second.TB)
+    xr.testing.assert_equal(first.TB, second.TB.sel(ang=first.ang))
     flat = rt.run_RT(profiles, **{**options, 'ray_tracing': False},
                      infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     xr.testing.assert_allclose(first.TB.sel(ang=90.), flat.TB.sel(ang=90.))
@@ -154,6 +190,10 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
     invalid = profiles.copy(deep=True)
     invalid['T'][0, -1] = np.nan
     with pytest.raises(ValueError, match='RT requires complete profiles'):
+        rt.run_RT(invalid, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    invalid = profiles.copy(deep=True)
+    invalid['p'][0, :2] = [950., 1000.]
+    with pytest.raises(ValueError, match='positive pressure strictly decreasing with height.*2020-01-01'):
         rt.run_RT(invalid, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     invalid = profiles.copy(deep=True)
     invalid['lwc'][0, 1] = 1.0  # At 1 cm^-3, this gives about 62 micrometres.

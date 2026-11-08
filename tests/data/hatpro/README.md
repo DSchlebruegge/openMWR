@@ -38,8 +38,10 @@ The exports include a 0-degree surface-temperature channel absent from binary
 BLB brightness temperatures. Binary BLB has no explicit azimuth field. Daily
 import comparisons cover the common observations after the shared handling of
 coordinates, time matching and averaging. The legacy export's frequency field
-contains TB minima. The existing daily importer's standard-frequency correction
-is retained and applies before comparison.
+contains TB minima. Daily import rejects this malformed frequency metadata.
+The legacy comparison first checks that rejection, then repairs only its
+temporary NetCDF copy from the paired binary header's frequencies. The tracked
+exports remain unchanged.
 
 These pairs verify the represented formats. They do not establish support for
 every historical instrument format. Failure tests modify temporary copies to

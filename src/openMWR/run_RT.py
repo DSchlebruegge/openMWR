@@ -14,6 +14,7 @@ from openMWR.parallel import run_pool
 from openMWR.config import check_infrared
 from openMWR.site import load_site_config
 from openMWR.paths import libRadtran_dir
+from openMWR.xr_utils import valid_profile_pressure
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,13 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     project_dir : str
         Working-project root containing data/ and sites/.
     z_km : array-like
-        Heights in kilometers above the profile base for each model level.
+        Heights in kilometers above the profile base, strictly increasing.
     T_K : array-like
         Air temperature profile in kelvin.
     rh_100 : array-like
         Relative humidity in percent.
     p_hPa : array-like
-        Pressure profile in hectopascals; used for sorting and deduplication.
+        Pressure profile in hectopascals, strictly decreasing with height.
     lwc_gpm3 : array-like
         Liquid water content in g m^-3.
     effective_droplet_radius_mum : array-like
@@ -91,15 +92,20 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
         'effective_droplet_radius_mum': effective_droplet_radius_mum,
     })
     
-    df = df.sort_values(by='p_hPa')
-    df = df.drop_duplicates(subset=['p_hPa'])
+    if (len(df) < 2 or not np.isfinite(df['z_km']).all()
+            or not (np.diff(df['z_km']) > 0).all()):
+        raise ValueError('Infrared RT requires at least two finite, strictly increasing heights.')
+    if (not np.isfinite(df['p_hPa']).all() or not (df['p_hPa'] > 0).all()
+            or not (np.diff(df['p_hPa']) < 0).all()):
+        raise ValueError('Infrared RT requires positive pressure strictly decreasing with height. '
+                         'Reject inconsistent profiles during preparation instead of sorting by pressure.')
 
     # libRadtran anchors the highest-pressure level at altitude, then derives
     # geometric heights from p/T. Its cloud-file heights are above sea level.
     altitude_km = surface_altitude / 1000
-    bottom_altitude_km = altitude_km + df.iloc[-1]['z_km']
-    radio = df[['p_hPa', 'T_K', 'rh_100']]
+    bottom_altitude_km = altitude_km + df.iloc[0]['z_km']
     df = df.sort_values(by='z_km', ascending=False)
+    radio = df[['p_hPa', 'T_K', 'rh_100']]
     df = df[df['z_km'] < 15]
     df = df.assign(z_km=df['z_km'] + altitude_km)
 
@@ -293,7 +299,7 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
     except (ValueError, UserWarning) as exc:
         raise ValueError(f'PyRTlib failed ({_rt_context(ds_date, angles)}): {exc}') from exc
     
-    df_tb = df_rt.pivot(columns="angle", values="tbtotal")
+    df_tb = df_rt.pivot(columns="angle", values="tbtotal").reindex(columns=angles)
 
     ds_date['TB'] = xr.DataArray(df_tb.values, dims=['frq', 'ang'], coords={"frq": freqs, "ang": angles})
 
@@ -487,6 +493,14 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
     for var in ('T', 'p', 'rh', 'lwc'):
         if not bool(np.isfinite(ds[var]).all()):
             raise ValueError(f'RT requires complete profiles: {var} contains missing or non-finite values.')
+    if (ds.sizes['height'] < 2 or not bool(np.isfinite(ds.height).all())
+            or not bool((ds.height.diff('height') > 0).all())):
+        raise ValueError('RT requires at least two finite, strictly increasing heights.')
+    valid_pressure = valid_profile_pressure(ds.p)
+    if not bool(valid_pressure.all()):
+        invalid = ds.sel(time=~valid_pressure) if valid_pressure.dims == ('time',) else ds
+        raise ValueError('RT requires positive pressure strictly decreasing with height '
+                         f'({_rt_context(invalid, angles)}). Reject inconsistent profiles during preparation.')
     # Radius increases with LWC; check the maximum before starting RT or workers.
     _effective_droplet_radius_mum(ds.lwc.max().item(), **infrared)
     logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')

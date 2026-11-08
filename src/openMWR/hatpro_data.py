@@ -26,6 +26,17 @@ class _NoUsableObservations(ValueError):
     """A daily source has no observations supported by the importer."""
 
 
+def _standard_frequency_order(data):
+    """Reorder measured channels by frequency without changing their identity."""
+    frequencies = np.array([22.24, 23.04, 23.84, 25.44, 26.24, 27.84, 31.40,
+                            51.26, 52.28, 53.86, 54.94, 56.66, 57.30, 58.00])
+    data = data.assign_coords(frq=data.frq.astype('float64').round(2))
+    if not np.array_equal(np.sort(data.frq.values), frequencies):
+        raise ValueError(f'Unsupported HATPRO frequencies: {data.frq.values.tolist()}. '
+                         f'Expected channels: {frequencies.tolist()}.')
+    return data.sel(frq=frequencies)
+
+
 def _select_utc_day(data, date):
     """Keep the requested day, excluding the following midnight."""
     day = np.datetime64(date.strftime('%Y-%m-%d'))
@@ -158,7 +169,8 @@ def import_hatpro_data(
     - Variables are renamed to openMWR conventions (e.g., `TB`, `surface_T`).
     - Surface meteorology from `MET` is added by nearest time (max 2 minutes).
     - IR brightness temperatures are converted to Kelvin.
-    - A standard frequency grid is enforced if unexpected values are found.
+    - Measured channels are ordered by their frequencies. Unsupported grids fail.
+    - Zenith microwave and IR records are averaged independently when requested.
     - Returned observations belong to the requested UTC day.
     """
     site_config = load_site_config(site, project_dir, config=site_config)
@@ -167,35 +179,33 @@ def import_hatpro_data(
     if include_rpg:
         products += ['LWP', 'LPR', 'TPC', 'HPC', 'IWV']
     datasets = load_hatpro_day(date, site, project_dir, products, site_config=site_config)
-    ds_BRT = datasets['BRT']
+    ds_BRT = _standard_frequency_order(datasets['BRT'])
     ds_BRT['rain_flag'] = ds_BRT.rain_flag.astype('float64')
-    ds_BRT['frq'] = ds_BRT.frq.astype('float64').round(2)
-    frq = np.array([22.24,23.04,23.84,25.44,26.24,27.84,31.40,51.26,52.28,53.86,54.94,56.66,57.30,58.00])
-    if not np.array_equal(ds_BRT.frq.values, frq):
-        logger.error('Frequency variable has unexpected values: %s. Using standard frequencies.', ds_BRT.frq.values)
-        ds_BRT['frq'] = frq
+    ds_BRT = ds_BRT.where(ds_BRT['elevation_angle'].round(0) == 90., drop=True)
+    ds_BRT = _select_utc_day(ds_BRT, date)
+    if not ds_BRT.sizes['time']:
+        raise _NoUsableObservations('No zenith observations remain in the requested UTC day after selecting elevation 90 degrees.')
 
     ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
     extra = []
-    if 'IRT' in datasets:
-        extra.append(datasets['IRT'].TB_IR.isel(wavelength=0, drop=True))
     if include_rpg:
         extra.extend(datasets[key] for key in ('LWP', 'LPR', 'TPC', 'HPC', 'IWV') if key in datasets)
-    ds_hatpro = xr.merge([ds_BRT, *extra], join='outer')
+    ds_hatpro = xr.merge([ds_BRT, *extra], join='outer').sel(time=ds_BRT.time)
     if ds_MET is not None and ds_MET.sizes.get('time', 0):
         ds_hatpro = add_variables_at_closest_time(ds_hatpro, ds_MET, max_diff=2)
     ds_hatpro = mask_invalid_measurements(ds_hatpro, periods)
 
-    # Filter
-    #ds_hatpro = ds_hatpro.where((ds_hatpro['elevation_angle'].round(0) == 90.) & (ds_hatpro['azimuth_angle'].round(0) == 0.), drop=True)
-    ds_hatpro = ds_hatpro.where(ds_hatpro['elevation_angle'].round(0) == 90., drop=True)
-    ds_hatpro = _select_utc_day(ds_hatpro, date)
-
-    if not ds_hatpro.sizes['time']:
-        raise _NoUsableObservations('No zenith observations remain in the requested UTC day after selecting elevation 90 degrees.')
-
     if mean_one_min:
-        ds_hatpro = mean_n_min(ds_hatpro, 1)  # Useful to avoid many NaNs from mismatched time coords
+        ds_hatpro = mean_n_min(ds_hatpro, 1)
+
+    if 'IRT' in datasets:
+        infrared = _select_utc_day(mask_invalid_measurements(datasets['IRT'], periods), date)
+        if infrared.sizes['time']:
+            if mean_one_min:
+                infrared = mean_n_min(infrared, 1)
+            # Assignment aligns on microwave times/minutes. It neither drops
+            # staggered samples before averaging nor creates IR-only minutes.
+            ds_hatpro['TB_IR'] = infrared.TB_IR.isel(wavelength=0, drop=True)
 
     if 'T' in ds_hatpro:
         # Compute pressure from hydrostatic equilibrium
@@ -278,7 +288,7 @@ def import_hatpro_data_bls(
     ds_MET = mask_invalid_measurements(datasets['MET'], periods) if 'MET' in datasets else None
     if ds_MET is not None and mean_one_min:
         ds_MET = mean_n_min(ds_MET, 1)
-    ds_BLB = datasets['BLB']
+    ds_BLB = _standard_frequency_order(datasets['BLB'])
     ds_BLB['ang'] = ds_BLB.ang.astype('float64').round(2)
     ang = np.array([90.0, 30.0, 19.2, 14.4, 11.4, 8.4, 6.6, 5.4, 4.8, 4.2])
     missing_angles = np.setdiff1d(ang, ds_BLB.ang.values)
@@ -286,11 +296,6 @@ def import_hatpro_data_bls(
         raise _NoUsableObservations(
             f'Incompatible BLS scan angles: missing required angles {missing_angles.tolist()}. '
             f'Measured angles: {ds_BLB.ang.values.tolist()}.')
-    ds_BLB['frq'] = ds_BLB.frq.astype('float64').round(2)
-    frq = np.array([22.24,23.04,23.84,25.44,26.24,27.84,31.40,51.26,52.28,53.86,54.94,56.66,57.30,58.00])
-    if not np.array_equal(ds_BLB.frq.values, frq):
-        logger.error('Frequency variable for BLS has unexpected values: %s. Using standard frequencies.', ds_BLB.frq.values)
-        ds_BLB['frq'] = frq
     ds_BLB['rain_flag'] = ds_BLB.rain_flag.astype('float64')
     ds_BLB = ds_BLB.sortby('ang')
     ds_hatpro_bls = xr.merge([ds_BLB, datasets['TPB']], join='outer') if 'TPB' in datasets else ds_BLB

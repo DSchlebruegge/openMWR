@@ -245,8 +245,6 @@ class CloudColumn:
             
 
             for i in range(i_base[i_cloud], i_top[i_cloud] + 1):
-                delta_z = z[i + 1] - z[i]
-                
                 e_s = saturation_vapor_pressure(T_cl[i])
 
                 # Specific gas constant for moist air
@@ -281,6 +279,7 @@ class CloudColumn:
                 
                 # Compute cloud temperature for the next layer
                 if i != i_top[i_cloud]:
+                    delta_z = z[i + 1] - z[i]
                     T_cl[i + 1] = T_cl[i] + (-gamma_s) * delta_z
 
                 # Gradient of the saturation mixing ratio
