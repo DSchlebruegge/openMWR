@@ -9,6 +9,8 @@ import numpy as np
 import xarray as xr
 
 from openMWR.config import check_coordinates, check_number, check_time_selection, select_time
+# Also available here for existing Python analyses.
+from openMWR.normalization import get_input_noise
 from openMWR.observations import load_analysis_dataset, reference_source
 from openMWR.paths import dataset_dir, dataset_recipe_file
 from openMWR.provenance import dataset_id, plain_value, utc_now
@@ -276,25 +278,3 @@ class Omb_Analysis:
             prefix = 'omb_bls' if self.bls else 'omb'
             output_file = dataset_dir(self.project_dir, self.site, self.dataset) / f'{prefix}_{timestamp}.html'
         return save_omb(self, Path(output_file), retrievals=retrievals, frequency_bands=frequency_bands)
-
-
-def get_input_noise(model, hyper_params=None):
-    """Physical training noise, including the BLS angle factors."""
-    params = model.hyper_params if hyper_params is None else hyper_params
-    noise = xr.Dataset({'TB': xr.DataArray([params[f'input_noise_TB_{f}'] for f in model.freqs],
-                                          dims='frq', coords={'frq': model.freqs})})
-    if model.is_bls_model:
-        angles = xr.DataArray(model.angles, dims='ang', coords={'ang': model.angles})
-        if model.vary_input_noise_with_angle:
-            if any(f'input_noise_TB_angle_{angle}' not in params and f'input_noise_TB_{angle}' in params for angle in model.angles):
-                raise ValueError('Saved per-angle noise requires conversion. Run openMWR migrate --project-dir <project>.')
-            factors = xr.DataArray([params[f'input_noise_TB_angle_{a}'] for a in model.angles], dims='ang', coords={'ang': model.angles})
-        elif model.vary_input_noise_with_angle_linear:
-            factors = 1 + params['input_noise_TB_angle_factor'] * (90 - angles) / 90
-        else:
-            factors = xr.ones_like(angles)
-        noise['TB'] = noise.TB * factors
-    for variable in model.input_vars:
-        if variable != 'TB':
-            noise[variable] = params[f'input_noise_{variable}']
-    return noise

@@ -6,7 +6,55 @@ import torch
 import xarray as xr
 
 from openMWR.models import Model
+from openMWR.normalization import get_input_noise, normalize, normalized_input_noise
 from openMWR.train import TrainingWorkflow
+
+
+def test_input_noise_uses_the_selected_linear_scale_and_rejects_undefined_conversions():
+    model = Model('noise', heights=None, freqs=[22.24, 31.4], is_MLR=True,
+                  additional_input_vars=['surface_T'], output_vars=['iwv'])
+    model.nor = xr.Dataset({'TB': (('stat', 'frq'), [[200., 100.], [2., 0.], [300., 0.]]),
+                            'surface_T': ('stat', [280., 2., 282.])},
+                           coords={'stat': ['mean', 'std', 'max'], 'frq': model.freqs})
+    model.norm_functions['surface_T'] = 'std_norm'
+    parameters = {'input_noise_TB_22.24': 3., 'input_noise_TB_31.4': 0., 'input_noise_surface_T': 1.}
+    for method, expected in [('z_norm', 1.5), ('std_norm', 1.5), ('max_norm', .01)]:
+        model.norm_functions['TB'] = method
+        np.testing.assert_allclose(normalized_input_noise(model, parameters),
+                                   [expected, 0., .5])
+        with pytest.raises(ValueError, match='TB: nonzero input noise requires a finite, nonzero normalization'):
+            normalized_input_noise(model, {**parameters, 'input_noise_TB_31.4': 1.})
+    model.norm_functions['TB'] = 'log_norm'
+    with pytest.raises(ValueError, match='TB: additive input noise is not supported with log_norm'):
+        normalized_input_noise(model, parameters)
+    np.testing.assert_allclose(normalized_input_noise(
+        model, {**parameters, 'input_noise_TB_22.24': 0.}), [0., 0., .5])
+
+
+def test_scan_noise_matches_normalized_perturbations_in_model_feature_order():
+    model = Model('scan', heights=None, freqs=[31.4, 22.24], angles=[30., 90.],
+                  is_bls_model=True, is_MLR=True, additional_input_vars=['surface_T'],
+                  output_vars=['iwv'], vary_input_noise_with_angle_linear=True)
+    # Different scales and deliberately reversed coordinates expose ordering errors.
+    model.nor = xr.Dataset({'TB': (('stat', 'ang', 'frq'),
+                                   [[[200., 250.], [230., 280.]],
+                                    [[2., 4.], [5., 10.]]]),
+                            'surface_T': ('stat', [280., 2.])},
+                           coords={'stat': ['mean', 'std'], 'frq': [22.24, 31.4], 'ang': [90., 30.]})
+    parameters = {'input_noise_TB_22.24': 2., 'input_noise_TB_31.4': 4.,
+                  'input_noise_TB_angle_factor': 3., 'input_noise_surface_T': 1.}
+    data = xr.Dataset({'TB': (('ang', 'frq'), [[200., 250.], [240., 280.]]), 'surface_T': 280.},
+                      coords={'ang': [90., 30.], 'frq': [22.24, 31.4]})
+    noise = get_input_noise(model, parameters).sel(ang=data.ang, frq=data.frq)
+    difference = normalize(data + noise, model) - normalize(data, model)
+    expected = [1.2, 1.2, 1., 1., .5]
+    np.testing.assert_allclose(normalized_input_noise(model, parameters), expected)
+    actual = np.concatenate([difference[name].sel(**spec.coords).transpose(*spec.dims).values.ravel()
+                             for name, spec in model.input.items()])
+    np.testing.assert_allclose(actual, expected)
+    # The same saved scan statistics also support a zenith-only dataset.
+    zenith = normalize(data.sel(ang=90, drop=True), model)
+    xr.testing.assert_allclose(zenith, normalize(data, model).sel(ang=90, drop=True))
 
 
 @pytest.mark.parametrize(('noise', 'duplicate'), [

@@ -14,7 +14,8 @@ import numpy as np
 
 from openMWR.config import check_name, check_strings
 from openMWR.models import load_model
-from openMWR.omb import _regression_neighbors, get_input_noise, omb_statistics
+from openMWR.omb import _regression_neighbors, omb_statistics
+from openMWR.normalization import get_input_noise
 from openMWR.paths import checkpoint_file
 from openMWR.provenance import checkpoint_id, plain_value, software_identity, utc_now
 

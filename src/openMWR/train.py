@@ -17,7 +17,8 @@ from typing import Union, List
 
 from openMWR.utils import progress_bar, is_called_from_notebook, progress_log
 from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
-from openMWR.predict import normalize, create_tensor_from_ds, create_ds_from_y, denormalize, create_stats, validate_model_data
+from openMWR.predict import create_tensor_from_ds, create_ds_from_y, validate_model_data
+from openMWR.normalization import normalize, denormalize, create_stats, get_input_noise, normalized_input_noise
 from openMWR.devices import resolve_device, device_name
 from openMWR.calc_errors import cal_RMSE
 from openMWR.models import Model, BaseModel, SpectralConsistencyModel
@@ -262,7 +263,24 @@ class TrainingWorkflow:
                 raise ValueError('Load training and validation data before training.')
             data = getattr(self, label)
             validate_model_data(expected, data, label)
+        # All noise and angle-factor ranges are nonnegative. Their maxima
+        # cover every possible nonzero-noise/normalization combination.
+        normalized_input_noise(
+            self.model, self._input_noise_limits(),
+            normalization=create_stats(self.model, self.training_data[self.model.input_vars]))
         return self
+
+    def _input_noise_limits(self):
+        """Resolve the largest allowed noise values without sampling a trial."""
+        limits = {}
+        for key, value in self.hyper_params.items():
+            if key.startswith('input_noise_'):
+                if isinstance(value, self.suggest_categorical):
+                    value = max(value.choices)
+                elif isinstance(value, (self.suggest_int, self.suggest_float)):
+                    value = value.high
+                limits[key] = value
+        return limits
 
     def _save_model(self, model, hyper_params, **details):
         metadata = {**self._run_record, 'saved_utc': utc_now(),
@@ -734,61 +752,22 @@ class TrainingWorkflow:
         self.model.nor = create_stats(self.model, self.training_data)
         self.logger.info('Created normalization dataset')
 
-        variables = list(set(self.model.input_vars + self.model.output_vars))
-        self.training_data = normalize(self.training_data[variables], self.model)
-        self.validation_data = normalize(self.validation_data[variables], self.model)
+        variables = list(dict.fromkeys(self.model.input_vars + self.model.output_vars))
+        training_data = normalize(self.training_data[variables], self.model)
+        validation_data = normalize(self.validation_data[variables], self.model)
         
         # Stack the data to create a single dimension for station and time
         # This is necessary to create a 2D tensor for training
-        self.training_data = self.training_data.stack(station_time=("station", "time")).dropna(dim='station_time')
-        self.validation_data = self.validation_data.stack(station_time=("station", "time")).dropna(dim='station_time')
+        training_data = training_data.stack(station_time=("station", "time")).dropna(dim='station_time')
+        validation_data = validation_data.stack(station_time=("station", "time")).dropna(dim='station_time')
 
         # Create tensors for training and validation
-        x_training = create_tensor_from_ds(self.model.input, self.training_data, self.device)
-        y_training = create_tensor_from_ds(self.model.output, self.training_data, self.device)
-        x_val = create_tensor_from_ds(self.model.input, self.validation_data, self.device)
-        y_val = create_tensor_from_ds(self.model.output, self.validation_data, self.device)
+        x_training = create_tensor_from_ds(self.model.input, training_data, self.device)
+        y_training = create_tensor_from_ds(self.model.output, training_data, self.device)
+        x_val = create_tensor_from_ds(self.model.input, validation_data, self.device)
+        y_val = create_tensor_from_ds(self.model.output, validation_data, self.device)
 
         return x_training, y_training, x_val, y_val
-    
-    def _get_std_dev_array_from_input_noise(self, model, hyper_params):
-        """
-        Compute standard deviation array for input noise injection.
-
-        Parameters
-        ----------
-        model : BaseModel
-            Model with input definitions and normalization.
-        hyper_params : dict
-            Hyperparameters containing noise definitions.
-
-        Returns
-        -------
-        np.ndarray
-            Flattened array of standard deviations for all inputs.
-
-        Notes
-        -----
-        - Three possibilitys for TB noise in BLS models:
-            1) Angle-dependent noise. (Different noise for each angle) (`model.vary_input_noise_with_angle`).
-            2) Linearly angle-dependent noise (`model.vary_input_noise_with_angle_linear`).
-            3) Angle-independent noise.
-        """
-        from openMWR.omb import get_input_noise
-        input_noise = get_input_noise(model, hyper_params)
-
-        # Normalize the input noise
-        input_noise_nor = input_noise / model.nor.sel(stat='std', drop=True)
-
-        input_noise_nor = input_noise_nor.sel(frq=model.freqs)
-
-        if model.is_bls_model:
-            input_noise_nor = input_noise_nor.stack(ang_frq=("ang", "frq"))
-
-        # Concatenate the standard deviations for each variable
-        std_dev = np.concatenate([input_noise_nor['TB'].values, [input_noise_nor[var].values for var in model.input_vars if var != 'TB']])
-
-        return std_dev
     
     def _adjust_lr(self, optimizer, epoch, epochs, lr_height, lr_low, epoch_max_lr):
         """
@@ -920,7 +899,7 @@ class TrainingWorkflow:
         training_size = x_training.shape[0]
 
         # Errors
-        std_dev_np = self._get_std_dev_array_from_input_noise(model, hyper_params)
+        std_dev_np = normalized_input_noise(model, hyper_params)
         std_dev = torch.tensor(std_dev_np, dtype=torch.float32).to(device)
 
         train_losses = []
@@ -1032,7 +1011,7 @@ class TrainingWorkflow:
         x = x_training.cpu().numpy().astype(np.float64)
         y = y_training.cpu().numpy().astype(np.float64)
         x_mean, y_mean = x.mean(axis=0), y.mean(axis=0)
-        std_dev = self._get_std_dev_array_from_input_noise(model, hyper_params)
+        std_dev = normalized_input_noise(model, hyper_params)
         penalty = np.diag(np.sqrt(len(x)) * std_dev)
         coefficients, *_ = np.linalg.lstsq(
             np.vstack((x - x_mean, penalty)),
@@ -1205,10 +1184,22 @@ class TrainingWorkflow:
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
         if self.model.is_MLR:
             experiment['fitting'] = _MLR_FITTING
+        # Historical trials always divided noise by std. Only noisy max_norm
+        # inputs change meaning, so unaffected histories need no new marker.
+        maximum_noise = get_input_noise(self.model, self._input_noise_limits())
+        scaling = {var: 'max' for var in self.model.input_vars
+                   if self.model.norm_functions[var] == 'max_norm'
+                   and bool((maximum_noise[var] != 0).any())}
+        if scaling:
+            experiment['input_noise_scaling'] = scaling
         experiment['data'] = data_identity
         previous = study.user_attrs.get('openMWR_experiment')
         definition = _experiment_definition(experiment, variables)
         previous_definition = _experiment_definition(previous, variables)
+        if (previous_definition is not None
+                and previous_definition.get('input_noise_scaling', {}) != definition.get('input_noise_scaling', {})):
+            raise ValueError('This study uses different input-noise normalization. '
+                             'Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
         if ((previous is None and study.trials) or
                 (previous is not None and ('data' not in previous or previous_definition != definition))):
             raise ValueError('This study has a different or unrecorded experiment definition. Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')

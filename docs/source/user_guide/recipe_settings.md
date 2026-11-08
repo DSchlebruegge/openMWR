@@ -284,6 +284,9 @@ number or search. Other losses omit it. A search starts optimization through
 ### Input noise and bias correction
 
 Noise values are standard deviations in physical input units, before normalization.
+The conversion uses the selected linear normalization. A zero normalization
+scale requires zero noise. Log-normalized inputs also require zero noise.
+These restrictions do not apply to log-normalized outputs.
 
 | Inputs | Noise unit |
 | --- | --- |

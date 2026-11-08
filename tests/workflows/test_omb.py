@@ -12,6 +12,7 @@ import pytest
 import xarray as xr
 
 from openMWR.omb import Omb_Analysis, get_input_noise
+from openMWR.normalization import normalized_input_noise
 from openMWR.train import TrainingWorkflow
 from tests.fixtures.cli import run_cli
 from tests.fixtures.retrievals import retrieval_project
@@ -168,7 +169,7 @@ def test_bias_uses_selected_channel_and_angle_offsets_without_mutating_diagnosti
     assert physical.TB.sel(frq=22.24, ang=90) == .5
     assert physical.TB.sel(frq=22.24, ang=30) == 1.5
     workflow.model.nor = xr.Dataset({'TB': xr.DataArray([2., 1.], dims='stat', coords={'stat': ['std', 'mean']})})
-    normalized = workflow._get_std_dev_array_from_input_noise(workflow.model, workflow.hyper_params)
+    normalized = normalized_input_noise(workflow.model, workflow.hyper_params)
     np.testing.assert_allclose(normalized, physical.TB.transpose('ang', 'frq').values.ravel() / 2)
     # Correcting a model's smaller grid must preserve unused simulation channels.
     recipe.write_text(recipe.read_text().replace('frequencies = [22.24, 31.4]', 'frequencies = [22.24]'))

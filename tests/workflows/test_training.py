@@ -18,6 +18,31 @@ from tests.fixtures.retrievals import retrieval_project, retrieval_samples
 from tests.fixtures.cli import run_cli
 
 
+@pytest.mark.parametrize('action', ['train', 'optimize'])
+@pytest.mark.parametrize('invalid', ['logarithmic', 'constant'])
+def test_noise_validation_preserves_existing_results_before_fresh_runs(tmp_path, action, invalid):
+    recipe, _ = retrieval_project(tmp_path, search=action == 'optimize')
+    workflow = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example')
+    if invalid == 'logarithmic':
+        workflow.model.norm_functions['TB'] = 'log_norm'
+        noise = workflow.suggest_categorical([0., .1]) if action == 'optimize' else .1
+        message = 'additive input noise is not supported with log_norm'
+    else:
+        workflow.training_data['TB'] = xr.full_like(workflow.training_data.TB, 100.)
+        noise = workflow.suggest_float(0., .1) if action == 'optimize' else .1
+        message = 'nonzero input noise requires a finite, nonzero normalization'
+    workflow.add_input_noise_params(TB=noise)
+    artifacts = {recipe.parent / name: f'previous {name}'.encode()
+                 for name in ('model.pth', 'optimization.db', 'training_progress.pdf')}
+    for path, content in artifacts.items():
+        path.write_bytes(content)
+    normalization = getattr(workflow.model, 'nor', None)
+    with pytest.raises(ValueError, match=message):
+        getattr(workflow, action)(run_mode='fresh')
+    assert all(path.read_bytes() == content for path, content in artifacts.items())
+    assert getattr(workflow.model, 'nor', None) is normalization
+
+
 @pytest.mark.parametrize('bls', [False, True])
 def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_path, bls):
     model = Model('python', [0., 1000.], [22.24, 31.4], output_vars=['T'],
@@ -42,7 +67,15 @@ def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_pat
     assert workflow.validation_data is before[1]
     workflow.add_standard_training_hyper_params()
     workflow.add_input_noise_params(TB=0.)
+    training = workflow.training_data.copy(deep=True)
+    validation = workflow.validation_data.copy(deep=True)
     workflow.train()
+    weights = {key: value.clone() for key, value in model.state_dict().items()}
+    workflow.train(run_mode='fresh')
+    for key, value in weights.items():
+        torch.testing.assert_close(model.state_dict()[key], value)
+    xr.testing.assert_identical(workflow.training_data, training)
+    xr.testing.assert_identical(workflow.validation_data, validation)
     restored = load_model('python', 'test', tmp_path)
     assert restored.training_dataset is None
     prediction = run_model(restored, data, 'cpu', include_input_vars=False)

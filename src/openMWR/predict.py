@@ -9,6 +9,8 @@ import xarray as xr
 import numpy as np
 import logging
 from openMWR.models import BaseModel, load_model
+# Retain these public imports while normalization has a single implementation.
+from openMWR.normalization import normalize, denormalize, create_stats
 from openMWR.paths import project_root
 from openMWR.site import load_site_config, prediction_output_dir, get_invalid_measurements
 from openMWR.devices import resolve_device
@@ -127,134 +129,6 @@ def create_ds_from_y(y: np.ndarray, model: BaseModel, ds_orig: xr.Dataset, dim_0
         ds_new[var] = xr.DataArray(arr, dims=(dim_0,) + da.dims, coords=var_coords)
 
     return ds_new
-
-def normalize(ds: xr.Dataset, model: BaseModel) -> xr.Dataset:
-    """
-    Normalizes the dataset based on the model's normalization functions and statistics.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        The dataset to be normalized.
-    model : BaseModel
-        The model containing normalization functions and statistics.
-
-    Returns
-    -------
-    xarray.Dataset
-        The normalized dataset.
-
-    Notes
-    -----
-    - Supports various normalization methods: z-score, standard deviation, max normalization, and logarithmic normalization.
-    - Handles special cases for 'TB' variable with 'ang' dimension.
-    """
-    ds_norm = ds.copy()
-
-    nor = model.nor
-
-    if 'TB' in ds_norm.data_vars:
-        if 'ang' not in ds_norm.TB.dims and 'ang' in nor.dims:
-            nor = nor.sel(ang=90, drop=True)
-        elif 'ang' not in ds_norm.TB.coords and 'ang' in nor.coords:
-            nor = nor.drop_vars('ang')
-
-    vars_to_normalize = [var for var in model.input_vars + model.output_vars if var in ds_norm.data_vars]
-
-    for var in vars_to_normalize:
-        if model.norm_functions[var] == 'z_norm':
-            std = nor[var].sel(stat='std', drop=True)
-            mean = nor[var].sel(stat='mean', drop=True)
-            ds_norm[var] = xr.where(std != 0, (ds_norm[var] - mean) / std, 0)
-
-        elif model.norm_functions[var] == 'std_norm':
-            std = nor[var].sel(stat='std', drop=True)
-            ds_norm[var] = xr.where(std != 0, ds_norm[var] / std, 0)
-
-        elif model.norm_functions[var] == 'max_norm':
-            max = nor[var].sel(stat='max', drop=True)
-            ds_norm[var] = xr.where(max != 0, ds_norm[var] / max, 0)
-
-        elif model.norm_functions[var] == 'log_norm':
-            ds_norm[var] = np.log(ds_norm[var] + 1)
-
-    return ds_norm
-
-def denormalize(ds_norm: xr.Dataset, model: BaseModel) -> xr.Dataset:
-    """
-    Denormalizes the dataset based on the model's normalization functions and statistics.
-
-    Parameters
-    ----------
-    ds_norm : xarray.Dataset
-        The normalized dataset to be denormalized.
-    model : BaseModel
-        The model containing normalization functions and statistics.
-
-    Returns
-    -------
-    xarray.Dataset
-        The denormalized dataset.
-    """
-    ds = ds_norm.copy()
-
-    nor = model.nor
-
-    if 'TB' in ds_norm.data_vars:
-        if 'ang' not in ds_norm.TB.dims and 'ang' in nor.dims:
-            nor = nor.sel(ang=90, drop=True)
-        elif 'ang' not in ds_norm.TB.coords and 'ang' in nor.coords:
-            nor = nor.drop_vars('ang')
-
-    vars_to_denormalize = [var for var in model.input_vars + model.output_vars if var in ds_norm.data_vars]
-
-    for var in vars_to_denormalize:
-        if model.norm_functions[var] == 'z_norm':
-            ds[var] = ds[var] * nor[var].sel(stat='std', drop=True) + nor[var].sel(stat='mean', drop=True)
-
-        elif model.norm_functions[var] == 'std_norm':
-            ds[var] = ds[var] * nor[var].sel(stat='std', drop=True)
-
-        elif model.norm_functions[var] == 'max_norm':
-            ds[var] = ds[var] * nor[var].sel(stat='max', drop=True)
-
-        elif model.norm_functions[var] == 'log_norm':
-            ds[var] = np.exp(ds[var]) - 1
-
-    if 'rh' in ds.data_vars:
-        ds['rh'] = ds['rh'].clip(min=1, max=100)
-
-    return ds
-
-def create_stats(model: BaseModel, ds: xr.Dataset) -> xr.Dataset:
-    """
-    Creates a dataset containing statistics (mean, std, max) for each variable in the model's input and output variables.
-
-    Parameters
-    ----------
-    model : BaseModel
-        The model containing input and output variable specifications.
-    ds : xarray.Dataset
-        The dataset from which to compute statistics.
-
-    Returns
-    -------
-    xarray.Dataset
-        A dataset containing the computed statistics for each variable.
-    """
-
-    dims = ["time", "station"]
-    stats = ["mean", "std", "max"]
-
-    nor = xr.Dataset({
-        var: xr.concat(
-            [getattr(ds[var], stat)(dim=dims) for stat in stats], #[ds[var].mean(dim=dims), ds[var].std(dim=dims), ds[var].max(dim=dims)],
-            dim="stat"
-        ).assign_coords(stat=stats)
-        for var in ds.data_vars if var in model.input_vars or var in model.output_vars
-    })
-
-    return nor
 
 def run_model(
     model: BaseModel,

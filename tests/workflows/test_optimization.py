@@ -198,6 +198,31 @@ def test_optimization_continues_only_matching_experiments(tmp_path):
     assert (recipe.parent / 'model.pth').read_bytes() == checkpoint
 
 
+@pytest.mark.parametrize('noisy', [False, True])
+def test_max_normalized_noise_rejects_affected_old_studies_and_preserves_safe_ones(tmp_path, noisy):
+    # NN searches the learning rate even with zero noise. MLR searches noise.
+    recipe, _ = retrieval_project(tmp_path, kind='mlr' if noisy else 'nn')
+    recipe.write_text(recipe.read_text().replace('TB = "z_norm"', 'TB = "max_norm"'))
+    study = training_workflow(tmp_path).optimize(n_trials=1)
+    definition = study.user_attrs['openMWR_experiment']
+    if noisy:
+        assert definition['input_noise_scaling'] == {'TB': 'max'}
+    else:
+        assert 'input_noise_scaling' not in definition
+    # Historical studies have no noise-scaling marker.
+    study.set_user_attr('openMWR_experiment', {key: value for key, value in definition.items()
+                                            if key != 'input_noise_scaling'})
+    checkpoint = (recipe.parent / 'model.pth').read_bytes()
+    if noisy:
+        with pytest.raises(ValueError, match='different input-noise normalization'):
+            training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
+        assert len(study.trials) == 1
+        assert (recipe.parent / 'model.pth').read_bytes() == checkpoint
+        study = training_workflow(tmp_path).optimize(n_trials=1, run_mode='fresh')
+    continued = training_workflow(tmp_path).optimize(n_trials=1, run_mode='continue')
+    assert len(continued.trials) == 2
+
+
 def test_directory_rename_preserves_predictions_and_optimization_history(tmp_path):
     recipe, data = retrieval_project(tmp_path)
     study = training_workflow(tmp_path).optimize(n_trials=1)
