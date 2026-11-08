@@ -179,6 +179,8 @@ def _get_cloud_top_base(lwc):
     cloud = lwc > 0
     i_base = np.where(np.diff(cloud.astype(int), prepend = 0) == 1)[0]
     i_top = np.where(np.diff(cloud.astype(int)) == -1)[0] + 1
+    if cloud[-1]:
+        i_top = np.append(i_top, len(cloud) - 1)
     
     return i_top, i_base
 

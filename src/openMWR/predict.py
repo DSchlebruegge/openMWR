@@ -19,6 +19,13 @@ from openMWR.utils import atomic_output
 logger = logging.getLogger(__name__)
 
 
+def select_model_data(specification, data):
+    """Keep model variables and their feature coordinates in model order."""
+    selected = data[list(specification.data_vars)]
+    return selected.sel({name: values for name, values in specification.coords.items()
+                         if name in selected.dims})
+
+
 def validate_model_data(specification, data, label='data', *, require_samples=True):
     """Check structure and return the finite-sample mask without building tensors."""
     if not data.sizes.get('time', 0):
@@ -169,8 +176,7 @@ def run_model(
         ds_sel = ds_sel.sel(ang=90, drop=True)
     # Normalize only the channels/angles expected by this checkpoint. Extra
     # measured channels otherwise acquire NaNs or fail xarray alignment.
-    ds_sel = ds_sel.sel({name: values for name, values in model.input.coords.items()
-                         if name in ds_sel.dims})
+    ds_sel = select_model_data(model.input, ds_sel)
     ds_sel = ds_sel.where(np.isfinite(ds_sel))
 
     if ds_sel["time"].size == 0:

@@ -41,7 +41,7 @@ def _plain_metadata(value, label):
 def _checkpoint_payload(checkpoint):
     """Validate the current envelope and keep Python objects out of metadata."""
     required = ('format_version', 'model_state_dict', 'hyper_params', 'normalization', 'structure', 'model_class')
-    check_keys(checkpoint, (*required, 'training_metadata'), 'checkpoint')
+    check_keys(checkpoint, (*required, 'training_metadata', 'normalization_passes'), 'checkpoint')
     require_keys(checkpoint, required, 'checkpoint')
     if type(checkpoint['format_version']) is not int or checkpoint['format_version'] != CHECKPOINT_VERSION:
         raise ValueError(f'Checkpoint format_version must be {CHECKPOINT_VERSION}.')
@@ -52,6 +52,9 @@ def _checkpoint_payload(checkpoint):
         raise ValueError('checkpoint.model_class must be a nonempty class name.')
     if 'training_metadata' in checkpoint and not isinstance(checkpoint['training_metadata'], dict):
         raise ValueError('checkpoint.training_metadata must be a dictionary.')
+    if 'normalization_passes' in checkpoint and (type(checkpoint['normalization_passes']) is not int
+                                               or checkpoint['normalization_passes'] != 1):
+        raise ValueError('checkpoint.normalization_passes must be 1.')
     state = checkpoint['model_state_dict']
     if any(not isinstance(key, str) or not isinstance(value, torch.Tensor) for key, value in state.items()):
         raise ValueError('checkpoint.model_state_dict must map parameter names to tensors.')
@@ -162,6 +165,8 @@ class BaseModel(nn.Module):
             'structure': self.checkpoint_structure(),
             'model_class': type(self).__name__,
         }
+        if set(self.input_vars) & set(self.output_vars):
+            checkpoint['normalization_passes'] = 1
         if training_metadata is not None:
             checkpoint['training_metadata'] = training_metadata
 
@@ -231,6 +236,9 @@ class BaseModel(nn.Module):
         normalization = xr.Dataset.from_dict(checkpoint['normalization'])
 
         model = cls(**structure)
+        if set(model.input_vars) & set(model.output_vars) and checkpoint.get('normalization_passes') != 1:
+            raise ValueError('Saved spectral normalization requires conversion. '
+                             'Run openMWR migrate --project-dir <project>, or retrain the model.')
 
         model.load_state_dict(checkpoint['model_state_dict'])
         model.nor = normalization

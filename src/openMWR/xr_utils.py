@@ -352,62 +352,28 @@ def add_variables_at_closest_time(ds1: xr.Dataset, ds2: xr.Dataset, max_diff: in
 
     Notes
     -----
-    - Exact timestamp matches are detected first.
-    - Non-matching timestamps from `ds1` are paired with the closest timestamps
-      in `ds2` if the time difference is below `max_diff` minutes.
-    - The function creates new variables with the same names as in `ds2`.
-    - Values outside the tolerance window are filled with NaN.
+    - The tolerance includes its endpoints. Equal distances select the earlier
+      source timestamp. Duplicate source timestamps use their first record.
+    - An empty source or a match outside the tolerance gives missing values.
+    - Source variable attributes and the target timeline are preserved.
     """
 
-    # Time axes
-    time1 = ds1.time
-    time2 = ds2.time
-
-    # Direct matching times (exact matches)
-    common_times, idx1, idx2 = np.intersect1d(time1.values, time2.values, return_indices=True)
-
-    # Mask: which timestamps in ds1 are exact matches?
-    is_exact_match = np.isin(time1.values, common_times)
-
-    # Indices of the remaining (non-exact) timestamps in ds1
-    non_exact_indices = np.where(~is_exact_match)[0]
-
-    # Time alignment only for the remaining timestamps
-    time1_non_exact = time1.values[non_exact_indices]
-    time2_values = time2.values
-
-    # Index in ds2 with the minimal distance
-    nearest_indices = np.abs(time2_values[:, np.newaxis] - time1_non_exact).argmin(axis=0)
-    nearest_times = time2_values[nearest_indices]
-
-    # Apply tolerance mask
-    max_delta = np.timedelta64(max_diff, 'm')
-    time_deltas = np.abs(nearest_times - time1_non_exact)
-    valid_mask = time_deltas < max_delta
-
-    # Empty dictionary to collect matched variables
-    new_vars = {}
-
-    for var in ds2.data_vars:
-        # Prepare empty array with NaNs, same length as ds1
-        full_array = np.full_like(ds1.time.values, np.nan, dtype=float)
-
-        # Part 1: insert exact matches directly
-        full_array[idx1] = ds2[var].values[idx2]
-
-        # Part 2: insert non-exact but valid matches (within tolerance)
-        valid_indices_in_ds1 = non_exact_indices[valid_mask]
-        valid_indices_in_ds2 = nearest_indices[valid_mask]
-
-        full_array[valid_indices_in_ds1] = ds2[var].values[valid_indices_in_ds2]
-
-        # Store variable
-        new_vars[var] = (("time",), full_array)
-
-    # Add new variables to ds1
-    ds1 = ds1.assign(**new_vars)
-
-    return ds1
+    source_times, first = np.unique(ds2.time.values, return_index=True)
+    source = ds2.isel(time=first[~np.isnat(source_times)])
+    source_times = source.time.values
+    if not source_times.size:
+        matched = source.reindex(time=ds1.time)
+    else:
+        target = ds1.time.values
+        insertion = np.searchsorted(source_times, target)
+        left = np.clip(insertion - 1, 0, len(source_times) - 1)
+        right = np.clip(insertion, 0, len(source_times) - 1)
+        # A strict comparison retains the earlier timestamp on equal distances.
+        nearest = np.where(abs(source_times[right] - target) < abs(source_times[left] - target), right, left)
+        valid = abs(source_times[nearest] - target) <= np.timedelta64(max_diff, 'm')
+        matched = source.isel(time=nearest).assign_coords(time=ds1.time)
+        matched = matched.where(xr.DataArray(valid, dims='time', coords={'time': ds1.time}))
+    return ds1.assign({name: matched[name] for name in ds2.data_vars})
 
 
 def match_analysis_data(observations, reference, *, max_time_difference_minutes, exclude_rain, height_range,

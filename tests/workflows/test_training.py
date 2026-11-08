@@ -45,20 +45,27 @@ def test_noise_validation_preserves_existing_results_before_fresh_runs(tmp_path,
 
 @pytest.mark.parametrize('bls', [False, True])
 def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_path, bls):
-    model = Model('python', [0., 1000.], [22.24, 31.4], output_vars=['T'],
+    model = Model('python', [0.], [22.24], output_vars=['T'],
                   is_MLR=True, is_bls_model=bls, additional_input_vars=[],
-                  angles=[90., 30.] if bls else None)
+                  angles=[90.] if bls else None)
     times = np.arange('2024-01-01', '2024-01-07', dtype='datetime64[D]').astype('datetime64[ns]')
     data = retrieval_samples(times)
+    # Missing unselected frequencies, heights and scan angles must not remove
+    # the complete samples selected by this model.
+    data['TB'].loc[{'frq': 31.4}] = np.nan
+    data['TB'].loc[{'ang': 30.}] = np.nan
+    data['T'].loc[{'height': 1000.}] = np.nan
     data['unused'] = xr.full_like(data.T, np.nan)
     original = data.copy(deep=True)
     workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path)
     assert workflow.set_training_data(data.isel(time=slice(0, 4)), data.isel(time=slice(4, None))) is workflow
     assert workflow.training_data.sizes['station'] == 1
     assert set(workflow.training_data.data_vars) == {'TB', 'T'}
-    expected = data.isel(time=slice(0, 4))[['TB', 'T']]
+    expected = data.isel(time=slice(0, 4))[['TB', 'T']].sel(frq=[22.24], height=[0.])
     if not bls:
         expected = expected.sel(ang=90., drop=True)
+    else:
+        expected = expected.sel(ang=[90.])
     xr.testing.assert_identical(workflow.training_data.isel(station=0, drop=True), expected)
     before = workflow.training_data, workflow.validation_data
     with pytest.raises(ValueError, match="validation_data is missing variable 'T'"):
@@ -67,9 +74,14 @@ def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_pat
     assert workflow.validation_data is before[1]
     workflow.add_standard_training_hyper_params()
     workflow.add_input_noise_params(TB=0.)
+    # Python preprocessing can reintroduce unused coordinates after setup.
+    # Preflight and tensor preparation must still use the same model features.
+    workflow.training_data = workflow.training_data.reindex(frq=[31.4, 22.24], height=[1000., 0.])
     training = workflow.training_data.copy(deep=True)
     validation = workflow.validation_data.copy(deep=True)
     workflow.train()
+    np.testing.assert_array_equal(model.nor.frq, [22.24])
+    np.testing.assert_array_equal(model.nor.height, [0.])
     weights = {key: value.clone() for key, value in model.state_dict().items()}
     workflow.train(run_mode='fresh')
     for key, value in weights.items():

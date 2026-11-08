@@ -8,7 +8,7 @@ import xarray as xr
 
 from openMWR.config import check_invalid_measurements
 from openMWR.observations import mask_invalid_measurements, valid_observation_times, reference_source
-from openMWR.xr_utils import add_time_data, match_analysis_data, mean_n_min
+from openMWR.xr_utils import add_time_data, add_variables_at_closest_time, match_analysis_data, mean_n_min
 
 
 def test_reference_selection_infers_only_an_unambiguous_background():
@@ -35,6 +35,30 @@ def test_time_features_are_independent_of_datetime_resolution():
             for name in ('years_since_1970', 'doy_sin', 'doy_cos'):
                 np.testing.assert_array_equal(features[name], reference[name])
         reference = features
+
+
+@pytest.mark.parametrize('unit', ['s', 'us', 'ns'])
+def test_weather_matching_preserves_target_times_and_includes_tolerance_boundaries(unit):
+    target = xr.Dataset({'TB': ('time', np.arange(7.))}, coords={'time': np.array([
+        '2024-01-02T00:06', '2024-01-02T00:02', '2024-01-02T00:04',
+        '2024-01-01T23:57:59', '2024-01-02T00:00', '2024-01-02T00:06:01',
+        '2024-01-02T00:02'], dtype=f'datetime64[{unit}]')})
+    source = xr.Dataset({'surface_T': ('time', [284., 280., 999., 123.])},
+                        coords={'time': np.array(['2024-01-02T00:04', '2024-01-02T00:00',
+                                                  '2024-01-02T00:04', 'NaT'], dtype=f'datetime64[{unit}]')})
+    source.surface_T.attrs['units'] = 'K'
+    original = target.copy(deep=True)
+    matched = add_variables_at_closest_time(target, source, max_diff=2)
+    np.testing.assert_allclose(matched.surface_T, [284., 280., 284., np.nan, 280., np.nan, 280.])
+    xr.testing.assert_identical(matched.TB, target.TB)
+    assert matched.surface_T.attrs == source.surface_T.attrs
+    exact = add_variables_at_closest_time(target, source, max_diff=0)
+    np.testing.assert_allclose(exact.surface_T, [np.nan, np.nan, 284., np.nan, 280., np.nan, np.nan])
+    empty = add_variables_at_closest_time(target, source.isel(time=slice(0, 0)))
+    assert bool(empty.surface_T.isnull().all())
+    xr.testing.assert_identical(empty.TB, target.TB)
+    assert add_variables_at_closest_time(target.isel(time=slice(0, 0)), source).sizes['time'] == 0
+    xr.testing.assert_identical(target, original)
 
 
 def test_staggered_infrared_is_masked_and_averaged_before_alignment_to_zenith_minutes(tmp_path, monkeypatch):

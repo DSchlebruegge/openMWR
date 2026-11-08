@@ -24,7 +24,7 @@ openMWR migrate
 The command converts every `data/sites/<site>/config.json` to
 `sites/<site>/site.toml` and moves each `retrieval/<name>.pth` into
 `sites/<site>/retrieval/<name>/model.pth`. It makes the saved model class, grids,
-loss weights and dataset name explicit. Model weights, normalization and names
+loss weights and dataset name explicit. Model weights, predictions and names
 stay the same. Each original checkpoint is retained as `model.pth.bak` beside
 the converted file. Further upgrades of that file use numbered backups such as
 `model.pth.bak.1`, preserving earlier originals. Original JSON files, datasets, scripts and optimization
@@ -35,6 +35,14 @@ training recipes are generated. Extra historical site fields are retained under
 The command also converts older checkpoints already in the new directories.
 Run it again after an earlier layout-only migration. Current-format
 checkpoints and matching site TOML files are kept on repeated runs.
+
+Spectral-consistency models saved with repeated TB normalization also require
+`openMWR migrate`. For `z_norm`, `std_norm` and `max_norm`, conversion folds the
+two transforms into effective single-pass statistics, preserving predictions
+without changing weights. These statistics describe the saved transform rather
+than empirical training moments. Historical spectral `log_norm` models require
+retraining. Spectral optimization studies require a fresh start because training
+uses a single normalization pass and the configured physical input noise.
 
 All conversions and destinations are checked before any changes. Conflicting
 site settings, occupied destinations for old-layout files and occupied backups

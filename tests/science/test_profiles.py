@@ -218,3 +218,26 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
         assert '2020-01-02' in message
         assert 'profile-base altitude 2656' in message
         assert 'elevation angles [0.1, 90.0]' in message
+
+
+@pytest.mark.parametrize('liquid', [[.2, .2, .2, .2, .2], [.2, .2, 0., .2, .2], [0., 0., 0., .2, .2]])
+def test_pyrtlib_retains_cloud_water_at_the_highest_profile_level(dataset_project, monkeypatch, liquid):
+    import openMWR.run_RT as rt
+
+    # Native libRadtran stays outside the test suite. The independent torchMWRT
+    # integration supplies the cloudy microwave expectation on the same grid.
+    monkeypatch.setattr(rt, 'calculate_IR_band_TB', lambda *args, **kwargs: 250.)
+    profile = xr.Dataset({'T': ('height', [280., 278.5, 277., 275.5, 274.]),
+                          'p': ('height', [950., 925., 900., 875., 850.]),
+                          'rh': ('height', [50.] * 5),
+                          'lwc': ('height', liquid)},
+                         coords={'height': [0., 250., 500., 750., 1000.], 'surface_altitude': 0.}).expand_dims(
+                             time=[np.datetime64('2024-01-01', 'ns')])
+    options = dict(site='test', project_dir=dataset_project, freqs=np.array([31.4]), angles=np.array([90.]),
+                   absmdl='R24', num_of_processes=1, ray_tracing=False,
+                   infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    first = rt.run_RT(profile, **options, RT_model='pyrtlib')
+    expected = rt.run_RT(profile, **options, RT_model='torchMWRT')
+    np.testing.assert_allclose(first.TB, expected.TB, rtol=0, atol=1e-7)
+    clear = rt.run_RT(profile.assign(lwc=xr.zeros_like(profile.lwc)), **options, RT_model='pyrtlib')
+    assert bool((first.TB > clear.TB + 1.).all())

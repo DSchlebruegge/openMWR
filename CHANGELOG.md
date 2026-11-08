@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Apply normalization once per variable, including spectral-consistency models.
+  Align saved statistics by feature coordinates and select model features before
+  filtering training samples. Migrate historical spectral checkpoints to preserve
+  predictions with linear normalization. Spectral optimization histories require
+  a fresh start. Historical spectral log normalization requires retraining.
+- Include clouds reaching the highest profile level in the PyRTlib backend.
+- Match weather timestamps without a dense distance matrix. Include samples
+  exactly at the maximum time difference and retain the earlier source on ties.
 - Require an explicit `ray_tracing` choice in simulation recipes and direct
   dataset-generation calls. Starter recipes and the torchMWRT example select
   spherical refractive paths. Rebuild simulations, training splits and paired

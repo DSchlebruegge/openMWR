@@ -59,6 +59,29 @@ def test_normalization_has_known_values_inverses_and_constant_channel_behavior()
     xr.testing.assert_identical(data, original)
 
 
+@pytest.mark.parametrize('subset', [False, True])
+def test_normalization_aligns_reordered_and_subset_feature_statistics(subset):
+    coordinates = {'frq': [22.24, 31.4], 'ang': [30., 90.], 'height': [0., 1000.]}
+    data = xr.Dataset({'TB': (('frq', 'ang'), np.full((2, 2), 104.)),
+                       'T': ('height', [284., 288.])}, coords=coordinates)
+    model = SimpleNamespace(input_vars=['TB'], output_vars=['T'],
+                            norm_functions={'TB': 'z_norm', 'T': 'z_norm'},
+                            nor=xr.Dataset({'TB': (('stat', 'frq', 'ang'),
+                                                  np.array([np.full((2, 2), 100.), np.full((2, 2), 2.)])),
+                                            'T': (('stat', 'height'), [[280., 284.], [4., 4.]])},
+                                           coords={**coordinates, 'stat': ['mean', 'std']}))
+    selection = {name: values[-1:] if subset else values[::-1] for name, values in coordinates.items()}
+    selected = data.sel(selection)
+    normalized = normalize(selected, model)
+    np.testing.assert_allclose(normalized.TB, 2.)
+    np.testing.assert_allclose(normalized.T, 1.)
+    for name, values in selection.items():
+        np.testing.assert_array_equal(normalized[name], values)
+    xr.testing.assert_allclose(denormalize(normalized, model), selected)
+    with pytest.raises(ValueError, match='Normalization statistics do not contain the requested feature coordinates'):
+        normalize(data.assign_coords(frq=[22.24, 30.]), model)
+
+
 def test_bias_penalty_uses_mean_error_and_explicit_coefficient():
     prediction, truth = torch.tensor([[2.], [4.]]), torch.zeros((2, 1))
     assert MAEPlusBiasLoss(.2)(prediction, truth).item() == pytest.approx(3.6)

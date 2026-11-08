@@ -17,7 +17,7 @@ from typing import Union, List
 
 from openMWR.utils import progress_bar, is_called_from_notebook, progress_log
 from openMWR.xr_utils import load_combined_dataset, to_1d_tensor
-from openMWR.predict import create_tensor_from_ds, create_ds_from_y, validate_model_data
+from openMWR.predict import create_tensor_from_ds, create_ds_from_y, validate_model_data, select_model_data
 from openMWR.normalization import normalize, denormalize, create_stats, get_input_noise, normalized_input_noise
 from openMWR.devices import resolve_device, device_name
 from openMWR.calc_errors import cal_RMSE
@@ -267,7 +267,7 @@ class TrainingWorkflow:
         # cover every possible nonzero-noise/normalization combination.
         normalized_input_noise(
             self.model, self._input_noise_limits(),
-            normalization=create_stats(self.model, self.training_data[self.model.input_vars]))
+            normalization=create_stats(self.model, select_model_data(self.model.input, self.training_data)))
         return self
 
     def _input_noise_limits(self):
@@ -424,7 +424,7 @@ class TrainingWorkflow:
     def set_training_data(self, training: xr.Dataset, validation: xr.Dataset):
         """Prepare supplied, unnormalized data without dataset recipes.
 
-        Keep model variables and select zenith for non-BLS models. Each dataset
+        Keep model variables and feature grids, selecting zenith for non-BLS models. Each dataset
         needs a time dimension. A missing station dimension becomes one source.
         Both datasets are checked before replacing the current data. Dataset
         selection and applied bias-correction records are cleared on replacement.
@@ -442,7 +442,7 @@ class TrainingWorkflow:
             if 'station' not in data.dims:
                 data = data.expand_dims('station') if 'station' in data.coords else data.expand_dims(station=[0])
             validate_model_data(expected, data, label)
-            return data[list(expected.data_vars)].copy(deep=False)
+            return select_model_data(expected, data).copy(deep=False)
 
         training = prepare(training, 'training_data')
         validation = prepare(validation, 'validation_data')
@@ -748,13 +748,14 @@ class TrainingWorkflow:
         x_val : torch.Tensor
         y_val : torch.Tensor
         """
-        # Normalize the data
-        self.model.nor = create_stats(self.model, self.training_data)
+        specification = xr.merge([self.model.input, self.model.output], compat='override')
+        training = select_model_data(specification, self.training_data)
+        validation = select_model_data(specification, self.validation_data)
+        self.model.nor = create_stats(self.model, training)
         self.logger.info('Created normalization dataset')
 
-        variables = list(dict.fromkeys(self.model.input_vars + self.model.output_vars))
-        training_data = normalize(self.training_data[variables], self.model)
-        validation_data = normalize(self.validation_data[variables], self.model)
+        training_data = normalize(training, self.model)
+        validation_data = normalize(validation, self.model)
         
         # Stack the data to create a single dimension for station and time
         # This is necessary to create a 2D tensor for training
@@ -1184,6 +1185,8 @@ class TrainingWorkflow:
         experiment['hyper_params'] = {key: value for key, value in experiment['hyper_params'].items() if key not in unused}
         if self.model.is_MLR:
             experiment['fitting'] = _MLR_FITTING
+        if set(self.model.input_vars) & set(self.model.output_vars):
+            experiment['normalization_passes'] = 1
         # Historical trials always divided noise by std. Only noisy max_norm
         # inputs change meaning, so unaffected histories need no new marker.
         maximum_noise = get_input_noise(self.model, self._input_noise_limits())
@@ -1196,6 +1199,10 @@ class TrainingWorkflow:
         previous = study.user_attrs.get('openMWR_experiment')
         definition = _experiment_definition(experiment, variables)
         previous_definition = _experiment_definition(previous, variables)
+        if (previous_definition is not None
+                and previous_definition.get('normalization_passes') != definition.get('normalization_passes')):
+            raise ValueError('This study uses different spectral normalization. '
+                             'Use --fresh (run_mode="fresh" in Python) or a new retrieval name to restart.')
         if (previous_definition is not None
                 and previous_definition.get('input_noise_scaling', {}) != definition.get('input_noise_scaling', {})):
             raise ValueError('This study uses different input-noise normalization. '

@@ -309,6 +309,20 @@ def test_optimization_runs_for_scan_and_spectral_models(kind, mode, tmp_path, mo
     study = workflow.optimize()
     assert np.isfinite(study.best_value)
     assert load_model('example', 'test', tmp_path).training_metadata['action'] == 'optimize'
+    if kind == 'spectral':
+        definition = study.user_attrs['openMWR_experiment']
+        assert definition['normalization_passes'] == 1
+        study.set_user_attr('openMWR_experiment', {key: value for key, value in definition.items()
+                                                 if key != 'normalization_passes'})
+        checkpoint = tmp_path / 'sites/test/retrieval/example/model.pth'
+        previous = checkpoint.read_bytes()
+        with pytest.raises(ValueError, match='different spectral normalization'):
+            TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='continue')
+        assert checkpoint.read_bytes() == previous
+        assert len(study.trials) == 1
+        study.set_user_attr('openMWR_experiment', definition)
+        continued = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example').optimize(run_mode='continue')
+        assert len(continued.trials) == 2
 
 
 def test_noise_search_uses_fixed_channels_and_explicit_ranges(tmp_path):

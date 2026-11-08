@@ -7,7 +7,7 @@ import pytest
 import torch
 import xarray as xr
 
-from openMWR.models import Model, load_model, CHECKPOINT_VERSION
+from openMWR.models import Model, SpectralConsistencyModel, load_model, CHECKPOINT_VERSION
 from openMWR.migrate import migrate_project
 from openMWR.predict import run_model
 from openMWR.site import create_site, get_config_parameter, load_site_config
@@ -134,8 +134,12 @@ def test_version_01_checkpoint_migration_preserves_predictions(tmp_path, name):
     original = torch.load(current.with_name('model.pth.bak'), map_location='cpu', weights_only=False)
     for key, value in original['model_state_dict'].items():
         assert torch.equal(value, converted['model_state_dict'][key])
-    xr.testing.assert_identical(xr.Dataset.from_dict(converted['normalization']),
-                               xr.Dataset.from_dict(original['normalization']))
+    if name != 'spectral':
+        xr.testing.assert_identical(xr.Dataset.from_dict(converted['normalization']),
+                                   xr.Dataset.from_dict(original['normalization']))
+    else:
+        assert converted['normalization_passes'] == 1
+        assert converted['training_metadata']['spectral_normalization_conversion'] == 'effective_linear_statistics'
     assert 'file_extension' not in converted['hyper_params']
     assert not current.with_name('retrieval.toml').exists()
     assert model.training_dataset == 'training_r17'
@@ -143,3 +147,53 @@ def test_version_01_checkpoint_migration_preserves_predictions(tmp_path, name):
         xr.testing.assert_identical(model.loss_weights, xr.Dataset.from_dict(case['loss_weights']))
     if name == 'bls':
         np.testing.assert_array_equal(model.angles, model.nor.ang)
+
+
+@pytest.mark.parametrize('method', ['z_norm', 'std_norm', 'max_norm', 'log_norm'])
+def test_spectral_checkpoint_conversion_preserves_predictions_or_rejects_unsupported_math(tmp_path, method):
+    create_site('test', tmp_path)
+    model = SpectralConsistencyModel('spectral', [22.24, 31.4], hidden_layer_size=2,
+                                     norm_functions={'TB': method})
+    mean, std, maximum = np.array([100., 200.]), np.array([2., 4.]), np.array([110., 220.])
+    model.nor = xr.Dataset({'TB': (('stat', 'frq'), [mean, std, maximum])},
+                           coords={'stat': ['mean', 'std', 'max'], 'frq': model.freqs})
+    model.save('test', tmp_path, {})
+    path = tmp_path / 'sites/test/retrieval/spectral/model.pth'
+    payload = torch.load(path, map_location='cpu', weights_only=True)
+    payload.pop('normalization_passes')
+    torch.save(payload, path)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='Saved spectral normalization requires conversion'):
+        load_model('spectral', 'test', tmp_path)
+    if method == 'log_norm':
+        with pytest.raises(ValueError, match='spectral log_norm cannot be converted'):
+            migrate_project(tmp_path)
+        assert path.read_bytes() == before
+        assert not path.with_name('model.pth.bak').exists()
+        return
+
+    physical = np.array([[104., 208.], [102., 204.]])
+    scale = maximum if method == 'max_norm' else std
+    offset = mean if method == 'z_norm' else 0.
+    # Independent historical calculation with two forward and two inverse
+    # affine transforms. No training and no call to the normalizer under test.
+    old_input = ((physical - offset) / scale - offset) / scale
+    with torch.no_grad():
+        old_output = model(torch.tensor(old_input, dtype=torch.float32)).numpy()
+    expected = (old_output * scale + offset) * scale + offset
+    inputs = xr.Dataset({'TB': (('time', 'frq'), physical)},
+                         coords={'time': np.array(['2024-01-01', '2024-01-02'], dtype='datetime64[ns]'),
+                                 'frq': model.freqs})
+    migrate_project(tmp_path, dry_run=True)
+    assert path.read_bytes() == before
+    migrate_project(tmp_path)
+    loaded = load_model('spectral', 'test', tmp_path)
+    actual = run_model(loaded, inputs, 'cpu', include_input_vars=False)
+    np.testing.assert_allclose(actual.TB.transpose('time', 'frq'), expected, rtol=1e-6, atol=1e-6)
+    assert path.with_name('model.pth.bak').read_bytes() == before
+    for key, value in model.state_dict().items():
+        torch.testing.assert_close(loaded.state_dict()[key], value, rtol=0, atol=0)
+    converted = path.read_bytes()
+    migrate_project(tmp_path)
+    assert path.read_bytes() == converted
+    assert not path.with_name('model.pth.bak.1').exists()

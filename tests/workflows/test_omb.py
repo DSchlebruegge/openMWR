@@ -171,13 +171,19 @@ def test_bias_uses_selected_channel_and_angle_offsets_without_mutating_diagnosti
     workflow.model.nor = xr.Dataset({'TB': xr.DataArray([2., 1.], dims='stat', coords={'stat': ['std', 'mean']})})
     normalized = normalized_input_noise(workflow.model, workflow.hyper_params)
     np.testing.assert_allclose(normalized, physical.TB.transpose('ang', 'frq').values.ravel() / 2)
-    # Correcting a model's smaller grid must preserve unused simulation channels.
+    # The workflow keeps its selected grid. Bias correction must not modify the
+    # source simulation, including channels unused by this model.
     recipe.write_text(recipe.read_text().replace('frequencies = [22.24, 31.4]', 'frequencies = [22.24]'))
+    source = tmp_path / 'data/sites/test/training_variant/training_03715.nc'
+    saved = source.read_bytes()
     subset = TrainingWorkflow.from_recipe(tmp_path, 'test', 'example', 'cpu')
-    unused = subset.training_data.TB.sel(frq=31.4).copy(deep=True)
+    original = subset.training_data.TB.copy(deep=True)
+    np.testing.assert_array_equal(subset.training_data.frq, [22.24])
     subset.make_omb_analysis(['03715'], dataset='analysis_radiosonde')
     subset.make_bias_correction(factor=1.)
-    xr.testing.assert_identical(subset.training_data.TB.sel(frq=31.4), unused)
+    np.testing.assert_allclose((subset.training_data.TB - original).sel(ang=90), 2.)
+    np.testing.assert_allclose((subset.training_data.TB - original).sel(ang=30), 5.)
+    assert source.read_bytes() == saved
     assert np.isfinite(subset.training_data.TB).all()
 
 

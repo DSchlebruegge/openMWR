@@ -5,9 +5,23 @@ import pytest
 import torch
 import xarray as xr
 
-from openMWR.models import Model
-from openMWR.normalization import get_input_noise, normalize, normalized_input_noise
+from openMWR.models import Model, SpectralConsistencyModel
+from openMWR.normalization import denormalize, get_input_noise, normalize, normalized_input_noise
 from openMWR.train import TrainingWorkflow
+
+
+def test_spectral_normalization_applies_once_and_matches_physical_noise():
+    model = SpectralConsistencyModel('spectral', [22.24, 31.4])
+    model.nor = xr.Dataset({'TB': (('stat', 'frq'), [[100., 200.], [2., 4.]])},
+                           coords={'stat': ['mean', 'std'], 'frq': model.freqs})
+    data = xr.Dataset({'TB': ('frq', [104., 208.])}, coords={'frq': model.freqs})
+    normalized = normalize(data, model)
+    np.testing.assert_allclose(normalized.TB, [2., 2.])
+    xr.testing.assert_allclose(denormalize(normalized, model), data)
+    parameters = {'input_noise_TB_22.24': 2., 'input_noise_TB_31.4': 4.}
+    np.testing.assert_allclose(normalized_input_noise(model, parameters), [1., 1.])
+    np.testing.assert_allclose((normalize(data + get_input_noise(model, parameters), model) - normalized).TB,
+                               [1., 1.])
 
 
 def test_input_noise_uses_the_selected_linear_scale_and_rejects_undefined_conversions():

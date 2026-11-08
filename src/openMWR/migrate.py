@@ -34,6 +34,31 @@ def _convert_angle_noise(checkpoint):
     return changed
 
 
+def _convert_spectral_normalization(checkpoint):
+    """Fold historical double linear normalization into effective statistics."""
+    import xarray as xr
+
+    if checkpoint.get('model_class') != 'SpectralConsistencyModel' or checkpoint.get('normalization_passes') == 1:
+        return False
+    method = (checkpoint['structure'].get('norm_functions') or {'TB': 'z_norm'})['TB']
+    if method == 'log_norm':
+        raise ValueError('Historical spectral log_norm cannot be converted to single-pass normalization. '
+                         'Retrain this spectral model. Its checkpoint is left unchanged.')
+    normalization = xr.Dataset.from_dict(checkpoint['normalization'])
+    if method in ('z_norm', 'std_norm', 'max_norm'):
+        normalization['TB'] = normalization.TB.astype(float)
+        stat = 'max' if method == 'max_norm' else 'std'
+        scale = normalization.TB.sel(stat=stat, drop=True).copy()
+        if method == 'z_norm':
+            normalization.TB.loc[{'stat': 'mean'}] *= 1 + scale
+        normalization.TB.loc[{'stat': stat}] = scale ** 2
+    checkpoint['normalization'] = normalization.to_dict()
+    checkpoint['normalization_passes'] = 1
+    checkpoint['training_metadata'] = {**(checkpoint.get('training_metadata') or {}),
+                                       'spectral_normalization_conversion': 'effective_linear_statistics'}
+    return True
+
+
 def _convert_checkpoint(path, name):
     import torch
     import xarray as xr
@@ -44,7 +69,9 @@ def _convert_checkpoint(path, name):
     version = checkpoint.get('format_version')
     if version == CHECKPOINT_VERSION:
         _read_checkpoint(path)
-        return _checkpoint_payload(checkpoint) if _convert_angle_noise(checkpoint) else None
+        changed = _convert_angle_noise(checkpoint)
+        changed = _convert_spectral_normalization(checkpoint) or changed
+        return _checkpoint_payload(checkpoint) if changed else None
     if version not in (None, 1):
         raise ValueError(f'Unsupported checkpoint format {version!r}.')
     structure = checkpoint['structure']
@@ -72,6 +99,8 @@ def _convert_checkpoint(path, name):
     parameters = checkpoint['hyper_params']
     suffix = parameters.pop('file_extension', '')
     parameters.setdefault('training_dataset', f'training_{suffix.lower()}' if suffix else 'training')
+    checkpoint['model_class'] = kind
+    _convert_spectral_normalization(checkpoint)
     model = classes[kind]._from_checkpoint(checkpoint, name)
     checkpoint['structure'] = model.checkpoint_structure()
     checkpoint['model_class'] = kind

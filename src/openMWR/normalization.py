@@ -20,13 +20,18 @@ def create_stats(model, ds: xr.Dataset) -> xr.Dataset:
 
 
 def _aligned_stats(ds, statistics):
-    """Use zenith statistics for TB without a scan dimension."""
-    if 'TB' in ds:
-        if 'ang' not in ds.TB.dims and 'ang' in statistics.dims:
-            return statistics.sel(ang=90, drop=True)
-        if 'ang' not in ds.TB.coords and 'ang' in statistics.coords:
-            return statistics.drop_vars('ang')
-    return statistics
+    """Select saved feature statistics in the incoming coordinate order."""
+    statistics = statistics[[name for name in ds.data_vars if name in statistics]]
+    try:
+        if 'TB' in ds:
+            if 'ang' not in ds.TB.dims and 'ang' in statistics.dims:
+                statistics = statistics.sel(ang=90, drop=True)
+            if 'ang' not in ds.TB.coords and 'ang' in statistics.coords:
+                statistics = statistics.drop_vars('ang')
+        return statistics.sel({dim: ds[dim] for dim in statistics.dims
+                               if dim != 'stat' and dim in ds.dims})
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f'Normalization statistics do not contain the requested feature coordinates: {exc}') from exc
 
 
 def _linear_scale(statistics, var, method):
@@ -40,7 +45,7 @@ def _linear_scale(statistics, var, method):
 def _transform(ds, model, *, inverse):
     result = ds.copy()
     statistics = _aligned_stats(ds, model.nor)
-    for var in model.input_vars + model.output_vars:
+    for var in dict.fromkeys(model.input_vars + model.output_vars):
         if var not in result:
             continue
         method = model.norm_functions[var]
