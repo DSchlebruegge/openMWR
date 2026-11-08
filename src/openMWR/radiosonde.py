@@ -440,7 +440,7 @@ def create_radiosonde_dataset_for_RT(
 
 def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray, save: bool = True, num_of_processes: int = 12,
            freq_shift: np.ndarray = None, update_only: bool = False, test: bool = False, profiles_dataset: str = 'profiles',
-           *, absmdl: str, RT_model: str, dataset: str, infrared, site_config=None):
+           *, absmdl: str, RT_model: str, dataset: str, infrared, ray_tracing: bool, site_config=None):
     """
     Run RT for a station's processed radiosonde profiles.
 
@@ -474,6 +474,8 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         Name of the output simulation dataset.
     RT_model : {"torchMWRT", "pyrtlib"}
         RT backend used in :func:`openMWR.run_RT.run_RT`.
+    ray_tracing : bool
+        Use spherical refractive microwave paths, or plane-parallel geometry if False.
 
     Returns
     -------
@@ -500,6 +502,9 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         if 'surface_altitude' not in ds_old.coords:
             raise ValueError(f'{file}: missing profile-base altitude. Rebuild this simulation dataset '
                              'or use update_only=False for direct Python RT.')
+        if ds_old.attrs.get('ray_tracing') != int(ray_tracing):
+            raise ValueError(f'{file}: ray-tracing settings differ or are missing. Rebuild this simulation '
+                             'dataset or use update_only=False for direct Python RT.')
         ds_RS = ds_RS.sel(time = np.setdiff1d(ds_RS.time.values, ds_old.time.values))
         if ds_RS.time.size == 0:
             logger.info("No new radiosonde data found. Skipping RT calculation.")
@@ -520,7 +525,7 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         freq_shift=freq_shift,
         absmdl=absmdl,
         RT_model=RT_model,
-        infrared=infrared, site_config=site_config,
+        infrared=infrared, ray_tracing=ray_tracing, site_config=site_config,
     )
 
     ds_new = ds_new.expand_dims(station=[station_id])

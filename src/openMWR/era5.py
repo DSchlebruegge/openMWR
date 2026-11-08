@@ -226,8 +226,13 @@ class ERA5Processor:
         return new
 
     def create_forward_calc_dataset(self, freqs, angles, num_of_processes=10,
-                                    freq_shift=None, *, absmdl, RT_model, infrared):
-        """Run RT only for prepared profiles missing from this simulation."""
+                                    freq_shift=None, *, absmdl, RT_model, infrared, ray_tracing):
+        """Run RT for missing prepared profiles with an explicit ray-geometry choice.
+
+        ``ray_tracing=True`` uses spherical refractive microwave paths.
+        ``False`` uses plane-parallel geometry. Changing this choice requires
+        rebuilding the simulation with ``update_only=False``.
+        """
         if not self.profile_file.is_file():
             raise FileNotFoundError(f'ERA5 prepared profiles missing: {self.profile_file}')
         profiles = xr.load_dataset(self.profile_file)
@@ -236,6 +241,9 @@ class ERA5Processor:
             if 'surface_altitude' not in old.coords:
                 raise ValueError(f'{self.forward_calc_file}: missing profile-base altitude. Rebuild this simulation '
                                  'dataset or use update_only=False for direct Python RT.')
+            if old.attrs.get('ray_tracing') != int(ray_tracing):
+                raise ValueError(f'{self.forward_calc_file}: ray-tracing settings differ or are missing. Rebuild '
+                                 'this simulation dataset or use update_only=False for direct Python RT.')
             profiles = profiles.sel(time=~profiles.time.isin(old.time))
         if profiles.time.size == 0:
             if old is not None:
@@ -243,7 +251,7 @@ class ERA5Processor:
             raise ValueError('No prepared ERA5 profiles available for RT.')
         new = run_RT(profiles, self.site, self.project_dir, freqs, angles,
                      num_of_processes=num_of_processes, freq_shift=freq_shift,
-                     absmdl=absmdl, RT_model=RT_model, infrared=infrared, site_config=self.site_config)
+                     absmdl=absmdl, RT_model=RT_model, infrared=infrared, ray_tracing=ray_tracing, site_config=self.site_config)
         if old is not None:
             new = xr.concat([old, new], dim='time').sortby('time')
         self.forward_calc_file.parent.mkdir(parents=True, exist_ok=True)

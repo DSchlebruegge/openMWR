@@ -8,6 +8,8 @@ backend = "torchMWRT"
 absorption_model = "R24"
 frequencies = "hatpro"
 angles = "hatpro_bls"
+# Include Earth curvature and atmospheric refraction in scan paths.
+ray_tracing = true
 # Radiative transfer also requires a working libRadtran installation.
 
 [radiative_transfer.infrared]

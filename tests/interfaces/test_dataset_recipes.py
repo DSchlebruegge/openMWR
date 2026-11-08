@@ -14,6 +14,8 @@ from tests.fixtures.datasets import dataset_project, recipe
     ({'kind': 'simulation', 'inputs': {'profiles': 'source'}}, 'incompatible kind'),
     ({'kind': 'simulation', 'inputs': {'profiles': 'missing'}}, 'Missing dataset recipe'),
     ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'absorpton_model': 'R24'}}, 'Unknown'),
+    ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'ray_tracing': 'true'}}, 'ray_tracing must be true or false'),
+    ({'kind': 'simulation', 'inputs': {'profiles': 'profiles'}, 'radiative_transfer': {'ray_tracing': 1}}, 'ray_tracing must be true or false'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'sources': ['02290']}, 'subset'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'preparation': {'heights': [100, 0]}}, 'must be increasing'),
     ({'kind': 'profiles', 'inputs': {'source': 'source'}, 'execution': {'processes': 2}}, 'preparation is serial'),
@@ -41,6 +43,7 @@ def test_invalid_graphs_fail_before_output_creation(dataset_project, values, mes
     ('profiles', 'preparation', 'quality'),
     ('profiles', 'preparation', 'incomplete_profiles'),
     ('r24', 'radiative_transfer', 'absorption_model'),
+    ('r24', 'radiative_transfer', 'ray_tracing'),
     ('r24', 'radiative_transfer', 'infrared'),
     ('training', 'split', 'test_days_of_month'),
 ])

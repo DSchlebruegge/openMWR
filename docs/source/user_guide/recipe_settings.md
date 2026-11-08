@@ -76,7 +76,7 @@ names and `[inputs]` supplies the dependency edges.
 | `era5` | None | `start_date`, `end_date`, `hour_interval`, `delay_days` when using `"today"` |
 | `hatpro` | None | `start_date`, `end_date`. Optional `[observations].include_rpg` imports available RPG retrieval products |
 | `profiles` | `source`: radiosonde or ERA5 | `[preparation].heights`. Radiosondes also require `incomplete_profiles`, `cloud` and `quality` settings |
-| `simulation` | `profiles` | `[radiative_transfer]` backend, absorption model, frequencies, angles and infrared microphysics |
+| `simulation` | `profiles` | `[radiative_transfer]` backend, absorption model, frequencies, angles, `ray_tracing` and infrared microphysics |
 | `split` | `simulation` | `[split]` test and validation day ranges, with optional pool filters |
 | `analysis` | `observations`: HATPRO, `reference`: simulation | `[analysis]` matching tolerance, rain exclusion, height range and required observations |
 
@@ -122,6 +122,13 @@ Preparation converts ERA5 mixed-phase RH to water-relative RH and cloud liquid
 water from kg/kg to g/m³ before interpolating to the height grid. Raw caches
 retain the downloaded conventions.
 
+`[radiative_transfer].ray_tracing` is required. `true` includes Earth curvature
+and atmospheric refraction in microwave paths. `false` uses plane-parallel
+geometry. Both assume a horizontally uniform atmosphere. Ray tracing does not
+account for terrain or beamwidth. If ducting prevents a complete upward path,
+RT fails instead of saving a partial atmosphere. Changing this setting requires
+rebuilding the simulation and its downstream datasets.
+
 `[radiative_transfer.infrared]` specifies `droplet_number_density` in m^-3 and
 `min_effective_radius` in micrometres. The minimum radius must be at least 2.5 and
 below 60. Calculated radii at or above 60 are rejected before RT, matching
@@ -131,7 +138,8 @@ radiosondes use the launch-station altitude. Profiles cut off at instrument
 height and ERA5 profiles use `mwr_height`. If a radiosonde station is higher
 than the instrument, its altitude remains the profile base. Infrared RT uses
 this altitude for the atmosphere and converts cloud heights to sea-level
-coordinates. Custom Python profiles passed to `run_RT` must also provide
+coordinates. Microwave ray tracing also uses the absolute profile altitude.
+Custom Python profiles passed to `run_RT` must also provide
 `surface_altitude` as a scalar or per-time coordinate.
 
 Optional `[radiative_transfer.frequency_shift]` maps nominal channel frequencies

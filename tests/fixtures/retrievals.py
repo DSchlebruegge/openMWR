@@ -88,6 +88,7 @@ dataset = "analysis_radiosonde"
         'simulation_r24': {'kind': 'simulation', 'inputs': {'profiles': 'profiles'},
                           'radiative_transfer': {'backend': 'torchMWRT', 'absorption_model': 'R24',
                                                  'frequencies': [22.24, 31.4], 'angles': [90.0, 30.0],
+                                                 'ray_tracing': True,
                                                  'infrared': {'droplet_number_density': 200e6, 'min_effective_radius': 2.5}}},
         dataset_name: {'kind': 'split', 'inputs': {'simulation': 'simulation_r24'},
                       'split': {'test_days_of_month': {'first': 1, 'last': 3}, 'validation_days_of_month': {'first': 15, 'last': 17}}},

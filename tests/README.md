@@ -69,6 +69,8 @@ Most comparisons retain `rtol=5e-5, atol=1e-6 K`; the radiosonde cases use
 `rtol=0, atol=1e-8 K`. Gradient checks compare autograd with finite differences
 for temperature, pressure, humidity and cloud water in R24, including batched
 curved paths. A separate R17 case covers the older absorption formulation.
+The profile/RT integration checks both geometry choices and rejects invalid rays
+without silently dropping failed profiles from the saved simulation.
 Water-vapour input checks compare scalar, profile and batched calculations,
 including different frequency-grid ranks and zero humidity.
 

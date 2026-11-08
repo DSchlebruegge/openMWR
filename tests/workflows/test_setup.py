@@ -33,6 +33,7 @@ def test_command_creates_radiosonde_starter_and_requires_station_selection(tmp_p
                              'hatpro', 'analysis_radiosonde'}
     assert datasets['radiosondes']['stations'] == []
     assert datasets['simulation']['radiative_transfer']['absorption_model'] == 'R24'
+    assert datasets['simulation']['radiative_transfer']['ray_tracing'] is True
     assert datasets['profiles']['preparation']['heights'] == 'levels_208_30km'
     assert all(settings['kind'] != 'era5' for settings in datasets.values())
     settings = tomllib.loads((directory / 'site.toml').read_text())

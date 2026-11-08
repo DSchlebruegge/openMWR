@@ -200,11 +200,13 @@ class DatasetRecipe:
                 if preparation[key] <= 0 or (key.endswith('fraction') and preparation[key] > 1):
                     raise ValueError(f'{key} must be positive; fractions cannot exceed one.')
         rt = self.values.get('radiative_transfer', {})
-        check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'frequency_shift', 'infrared'), f'{self.name}.radiative_transfer')
+        check_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'ray_tracing', 'frequency_shift', 'infrared'), f'{self.name}.radiative_transfer')
         rt = dict(rt)
         if kind == 'simulation':
-            require_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'infrared'), f'{self.name}.radiative_transfer')
+            require_keys(rt, ('backend', 'absorption_model', 'frequencies', 'angles', 'ray_tracing', 'infrared'), f'{self.name}.radiative_transfer')
             check_infrared(rt['infrared'])
+            if not isinstance(rt['ray_tracing'], bool):
+                raise ValueError('radiative_transfer.ray_tracing must be true or false.')
         if kind == 'analysis':
             check_analysis(self.values.get('analysis', {}))
         if rt.get('backend', 'torchMWRT') not in ('torchMWRT', 'pyrtlib'):
@@ -385,6 +387,7 @@ class DatasetWorkflow:
             settings.update(backend=rt['backend'],
                             absorption_model=rt['absorption_model'],
                             frequencies=rt['frequencies'], angles=rt['angles'],
+                            ray_tracing=rt['ray_tracing'],
                             frequency_shift=rt.get('frequency_shift'), infrared=rt['infrared'], gen=self.site_settings.get('instrument_generation'))
         elif kind == 'split':
             settings.update(values['split'])
@@ -721,6 +724,7 @@ class DatasetWorkflow:
                            absmdl=settings['absorption_model'], RT_model=settings['backend'],
                            freq_shift=None if settings['frequency_shift'] is None else np.asarray(settings['frequency_shift']),
                            infrared=settings['infrared'],
+                           ray_tracing=settings['ray_tracing'],
                            num_of_processes=processes)
             if self.source_kind(name) == 'radiosonde':
                 from openMWR.radiosonde import create_radiosonde_dataset_with_RT

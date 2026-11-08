@@ -60,6 +60,32 @@ def test_time_batch_preserves_coordinates_and_reference_values(ray_tracing):
     np.testing.assert_allclose(result, [case['tb_K'] for case in cases], rtol=5e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize('invalid', [float('nan'), float('inf'), 0.999])
+def test_ray_tracing_rejects_invalid_refractivity(invalid):
+    from torchMWRT import RTModel
+
+    model = RTModel(freqs=[22.24], angles=[4.2, 90.], absmdl='R24', ray_tracing=True)
+    # A bad member of a batch must fail explicitly, without returning incomplete
+    # path lengths for the other members.
+    refraction = torch.tensor([[1.0003, 1.0002], [1.0003, invalid]], dtype=torch.float64)
+    with pytest.raises(ValueError, match='finite refractive indices'):
+        model._ray_tracing_path(torch.tensor([0., 1000.]), refraction, model.angles, 2656.)
+
+
+def test_ducting_fails_before_absorption(monkeypatch):
+    from torchMWRT import RTModel
+
+    profile = AtmProfile(temperature=np.array([285., 282., 279.]),
+                         height=np.array([2656., 2666., 2756.]),
+                         pressure=np.array([1000., 300., 100.]), rh=np.full(3, 0.8))
+    model = RTModel(freqs=[22.24], angles=[90., 0.1], absmdl='R24', ray_tracing=True)
+    def unexpected_absorption(*args):
+        pytest.fail('Invalid ray geometry must fail before absorption is calculated.')
+    monkeypatch.setattr(model, '_clearsky_absorption', unexpected_absorption)
+    with pytest.raises(ValueError, match=r'ducting at level \d+, elevation 0.1 degrees'):
+        model.execute(profile)
+
+
 @pytest.mark.parametrize('absorption_model', ['R24', 'R23SD', 'R17'])
 def test_water_vapour_broadcasting_preserves_scalar_values(absorption_model):
     frequencies = torch.tensor([22.24, 58., 183.31], dtype=torch.float64).reshape(3, 1)

@@ -212,7 +212,7 @@ def test_changed_settings_require_rebuild_before_any_deletion(dataset_project):
         workflow.build('training')
 
 
-@pytest.mark.parametrize('change', ['setting', 'input_name', 'corrupt_input', 'selected_rebuild'])
+@pytest.mark.parametrize('change', ['setting', 'geometry', 'input_name', 'corrupt_input', 'selected_rebuild'])
 def test_rebuild_hint_repairs_only_the_affected_chain(dataset_project, monkeypatch, change):
     from openMWR.cli import main
 
@@ -229,10 +229,13 @@ def test_rebuild_hint_repairs_only_the_affected_chain(dataset_project, monkeypat
     targets = ['training', 'r20']
     options = {}
     expected = ['r24', 'training']
-    if change == 'setting':
+    if change in ('setting', 'geometry'):
         path = dataset_project / 'sites/test/datasets/r24.toml'
         values = tomllib.loads(path.read_text())
-        values['radiative_transfer']['absorption_model'] = 'R20'
+        if change == 'setting':
+            values['radiative_transfer']['absorption_model'] = 'R20'
+        else:
+            values['radiative_transfer']['ray_tracing'] = False
         path.write_text(tomli_w.dumps(values))
     elif change == 'input_name':
         path = dataset_project / 'sites/test/datasets/training.toml'
@@ -253,6 +256,8 @@ def test_rebuild_hint_repairs_only_the_affected_chain(dataset_project, monkeypat
     message = str(error.value)
     if change == 'setting':
         assert 'r24: absorption_model changed from "R24" to "R20"' in message
+    elif change == 'geometry':
+        assert 'r24: ray_tracing changed from true to false' in message
     elif change == 'input_name':
         assert 'training: inputs.simulation changed from "r24" to "r20"' in message
     elif change == 'corrupt_input':

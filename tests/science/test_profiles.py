@@ -128,18 +128,29 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
     other_build = scratch / 'other-build.dat'
     other_build.write_text('Input owned by another running build')
     options = dict(site='test', project_dir=dataset_project, freqs=np.array([22.24]),
-                   angles=np.array([90.]), num_of_processes=1, absmdl='R24', RT_model=backend)
+                   angles=np.array([4.2, 90.]), num_of_processes=1, absmdl='R24', RT_model=backend,
+                   ray_tracing=True)
     first = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     second = rt.run_RT(profiles, **options, infrared={'droplet_number_density': 1600e6, 'min_effective_radius': 3.0})
     cloudy_radius = (0.5 / (200e6 * 4 / 3 * np.pi * 1e6)) ** (1 / 3) * 1e6
     np.testing.assert_allclose(first.TB_IR, (2 * 2.5 + cloudy_radius) / 3)
     np.testing.assert_allclose(second.TB_IR, (2 * 3.0 + cloudy_radius / 2) / 3)
     xr.testing.assert_equal(first.TB, second.TB)
-    assert altitudes == [484., 2656., 484., 2656.]
+    flat = rt.run_RT(profiles, **{**options, 'ray_tracing': False},
+                     infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    xr.testing.assert_allclose(first.TB.sel(ang=90.), flat.TB.sel(ang=90.))
+    assert bool((abs(first.TB.sel(ang=4.2)-flat.TB.sel(ang=4.2)) > 1e-4).all())
+    assert first.attrs['ray_tracing'] == 1 and flat.attrs['ray_tracing'] == 0
+    assert altitudes == [484., 2656., 484., 2656., 484., 2656.]
     assert other_build.read_text() == 'Input owned by another running build'
     with pytest.raises(ValueError, match='RT requires finite surface_altitude'):
         rt.run_RT(profiles.drop_vars('surface_altitude'), **options,
                   infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    for altitude in (xr.DataArray([484., 500., 600.], dims='height'),
+                     xr.DataArray(np.full((2, 3), 484.), dims=('time', 'height'))):
+        with pytest.raises(ValueError, match='surface_altitude must be scalar or have only the time dimension'):
+            rt.run_RT(profiles.assign_coords(surface_altitude=altitude), **options,
+                      infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
     invalid = profiles.copy(deep=True)
     invalid['T'][0, -1] = np.nan
     with pytest.raises(ValueError, match='RT requires complete profiles'):
@@ -148,3 +159,22 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
     invalid['lwc'][0, 1] = 1.0  # At 1 cm^-3, this gives about 62 micrometres.
     with pytest.raises(ValueError, match='Calculated droplet effective radii must be below 60.*libRadtran'):
         rt.run_RT(invalid, **options, infrared={'droplet_number_density': 1e6, 'min_effective_radius': 2.5})
+
+    # One unsupported ray must not be saved as a partial atmosphere or silently
+    # dropped by the per-profile multiprocessing wrapper.
+    duct = profiles.copy(deep=True).assign_coords(height=[0., 10., 100.])
+    duct['T'][0] = [285., 285., 285.]
+    duct['p'][0] = [1000., 999.9, 999.]
+    duct['p'][1] = [1000., 300., 100.]
+    low_angles = {**options, 'angles': np.array([0.1, 90.])}
+    valid = rt.run_RT(duct.isel(time=slice(0, 1)).assign_coords(surface_altitude=484.), **low_angles,
+                      infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+    assert np.isfinite(valid.TB).all()
+    for failing in (duct, duct.isel(time=slice(1, 2))):
+        with pytest.raises(ValueError, match='ducting|complete results|No data processed') as error:
+            rt.run_RT(failing, **low_angles,
+                      infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+        message = str(error.value)
+        assert '2020-01-02' in message
+        assert 'profile-base altitude 2656' in message
+        assert 'elevation angles [0.1, 90.0]' in message

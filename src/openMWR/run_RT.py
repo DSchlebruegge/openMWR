@@ -212,7 +212,18 @@ def _run_IR_date(ds_date: xr.Dataset, site: str, project_dir: str, infrared: dic
                                ang=np.array([90.]), surface_altitude=ds_date.surface_altitude.item(), site_config=site_config)
     return xr.DataArray(TB_IR)
 
-def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config):
+def _rt_context(ds, angles):
+    """Describe the input selection when a microwave calculation fails."""
+    altitude = np.asarray(ds.surface_altitude)
+    context = (f'profile-base altitude {altitude.min():g} to {altitude.max():g} m ASL, '
+               f'elevation angles {np.asarray(angles).tolist()} degrees')
+    if 'time' in ds:
+        times = np.asarray(ds.time)
+        context = f'UTC time {times.min()} to {times.max()}, {context}'
+    return context
+
+
+def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, ray_tracing, site_config):
     """
     Run radiative transfer for a single time slice of radiosonde data.
 
@@ -241,7 +252,7 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
         Dataset with added ``TB`` (microwave) and ``TB_IR`` (infrared) fields.
     """
 
-    z_m = ds_date.height.values
+    z_m = ds_date.height.values + ds_date.surface_altitude.item()
     z_km = z_m / 1000
     T_K = ds_date.T.values
     rh_100 = ds_date.rh.values
@@ -262,7 +273,7 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
 
     rh_1 = rh_100 / 100
 
-    rte = TbCloudRTE(z_km, p_hPa, T_K, rh_1, used_freqs, angles)
+    rte = TbCloudRTE(z_km, p_hPa, T_K, rh_1, used_freqs, angles, ray_tracing=ray_tracing)
     rte.satellite = False
 
     if len(i_top) != 0:
@@ -274,7 +285,13 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
 
     #run the RT model and get TBs
     rte.init_absmdl(absmdl)
-    df_rt = rte.execute()
+    # PyRTlib can otherwise warn and return an incomplete ray on ducting.
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings('error', message=r'ray_tracing:.*', category=UserWarning)
+            df_rt = rte.execute()
+    except (ValueError, UserWarning) as exc:
+        raise ValueError(f'PyRTlib failed ({_rt_context(ds_date, angles)}): {exc}') from exc
     
     df_tb = df_rt.pivot(columns="angle", values="tbtotal")
 
@@ -285,7 +302,7 @@ def _run_pyrtlib_date(ds_date, site, project_dir, freqs, angles, freq_shift, abs
 
     return ds_date
 
-def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, site_config=None):
+def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, ray_tracing, site_config=None):
     """
     Run pyrtlib-based radiative transfer for one or many profiles.
 
@@ -308,6 +325,8 @@ def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num
         Optional per-channel frequency offsets.
     absmdl : str
         Absorption model identifier for pyrtlib.
+    ray_tracing : bool
+        Use spherical refractive microwave paths, or plane-parallel geometry if False.
     num_of_processes : int, optional
         Number of worker processes when multiple time steps are present.
 
@@ -319,14 +338,17 @@ def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num
 
     site_config = load_site_config(site, project_dir, config=site_config)
     site_config.require('instrument_generation')
-    if 'time' in ds_RS.dims and ds_RS.sizes['time'] > 1:
-        ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config)
+    if 'time' in ds_RS.dims:
+        try:
+            ds_new = run_pool(ds_RS, num_of_processes, _run_pyrtlib_date, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, ray_tracing, site_config)
+        except ValueError as exc:
+            raise ValueError(f'PyRTlib failed ({_rt_context(ds_RS, angles)}): {exc}') from exc
     else:
-        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, site_config)
+        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, ray_tracing, site_config)
 
     return ds_new
 
-def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, site_config=None):
+def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes: int = 12, *, infrared, ray_tracing, site_config=None):
     """
     Run torchMWRT for microwave TB and libRadtran for infrared TB.
 
@@ -348,6 +370,8 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
         Optional per-channel frequency offsets.
     absmdl : str
         Absorption model identifier for torchMWRT.
+    ray_tracing : bool
+        Use spherical refractive microwave paths, or plane-parallel geometry if False.
     num_of_processes : int, optional
         Number of processes for the infrared parallel pass.
 
@@ -366,7 +390,7 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     
     logger.info(f"Running torchMWRT for {ds_RS.time.size} profiles")
 
-    rtmodel = RTModel(freqs=used_freqs, angles=angles, absmdl=absmdl)
+    rtmodel = RTModel(freqs=used_freqs, angles=angles, absmdl=absmdl, ray_tracing=ray_tracing)
 
     n_times = ds_RS.sizes["time"]
     chunk_size = 200
@@ -378,22 +402,23 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
 
         ds_RS_chunk = ds_RS.isel(time=slice(start, stop))
 
-        atm_profile = AtmProfile(
-            temperature=ds_RS_chunk["T"],
-            height=ds_RS_chunk["height"],
-            pressure=ds_RS_chunk["p"],
-            rh=ds_RS_chunk["rh"] / 100.0,
-            lwc=ds_RS_chunk["lwc"],
-        )
-
-        tb_chunk_ds = rtmodel.execute(atm_profile, return_ds=True)
-        tb_chunk_da = tb_chunk_ds["tbtotal"]
-
-        tb_chunks.append(tb_chunk_da)
+        # AtmProfile uses one absolute height grid per batch. Keep distinct
+        # profile-base altitudes separate without changing the input order.
+        for altitude in np.unique(ds_RS_chunk.surface_altitude):
+            group = ds_RS_chunk
+            if group.surface_altitude.ndim:
+                group = group.sel(time=group.surface_altitude == altitude)
+            atm_profile = AtmProfile(
+                temperature=group['T'], height=group.height + altitude,
+                pressure=group['p'], rh=group['rh'] / 100.0, lwc=group['lwc'])
+            try:
+                tb_chunks.append(rtmodel.execute(atm_profile, return_ds=True)['tbtotal'])
+            except ValueError as exc:
+                raise ValueError(f'torchMWRT failed ({_rt_context(group, angles)}): {exc}') from exc
 
     logger.info("Finished torchMWRT forward calculation")
 
-    tb_da = xr.concat(tb_chunks, dim="time")#.sel(time=ds_RS.time)
+    tb_da = xr.concat(tb_chunks, dim="time").sel(time=ds_RS.time)
 
     ds_new = ds_RS.copy()
     ds_new["TB"] = tb_da
@@ -410,7 +435,7 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     return ds_new
 
 def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angles: np.ndarray, num_of_processes: int = 12,
-           freq_shift: np.ndarray = None, *, absmdl: str, RT_model: str, infrared, site_config=None):
+           freq_shift: np.ndarray = None, *, absmdl: str, RT_model: str, infrared, ray_tracing: bool, site_config=None):
     """
     Run forward radiative transfer with the selected backend.
 
@@ -438,6 +463,8 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         Absorption model name used by the selected RT backend.
     RT_model : {"torchMWRT", "pyrtlib"}
         Radiative transfer backend.
+    ray_tracing : bool
+        Use spherical refractive ray paths, or plane-parallel geometry if False.
     infrared : dict
         Explicit droplet_number_density (m^-3) and min_effective_radius
         (micrometres). Atmospheric T, p, rh and lwc must be finite on every level.
@@ -449,9 +476,14 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
     """
 
     check_infrared(infrared)
+    if not isinstance(ray_tracing, bool):
+        raise ValueError('ray_tracing must be true or false.')
     if 'surface_altitude' not in ds or not bool(np.isfinite(ds.surface_altitude).all()):
         raise ValueError('RT requires finite surface_altitude (profile-base metres above sea level). '
                          'Rebuild prepared profiles or set this coordinate for custom Python inputs.')
+    if ds.surface_altitude.dims not in ((), ('time',)):
+        raise ValueError('surface_altitude must be scalar or have only the time dimension. '
+                         f'Got dimensions {ds.surface_altitude.dims}.')
     for var in ('T', 'p', 'rh', 'lwc'):
         if not bool(np.isfinite(ds[var]).all()):
             raise ValueError(f'RT requires complete profiles: {var} contains missing or non-finite values.')
@@ -460,14 +492,24 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
     logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')
 
     if RT_model == 'pyrtlib':
-        ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, site_config=site_config)
+        ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, ray_tracing=ray_tracing, site_config=site_config)
     elif RT_model == 'torchMWRT':
-        ds_new = run_torchMWRT(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, site_config=site_config)
+        ds_new = run_torchMWRT(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, ray_tracing=ray_tracing, site_config=site_config)
     else:
         raise ValueError(f"Unknown RT model: {RT_model}")
     
     if freq_shift is not None:
         ds_new.attrs['freq_shift'] = freq_shift.tolist()
+
+    if 'time' in ds.dims:
+        missing = np.setdiff1d(ds.time.values, ds_new.time.values)
+        if missing.size:
+            raise ValueError(f'RT failed to produce complete results for {missing.size} profiles '
+                             f'({_rt_context(ds.sel(time=missing), angles)}). See the worker errors above.')
+    for variable in ('TB', 'TB_IR'):
+        if not bool(np.isfinite(ds_new[variable]).all()):
+            raise ValueError(f'RT produced non-finite {variable}; incomplete results cannot be saved.')
+    ds_new.attrs['ray_tracing'] = int(ray_tracing)
 
     logger.info('Finished RT')
 

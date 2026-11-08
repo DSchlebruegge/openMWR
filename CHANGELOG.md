@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+- Require an explicit `ray_tracing` choice in simulation recipes and direct
+  dataset-generation calls. Starter recipes and the torchMWRT example select
+  spherical refractive paths. Rebuild simulations, training splits and paired
+  analyses when enabling this setting. Prepared profiles and raw caches can be
+  reused. Reject ducting and invalid ray paths before calculating absorption,
+  reporting time, altitude and angles instead of returning partial atmospheres.
+  Microwave ray tracing uses the actual profile-base altitude. Custom RT inputs
+  require scalar or per-time profile-base altitude.
 - Anchor libRadtran atmospheres and cloud heights at each profile's actual
   altitude above sea level. Prepared profiles record their base altitude,
   including uncut radiosondes whose base differs from the instrument.
   Existing profiles, simulations, training splits and paired analyses require
-  rebuilding from local raw caches. Microwave RT and saved models are unchanged.
+  rebuilding from local raw caches. Saved models are unchanged.
   Concurrent RT builds keep separate temporary libRadtran inputs.
 - Convert ERA5 mixed-phase relative humidity to water-relative humidity and
   specific cloud liquid water to g/m³ before profile interpolation. Existing

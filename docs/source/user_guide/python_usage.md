@@ -23,8 +23,9 @@ This is the Python equivalent of `openMWR data my_site training --with-dependenc
 the selected outputs. `datasets.files("profiles")` returns the prepared file paths
 for inspection with xarray.
 
-Direct RT calls also require explicit `angles`, `absmdl` and `RT_model`.
-For example, choose `absmdl="R24"` and `RT_model="torchMWRT"`. The named dataset
+Direct RT calls also require explicit `angles`, `absmdl`, `RT_model` and
+`ray_tracing`. For example, choose `absmdl="R24"`, `RT_model="torchMWRT"` and
+`ray_tracing=True` for spherical refractive paths. The named dataset
 workflow reads these choices from the simulation recipe. `torchMWRT.RTModel`
 requires `angles` and `absmdl` too.
 

@@ -228,6 +228,7 @@ backend = "torchMWRT"
 absorption_model = "R24"
 frequencies = "hatpro"
 angles = "hatpro_bls"
+ray_tracing = true
 ```
 
 `torchMWRT` is the PyTorch implementation of the microwave calculation. `pyrtlib`
@@ -235,6 +236,9 @@ is an alternative backend. R24 selects the absorption model. Frequencies (GHz)
 and elevation angles (degrees) refer to grids in `grids.toml`.
 The supplied scan angles include zenith, so this dataset supports both zenith
 and boundary layer scan retrievals. For zenith only, use `angles = [90.0]`.
+`ray_tracing = true` includes Earth curvature and atmospheric refraction in
+the microwave paths. This matters most at low elevation angles. It still
+assumes a horizontally uniform atmosphere and does not model terrain or beamwidth.
 
 The infrared calculation uses [libRadtran](installation.md#install-libradtran).
 Its cloud droplet concentration and minimum effective radius are set in

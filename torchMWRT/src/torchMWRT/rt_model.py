@@ -160,8 +160,10 @@ class RTModel:
         ------
         TypeError
             If ``profile`` is not an ``AtmProfile`` instance.
+        ValueError
+            If ray tracing cannot produce a complete, valid upward path.
         RuntimeError
-            If ray tracing fails or required intermediate arrays are missing.
+            If required intermediate arrays are missing.
 
         Notes
         -----
@@ -206,19 +208,9 @@ class RTModel:
         # compute refractivity
         dryn, wetn, refindx = self._refractivity(p, tk, e)
 
-        # Absorption profiles depend only on the atmospheric state and frequency,
-        # not on the look angle; compute once per frequency and reuse for all angles.
-        awet_base, adry_base = self._clearsky_absorption(p, tk, e, o3n)
-        aliq_base = aice_base = None
-        if has_cloud:
-            aliq_base, aice_base = self._cloudy_absorption(tk, denliq, denice)
-
-        # Compute distance per angle once
+        # Check ray geometry before calculating absorption.
         if self.ray_tracing:
-            ds_all = self._ray_tracing_path(z, refindx, angles, z0)
-            if ds_all is None:
-                raise RuntimeError("ray_tracing_path returned None (invalid refractivity profile).")
-            ds = ds_all
+            ds = self._ray_tracing_path(z, refindx, angles, z0)
         else:
             angle_rad_all = angles * torch.pi / 180.0
             amass_all = 1 / torch.sin(angle_rad_all)
@@ -228,6 +220,13 @@ class RTModel:
             ds_all = (base_ds.unsqueeze(0) * amass_all.unsqueeze(1))  # (nang, nl)
             # Broadcast ds across any leading batch dims (e.g. time).
             ds = ds_all.reshape((1,) * len(batch_shape) + ds_all.shape)  # (..., nang, nl)
+
+        # Absorption profiles depend only on the atmospheric state and frequency,
+        # not on the look angle; compute once per frequency and reuse for all angles.
+        awet_base, adry_base = self._clearsky_absorption(p, tk, e, o3n)
+        aliq_base = aice_base = None
+        if has_cloud:
+            aliq_base, aice_base = self._cloudy_absorption(tk, denliq, denice)
 
         # These intermediates are used only in optional outputs.
         swet = sdry = sliq = sice = None
@@ -457,7 +456,7 @@ class RTModel:
         refindx: torch.Tensor,
         angle: Union[float, torch.Tensor],
         z0: float,
-    ) -> Union[torch.Tensor, None]:
+    ) -> torch.Tensor:
         """Compute slant-path layer distances with refractive ray tracing.
 
         Parameters
@@ -473,10 +472,15 @@ class RTModel:
 
         Returns
         -------
-        torch.Tensor or None
+        torch.Tensor
             Slant-path layer lengths in meters. With multiple angles, shape is
             ``(..., nang, nl)``. With a scalar angle, shape is ``(..., nl)``.
-            Returns ``None`` if refractive index is invalid.
+
+        Raises
+        ------
+        ValueError
+            If refractivity is invalid, ducting prevents a complete upward
+            path, or the calculated layer distances are invalid.
 
         Notes
         -----
@@ -515,9 +519,8 @@ class RTModel:
         ds = torch.zeros(batch_shape + (nang, nl), dtype=z_t.dtype, device=z_t.device)
 
         # Check for refractive index values that will blow up calculations.
-        if torch.any(ref_t < 1):
-            warnings.warn('ray_tracing: Negative rafractive index')
-            return None
+        if not torch.isfinite(ref_t).all() or torch.any(ref_t < 1):
+            raise ValueError('Ray tracing requires finite refractive indices greater than or equal to one.')
 
         # If angle is close to 90 degrees, make ds a height difference profile.
         mask_90 = ((angle_t >= 89) & (angle_t <= 91)) | ((angle_t >= -91) & (angle_t <= -89))
@@ -575,8 +578,10 @@ class RTModel:
                 argdth = z_t[i] / rs - ((r0 - ri) * costh0_b / ri)
                 argth = 0.5 * (a0_b + argdth) / r
                 if torch.any(argth <= 0):
-                    warnings.warn('ray_tracing: Ducting encountered (argth <= 0)')
-                    break
+                    angle_index = int(torch.nonzero(argth <= 0)[0, -1])
+                    elevation = angle_t[mask_non90][angle_index].item()
+                    raise ValueError(f'Ray tracing encountered ducting at level {i}, elevation {elevation:g} degrees; '
+                                     'a complete upward path cannot be calculated.')
                 sint = torch.sqrt(r * argth)
                 theta = 2.0 * torch.asin(sint)
                 cond = theta - 2.0 * theta0_b <= 0.0
@@ -607,6 +612,8 @@ class RTModel:
 
             ds[..., mask_non90, :] = ds_non
 
+        if not torch.isfinite(ds).all() or torch.any(ds[..., 1:] <= 0):
+            raise ValueError('Ray tracing produced invalid layer distances; a complete upward path is required.')
         if scalar_out:
             return ds[..., 0, :] * 1000.0
         return ds * 1000.0
