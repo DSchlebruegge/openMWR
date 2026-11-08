@@ -13,6 +13,7 @@ import xarray as xr
 from openMWR.datasets import DatasetWorkflow
 from openMWR.era5 import ERA5Processor
 from openMWR.paths import dataset_file, era5_cache_file, radiosonde_year_file
+from openMWR.radiosonde import create_radiosonde_dataset_with_RT
 
 
 from tests.fixtures.datasets import dataset_project, recipe, install_raw, synthetic_simulation, saved_simulation, rebuild_hint
@@ -54,6 +55,7 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     np.testing.assert_allclose(old_profiles.rh.sel(height=0), 8.0)
     old_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     assert np.isfinite(old_rt.TB).all()
+    assert old_rt.attrs['infrared_atmosphere'] == 'geometric_height'
     assert not np.array_equal(old_rt.TB.values, xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).TB.values)
 
     workflow.build('r24', with_dependencies=True)
@@ -67,6 +69,30 @@ def test_real_preparation_rt_shared_dependencies_and_incremental_updates(dataset
     updated_rt = xr.load_dataset(dataset_file(dataset_project, 'test', 'r24', '03715'))
     xr.testing.assert_identical(updated_rt.sel(time=times), old_rt)
     assert xr.load_dataset(dataset_file(dataset_project, 'test', 'r20', '03715')).time.size == 3
+
+    # Reject pressure-reconstructed IR histories before updating any data.
+    simulation_path = dataset_file(dataset_project, 'test', 'r24', '03715')
+    state_path = simulation_path.parent / 'state.json'
+    original_state = state_path.read_bytes()
+    state = json.loads(original_state)
+    del state['definition']['settings']['infrared_atmosphere']
+    state_path.write_text(json.dumps(state))
+    previous = simulation_path.read_bytes()
+    with pytest.raises(ValueError, match='infrared_atmosphere'):
+        workflow.build('r24')
+    assert simulation_path.read_bytes() == previous
+    state_path.write_bytes(original_state)
+    legacy = updated_rt.copy()
+    del legacy.attrs['infrared_atmosphere']
+    legacy.to_netcdf(simulation_path)
+    previous = simulation_path.read_bytes()
+    with pytest.raises(ValueError, match='infrared atmosphere geometry requires a rebuild'):
+        create_radiosonde_dataset_with_RT('03715', 'test', dataset_project,
+            freqs=np.array([22.24]), angles=np.array([90.]), profiles_dataset='profiles', dataset='r24',
+            absmdl='R24', RT_model='torchMWRT', infrared=workflow.settings('r24')['infrared'],
+            ray_tracing=True, update_only=True)
+    assert simulation_path.read_bytes() == previous
+    assert len(calls) == 7
 
     # A processing record predating the explicit altitude cannot be reused.
     state_path = profile_path.parent / 'state.json'
@@ -439,6 +465,20 @@ def test_era5_profiles_are_reusable_and_incremental(dataset_project):
     DatasetWorkflow(dataset_project, 'test').build('era5_profiles', rebuild=True)
     assert xr.load_dataset(output).time.size == 3
     assert raw_file.read_bytes() == raw_bytes
+
+    # Direct Python RT must also refuse histories with unknown IR geometry.
+    previous_rt = xr.load_dataset(output)
+    previous_rt.attrs['ray_tracing'] = 1
+    simulation_file = dataset_file(dataset_project, 'test', 'legacy_simulation', 'era5')
+    simulation_file.parent.mkdir(parents=True, exist_ok=True)
+    previous_rt.to_netcdf(simulation_file)
+    before = simulation_file.read_bytes()
+    with pytest.raises(ValueError, match='infrared atmosphere geometry requires a rebuild'):
+        ERA5Processor('test', dataset_project, profiles_dataset='era5_profiles',
+                      simulation_dataset='legacy_simulation').create_forward_calc_dataset(
+            np.array([22.24]), np.array([90.]), absmdl='R24', RT_model='torchMWRT',
+            infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5}, ray_tracing=True)
+    assert simulation_file.read_bytes() == before
 
     # Older preparation definitions cannot be extended or consumed silently.
     state_file = output.parent / 'state.json'

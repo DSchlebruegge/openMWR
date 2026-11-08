@@ -136,9 +136,11 @@ libRadtran's Hu-Stamnes cloud optics.
 Prepared profiles record `surface_altitude` in metres above sea level. Uncut
 radiosondes use the launch-station altitude. Profiles cut off at instrument
 height and ERA5 profiles use `mwr_height`. If a radiosonde station is higher
-than the instrument, its altitude remains the profile base. Infrared RT uses
-this altitude for the atmosphere and converts cloud heights to sea-level
-coordinates. Microwave ray tracing also uses the absolute profile altitude.
+than the instrument, its altitude remains the profile base. Microwave and
+infrared RT use the supplied geometric heights above this base. Infrared
+atmosphere and cloud files use sea-level coordinates. Background trace gases
+follow the U.S. standard atmosphere. libRadtran converts water-relative RH to
+water-vapour density. Microwave ray tracing also uses the absolute profile altitude.
 Custom Python profiles passed to `run_RT` must also provide
 `surface_altitude` as a scalar or per-time coordinate.
 

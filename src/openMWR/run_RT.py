@@ -70,13 +70,15 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     -----
     Temporary libRadtran input files are written to ``data/libRadtran`` and
     removed after execution. The wavelength band is selected based on the
-    site's Hatpro generation.
+    site's Hatpro generation. Atmosphere and cloud files use the supplied
+    geometric heights above sea level. Background trace gases follow the
+    U.S. standard atmosphere, and libRadtran converts water-relative RH.
     """
     gen = load_site_config(site, project_dir, config=site_config).require('instrument_generation')
     _, installation_data_dir = get_libradtran_paths()
-    atmosphere_file = installation_data_dir / "atmmod" / "afglus.dat"
-    if not atmosphere_file.is_file():
-        raise FileNotFoundError(f"libRadtran standard atmosphere not found at: {atmosphere_file}")
+    background_file = installation_data_dir / "atmmod" / "afglus.dat"
+    if not background_file.is_file():
+        raise FileNotFoundError(f"libRadtran standard atmosphere not found at: {background_file}")
 
     libRadtran_data_dir = Path(libRadtran_dir(project_dir)).resolve()
     libRadtran_data_dir.mkdir(parents=True, exist_ok=True)
@@ -100,14 +102,25 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
         raise ValueError('Infrared RT requires positive pressure strictly decreasing with height. '
                          'Reject inconsistent profiles during preparation instead of sorting by pressure.')
 
-    # libRadtran anchors the highest-pressure level at altitude, then derives
-    # geometric heights from p/T. Its cloud-file heights are above sea level.
     altitude_km = surface_altitude / 1000
     bottom_altitude_km = altitude_km + df.iloc[0]['z_km']
-    df = df.sort_values(by='z_km', ascending=False)
-    radio = df[['p_hPa', 'T_K', 'rh_100']]
-    df = df[df['z_km'] < 15]
-    df = df.assign(z_km=df['z_km'] + altitude_km)
+    cloud = df.loc[df['z_km'] < 15, ['z_km', 'lwc_gpm3', 'effective_droplet_radius_mum']].copy()
+    df['z_km'] += altitude_km
+    cloud['z_km'] += altitude_km
+
+    z = df['z_km'].to_numpy()
+    background = np.loadtxt(background_file)[::-1]  # AFGL columns are top-down.
+    if z[0] < background[0, 0] or z[-1] > background[-1, 0]:
+        raise ValueError('Infrared profile heights must lie within the libRadtran standard atmosphere.')
+    air = df['p_hPa'].to_numpy() * 1e-4 / (1.380649e-23 * df['T_K'].to_numpy())  # cm^-3
+    background_air = np.exp(np.interp(z, background[:, 0], np.log(background[:, 3])))
+    # Match libRadtran 2.0.6 read_radiosonde_file and default LINMIX interpolation.
+    # O2/CO2 use the new air density. O3/NO2 retain the background air density.
+    gases = [np.interp(z, background[:, 0], background[:, column] / background[:, 3])
+             * (air if column in (5, 7) else background_air) for column in (4, 5, 7, 8)]
+    # atmosphere_file columns: z, p, T, air, O3, O2, H2O, CO2, NO2.
+    atmosphere = np.column_stack([z, df['p_hPa'], df['T_K'], air, gases[0], gases[1],
+                                  np.zeros_like(z), gases[2], gases[3]])
 
     umu = np.cos(np.radians(90 + ang))
 
@@ -118,10 +131,14 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
     
     # Each invocation owns its scratch files, including concurrent site builds.
     with tempfile.TemporaryDirectory(dir=libRadtran_data_dir) as directory:
-        radio_file = Path(directory) / 'radiosonde.dat'
+        atmosphere_file = Path(directory) / 'atmosphere.dat'
+        humidity_file = Path(directory) / 'humidity.dat'
         wc_file = Path(directory) / 'cloud.dat'
-        radio.to_csv(radio_file, index=False, sep=' ', header=False)
-        df.to_csv(wc_file, index=False, columns=['z_km', 'lwc_gpm3', 'effective_droplet_radius_mum'], sep=' ', header=False)
+        # H2O is supplied separately in RH units to retain libRadtran's native
+        # saturation formula. CH4/N2O/CO/N2 retain its standard gas files.
+        np.savetxt(atmosphere_file, atmosphere[::-1], fmt='%.12g')
+        np.savetxt(humidity_file, df[['z_km', 'rh_100']].to_numpy()[::-1], fmt='%.12g')
+        cloud.iloc[::-1].to_csv(wc_file, index=False, sep=' ', header=False)
         df_rad, stderr = libRadtran(
             atmosphere_file = str(atmosphere_file),
             data_files_path = str(installation_data_dir),
@@ -129,8 +146,8 @@ def calculate_IR_band_TB(site, project_dir, z_km, T_K, rh_100, p_hPa, lwc_gpm3, 
             mol_abs_param =  'reptran medium',
             wavelength = wavelengths,
             output_process = 'integrate',
-            radiosonde = f'{str(radio_file)} h2o RH',
-            radiosonde_levels_only = True,
+            mol_file = f'H2O {humidity_file} RH',
+            z_interpolate = 'linmix',
             wc_file = f'1D {str(wc_file)}',
             altitude = bottom_altitude_km,
             zout = 0,
@@ -524,6 +541,7 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         if not bool(np.isfinite(ds_new[variable]).all()):
             raise ValueError(f'RT produced non-finite {variable}; incomplete results cannot be saved.')
     ds_new.attrs['ray_tracing'] = int(ray_tracing)
+    ds_new.attrs['infrared_atmosphere'] = 'geometric_height'
 
     logger.info('Finished RT')
 

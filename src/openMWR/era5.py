@@ -258,6 +258,9 @@ class ERA5Processor:
             if old.attrs.get('ray_tracing') != int(ray_tracing):
                 raise ValueError(f'{self.forward_calc_file}: ray-tracing settings differ or are missing. Rebuild '
                                  'this simulation dataset or use update_only=False for direct Python RT.')
+            if old.attrs.get('infrared_atmosphere') != 'geometric_height':
+                raise ValueError(f'{self.forward_calc_file}: infrared atmosphere geometry requires a rebuild. '
+                                 'Rebuild this simulation and its dependents, or use update_only=False.')
             if old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(old.p).all()):
                 raise ValueError(f'{self.forward_calc_file}: column integration or pressure quality requires a rebuild. '
                                  'Rebuild this simulation and its dependents, or use update_only=False.')

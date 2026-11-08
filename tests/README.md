@@ -13,9 +13,10 @@ needs neither credentials nor a libRadtran installation. It exercises real
 NetCDF files, microwave RT, training, SQLite studies, checkpoints and reports.
 Numerical workflows use CPU. Device-selection tests mock CUDA/MPS availability.
 External acquisition and the libRadtran executable are replaced at their I/O
-boundaries. The libRadtran tests check discovery, profile-base altitude,
-absolute cloud coordinates, scratch-file ownership and output parsing;
-they do not establish infrared numerical accuracy.
+boundaries. The libRadtran tests check discovery, supplied atmosphere/cloud
+heights, background gas interpolation, native-RH input, scratch-file ownership
+and output parsing. Dataset checks reject old IR geometry before updates.
+These tests do not establish infrared numerical accuracy.
 
 CI uses Python 3.11, 3.14 and 3.15. Each job builds a source archive and a wheel
 from that archive for both distributions and checks their metadata. It installs

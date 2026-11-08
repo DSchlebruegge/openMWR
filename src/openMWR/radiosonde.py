@@ -522,6 +522,9 @@ def create_radiosonde_dataset_with_RT(station_id: str, site: str, project_dir: s
         if ds_old.attrs.get('ray_tracing') != int(ray_tracing):
             raise ValueError(f'{file}: ray-tracing settings differ or are missing. Rebuild this simulation '
                              'dataset or use update_only=False for direct Python RT.')
+        if ds_old.attrs.get('infrared_atmosphere') != 'geometric_height':
+            raise ValueError(f'{file}: infrared atmosphere geometry requires a rebuild. '
+                             'Rebuild this simulation and its dependents, or use update_only=False.')
         if ds_old.attrs.get('column_integration') != 'trapezoidal' or not bool(valid_profile_pressure(ds_old.p).all()):
             raise ValueError(f'{file}: column integration or pressure quality requires a rebuild. '
                              'Rebuild this simulation and its dependents, or use update_only=False.')

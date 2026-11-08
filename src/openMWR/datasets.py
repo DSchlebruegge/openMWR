@@ -391,6 +391,7 @@ class DatasetWorkflow:
                             frequencies=rt['frequencies'], angles=rt['angles'],
                             ray_tracing=rt['ray_tracing'],
                             frequency_shift=rt.get('frequency_shift'), infrared=rt['infrared'], gen=self.site_settings.get('instrument_generation'))
+            settings['infrared_atmosphere'] = 'geometric_height'
         elif kind == 'split':
             settings.update(values['split'])
         elif kind == 'analysis':

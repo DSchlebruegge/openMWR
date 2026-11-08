@@ -25,17 +25,22 @@ def installation():
         executable.parent.mkdir(parents=True)
         data = root / data_layout
         (data / "atmmod").mkdir(parents=True)
-        (data / "atmmod" / "afglus.dat").write_text("test atmosphere\n")
+        # Small top-down atmosphere with independently calculable mixing ratios.
+        (data / "atmmod" / "afglus.dat").write_text(
+            '# z p T air O3 O2 H2O CO2 NO2\n'
+            '20 50 220 1e18 5e10 2.2e17 0 4e14 5e8\n'
+            '10 250 250 4e18 1.2e11 8.4e17 0 1.4e15 1.2e9\n'
+            '0 1000 290 1.6e19 1.6e11 3.2e18 0 4.8e15 1.6e9\n')
         recorded_input = root / "input.txt"
         executable.write_text(
             f"#!{sys.executable}\n"
             "import sys\nfrom pathlib import Path\n"
             "text = sys.stdin.read()\n"
             f"Path({str(recorded_input)!r}).write_text(text)\n"
-            "for key, name in [('wc_file', 'cloud.txt'), ('radiosonde', 'radiosonde.txt')]:\n"
+            "for key, name in [('wc_file', 'cloud.txt'), ('atmosphere_file', 'atmosphere.txt'), ('mol_file', 'humidity.txt')]:\n"
             "    line = next((line for line in text.splitlines() if line.startswith(key + ' ')), None)\n"
             "    if line:\n"
-            "        path = line.split()[2 if key == 'wc_file' else 1]\n"
+            "        path = line.split()[1 if key == 'atmosphere_file' else 2]\n"
             f"        (Path({str(root)!r}) / name).write_text(Path(path).read_text())\n"
             "umu = next((line.split()[1:] for line in text.splitlines() "
             "if line.startswith('umu ')), [0])\n"
@@ -143,7 +148,7 @@ def test_relative_data_path_keeps_uvspec_working_directory(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("gen,band,altitude,angles", [("G4", "9200 10600", 2656., [90.0]),
                                                     ("G5", "9600 11500", 484., [30.0, 90.0])])
-def test_ir_uses_profile_altitude_and_discovered_atmosphere(tmp_path, monkeypatch, installation, gen, band, altitude, angles):
+def test_ir_uses_supplied_heights_and_preserves_background_gases(tmp_path, monkeypatch, installation, gen, band, altitude, angles):
     executable, data, recorded = installation(tmp_path / "install", "share/libRadtran/data")
     monkeypatch.setenv("PATH", str(executable.parent))
     project_dir = tmp_path / "retrieval_project"
@@ -156,7 +161,9 @@ def test_ir_uses_profile_altitude_and_discovered_atmosphere(tmp_path, monkeypatc
     )
     np.testing.assert_array_equal(result, 199.0 if len(angles) == 1 else [199.0, 199.0])
     text = recorded.read_text()
-    assert f"atmosphere_file {data / 'atmmod/afglus.dat'}\n" in text
+    assert 'radiosonde' not in text
+    assert 'z_interpolate linmix\n' in text
+    assert "mol_file H2O " in text and ' RH\n' in text
     assert f"data_files_path {data}\n" in text
     assert f"wavelength {band}\n" in text
     assert f"altitude {altitude / 1000 + 0.5}\n" in text
@@ -164,13 +171,34 @@ def test_ir_uses_profile_altitude_and_discovered_atmosphere(tmp_path, monkeypatc
     cloud = np.loadtxt(recorded.parent / 'cloud.txt')
     np.testing.assert_allclose(cloud[:, 0], np.array([14.9, 1.5, 0.5]) + altitude / 1000)
     np.testing.assert_allclose(cloud[:, 1:], [[0., 10.], [0.1, 10.], [0., 10.]])
-    radio = np.loadtxt(recorded.parent / 'radiosonde.txt')
-    np.testing.assert_allclose(radio, [[190., 229., 50.], [200., 230., 50.], [800., 280., 50.], [900., 290., 50.]])
+    atmosphere = np.loadtxt(recorded.parent / 'atmosphere.txt')
+    heights = np.array([15., 14.9, 1.5, .5]) + altitude / 1000
+    np.testing.assert_allclose(atmosphere[:, :3], np.column_stack(
+        [heights, [190., 200., 800., 900.], [229., 230., 280., 290.]]))
+    # The atmosphere retains all levels, including those above the cloud cutoff.
+    air = np.array([190., 200., 800., 900.]) * 1e-4 / (1.380649e-23 * np.array([229., 230., 280., 290.]))
+    np.testing.assert_allclose(atmosphere[:, 3], air)
+    np.testing.assert_allclose(atmosphere[:, 5], (.2 + heights * .001) * air)  # O2
+    np.testing.assert_allclose(atmosphere[:, 7], (.0003 + heights * .000005) * air)  # CO2
+    background_air = 1.6e19 * 4 ** (-heights / 10)
+    np.testing.assert_allclose(atmosphere[:, 4], (1e-8 + heights * 2e-9) * background_air)  # O3
+    np.testing.assert_allclose(atmosphere[:, 8], (1e-10 + heights * 2e-11) * background_air)  # NO2
+    np.testing.assert_array_equal(atmosphere[:, 6], 0.)  # Native RH conversion supplies H2O.
+    humidity = np.loadtxt(recorded.parent / 'humidity.txt')
+    np.testing.assert_allclose(humidity, np.column_stack([heights, [50.] * 4]))
+    # The fake solver records inputs and never invokes native libRadtran.
     assert not list((project_dir / "data/libRadtran").iterdir())
     with pytest.raises(ValueError, match='positive pressure strictly decreasing with height'):
         calculate_IR_band_TB(
             'test', project_dir, z_km=[0., .01, 1.], T_K=[259., 260., 253.], rh_100=[80.] * 3,
             p_hPa=[717., 718., 700.], lwc_gpm3=[0.] * 3, effective_droplet_radius_mum=[2.5] * 3,
+            ang=np.array(angles), surface_altitude=altitude,
+        )
+    assert recorded.read_text() == text
+    with pytest.raises(ValueError, match='within the libRadtran standard atmosphere'):
+        calculate_IR_band_TB(
+            'test', project_dir, z_km=[0., 25.], T_K=[290., 220.], rh_100=[50.] * 2,
+            p_hPa=[900., 50.], lwc_gpm3=[0.] * 2, effective_droplet_radius_mum=[2.5] * 2,
             ang=np.array(angles), surface_altitude=altitude,
         )
     assert recorded.read_text() == text
