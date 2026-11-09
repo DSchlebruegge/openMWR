@@ -1,40 +1,37 @@
 # Release notes
 
-## Unreleased
+## 0.2.2
 
-- Preserve missing values when normalizing constant model features, so invalid
-  observations and incomplete training samples cannot become valid zeros.
-- Apply the nonnegative cloud-water bound in physical units for z-normalized
-  LWC/LWP outputs instead of imposing the training mean as their lower bound.
-- Support single-profile RT inputs with scalar time or no time coordinate in
-  both backends, preserving input datasets and their coordinate layout.
-- Require torchMWRT 0.2.2 or newer for the corrected ray-validity checks.
-- Apply normalization once per variable, including spectral-consistency models.
-  Align saved statistics by feature coordinates and select model features before
-  filtering training samples. Migrate historical spectral checkpoints to preserve
-  predictions with linear normalization. Spectral optimization histories require
-  a fresh start. Historical spectral log normalization requires retraining.
-- Include clouds reaching the highest profile level in the PyRTlib backend.
-- Match weather timestamps without a dense distance matrix. Include samples
-  exactly at the maximum time difference and retain the earlier source on ties.
+Rebuild affected prepared profiles and HATPRO datasets, then their dependent
+simulations, training splits and paired analyses. Raw source caches can be reused.
+
+- Convert ERA5 mixed-phase humidity to water-relative humidity and specific
+  cloud liquid water to g/m³. Use trapezoidal IWV/LWP integration and reject
+  nonphysical pressure profiles before RT.
+- Use each profile's altitude above sea level for microwave and infrared RT,
+  including libRadtran cloud heights. Custom RT inputs require a
+  `surface_altitude` coordinate. Isolate concurrent libRadtran builds.
 - Require an explicit `ray_tracing` choice in simulation recipes and direct
-  dataset-generation calls. Starter recipes and the torchMWRT example select
-  spherical refractive paths. Rebuild simulations, training splits and paired
-  analyses when enabling this setting. Prepared profiles and raw caches can be
-  reused. Reject ducting and invalid ray paths before calculating absorption,
-  reporting time, altitude and angles instead of returning partial atmospheres.
-  Microwave ray tracing uses the actual profile-base altitude. Custom RT inputs
-  require scalar or per-time profile-base altitude.
-- Anchor libRadtran atmospheres and cloud heights at each profile's actual
-  altitude above sea level. Prepared profiles record their base altitude,
-  including uncut radiosondes whose base differs from the instrument.
-  Existing profiles, simulations, training splits and paired analyses require
-  rebuilding from local raw caches. Saved models are unchanged.
-  Concurrent RT builds keep separate temporary libRadtran inputs.
-- Convert ERA5 mixed-phase relative humidity to water-relative humidity and
-  specific cloud liquid water to g/m³ before profile interpolation. Existing
-  ERA5 profiles, simulations and paired analyses require rebuilding. Raw
-  downloads can be reused.
+  dataset-generation calls. Examples select spherical refractive paths.
+  Reject ducting and invalid ray paths instead of returning partial results.
+- Fix repeated normalization in spectral-consistency models. Run
+  `openMWR migrate` to preserve existing predictions with linear normalization.
+  Historical spectral log normalization requires retraining, and spectral
+  optimization studies require a fresh start.
+- Correct input-noise scaling for max-normalized features. Affected optimization
+  studies require a fresh start.
+- Align normalization statistics by feature coordinates and select model
+  features before filtering incomplete samples. Preserve missing values when
+  normalizing constant features.
+- Correct nonnegative bounds for z-normalized cloud-water outputs (LWC/LWP).
+- Validate and reorder measured HATPRO frequency channels. Average zenith
+  microwave and infrared measurements independently before aligning timestamps.
+  Restrict zenith observations to measurements pointing vertically upward.
+- Include clouds reaching the highest profile level in the PyRTlib backend.
+- Reduce memory use when matching weather timestamps and retain samples exactly
+  at the matching-time limit.
+- Support single-profile RT inputs with scalar or absent time coordinates in
+  both backends, without modifying the input dataset.
 
 ## 0.2.1
 
