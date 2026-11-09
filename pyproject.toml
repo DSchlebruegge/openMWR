@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openMWR"
-version = "0.2.1"
+version = "0.2.2"
 description = "Training and applying microwave radiometer retrievals"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
-    "torchMWRT>=0.2.1",
+    "torchMWRT>=0.2.2",
     "xarray",
     "torch",
     "matplotlib",

@@ -96,6 +96,29 @@ def test_in_memory_training_needs_no_recipes_and_preserves_supplied_data(tmp_pat
     assert not list(tmp_path.rglob('*.toml'))
 
 
+def test_missing_constant_input_is_excluded_from_fitting_and_prediction(tmp_path):
+    model = Model('constant', None, [22.24], is_MLR=True,
+                  additional_input_vars=['surface_T'], output_vars=['lwp'],
+                  norm_functions={'TB': 'z_norm', 'surface_T': 'z_norm', 'lwp': 'z_norm'})
+    data = xr.Dataset({'TB': (('time', 'frq'), [[100.], [np.nan], [100.], [100.]]),
+                       'surface_T': ('time', [280., 281., 282., 283.]),
+                       'lwp': ('time', [10., 1000., 14., 16.])},
+                      coords={'time': np.arange('2024-01-01', '2024-01-05', dtype='datetime64[D]'),
+                              'frq': [22.24]})
+    validation = data.isel(time=[0]).assign(surface_T=('time', [284.]), lwp=('time', [18.]))
+    original = data.copy(deep=True)
+    workflow = TrainingWorkflow(model, 'test', 'cpu', tmp_path).set_training_data(data, validation)
+    workflow.add_standard_training_hyper_params()
+    workflow.add_input_noise_params(TB=0., surface_T=0.)
+    restored = workflow.train()
+    prediction = run_model(restored, data, 'cpu', include_input_vars=False)
+    np.testing.assert_array_equal(prediction.time, data.time.isel(time=[0, 2, 3]))
+    np.testing.assert_allclose(prediction.lwp, [10., 14., 16.], atol=1e-3)
+    held_out = run_model(restored, validation, 'cpu', include_input_vars=False)
+    np.testing.assert_allclose(held_out.lwp, [18.], atol=1e-3)
+    xr.testing.assert_identical(data, original)
+
+
 @pytest.mark.parametrize(('kind', 'outputs'), [
     ('nn', ['T']), ('nn', ['rh', 'T']), ('nn', ['lwc']),
     ('mlr', ['lwp']), ('mlr', ['iwv', 'T']),

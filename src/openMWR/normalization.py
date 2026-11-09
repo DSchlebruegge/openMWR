@@ -55,24 +55,28 @@ def _transform(ds, model, *, inverse):
             scale = _linear_scale(statistics, var, method)
             offset = statistics[var].sel(stat='mean', drop=True) if method == 'z_norm' else 0
             result[var] = (result[var] * scale + offset if inverse
-                           else xr.where(scale != 0, (result[var] - offset) / scale, 0))
+                           else xr.where(scale != 0, (result[var] - offset) / scale, 0).where(np.isfinite(result[var])))
     return result
 
 
 def normalize(ds: xr.Dataset, model) -> xr.Dataset:
     """Normalize selected model variables without changing the source dataset.
 
-    Constant linear channels become zero. Zenith TB selects the 90-degree
+    Finite constant linear channels become zero. Missing/non-finite samples
+    remain missing. Zenith TB selects the 90-degree
     statistics when the saved normalization has an angle dimension.
     """
     return _transform(ds, model, inverse=False)
 
 
 def denormalize(ds: xr.Dataset, model) -> xr.Dataset:
-    """Restore physical units and clip retrieved relative humidity to 1–100%."""
+    """Restore physical units, RH bounds and nonnegative retrieved cloud water."""
     result = _transform(ds, model, inverse=True)
     if 'rh' in result:
         result['rh'] = result.rh.clip(min=1, max=100)
+    for var in ('lwc', 'lwp'):
+        if var in model.output_vars and var in result:
+            result[var] = result[var].clip(min=0)
     return result
 
 

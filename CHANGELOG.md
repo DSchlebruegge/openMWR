@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserve missing values when normalizing constant model features, so invalid
+  observations and incomplete training samples cannot become valid zeros.
+- Apply the nonnegative cloud-water bound in physical units for z-normalized
+  LWC/LWP outputs instead of imposing the training mean as their lower bound.
+- Support single-profile RT inputs with scalar time or no time coordinate in
+  both backends, preserving input datasets and their coordinate layout.
+- Require torchMWRT 0.2.2 or newer for the corrected ray-validity checks.
 - Apply normalization once per variable, including spectral-consistency models.
   Align saved statistics by feature coordinates and select model features before
   filtering training samples. Migrate historical spectral checkpoints to preserve

@@ -369,7 +369,7 @@ def run_pyrtlib(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, num
         except ValueError as exc:
             raise ValueError(f'PyRTlib failed ({_rt_context(ds_RS, angles)}): {exc}') from exc
     else:
-        ds_new = _run_pyrtlib_date(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, infrared, ray_tracing, site_config)
+        ds_new = _run_pyrtlib_date(ds_RS.copy(), site, project_dir, freqs, angles, freq_shift, absmdl, infrared, ray_tracing, site_config)
 
     return ds_new
 
@@ -382,7 +382,8 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     ds_RS : xarray.Dataset
         Input dataset for torchMWRT. Required data variables are ``T`` (K),
         ``rh`` (%), ``p`` (hPa), and ``lwc`` (g m^-3), defined on ``height``.
-        A ``height`` coordinate (m) and a ``time`` dimension are required.
+        A ``height`` coordinate (m) is required. Multiple profiles use a
+        ``time`` dimension. A single profile can omit time or retain scalar time.
     site : str
         Site name used for infrared calculations.
     project_dir : str
@@ -413,11 +414,12 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
     if np.any(ds_RS["rh"].values < 0):
         raise ValueError("Relative humidity contains negative values.")
     
-    logger.info(f"Running torchMWRT for {ds_RS.time.size} profiles")
+    has_time = 'time' in ds_RS.dims
+    n_times = ds_RS.sizes.get('time', 1)
+    logger.info(f"Running torchMWRT for {n_times} profiles")
 
     rtmodel = RTModel(freqs=used_freqs, angles=angles, absmdl=absmdl, ray_tracing=ray_tracing)
 
-    n_times = ds_RS.sizes["time"]
     chunk_size = 200
     tb_chunks = []
 
@@ -425,7 +427,7 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
         stop = min(start + chunk_size, n_times)
         logger.info(f"Running torchMWRT chunk {start}:{stop} of {n_times}")
 
-        ds_RS_chunk = ds_RS.isel(time=slice(start, stop))
+        ds_RS_chunk = ds_RS.isel(time=slice(start, stop)) if has_time else ds_RS
 
         # AtmProfile uses one absolute height grid per batch. Keep distinct
         # profile-base altitudes separate without changing the input order.
@@ -443,15 +445,16 @@ def run_torchMWRT(ds_RS, site, project_dir, freqs, angles, freq_shift, absmdl, n
 
     logger.info("Finished torchMWRT forward calculation")
 
-    tb_da = xr.concat(tb_chunks, dim="time").sel(time=ds_RS.time)
+    tb_da = xr.concat(tb_chunks, dim="time").sel(time=ds_RS.time) if has_time else tb_chunks[0]
 
     ds_new = ds_RS.copy()
     ds_new["TB"] = tb_da
 
     n_proc = max(1, min(int(num_of_processes), n_times))
 
-    logger.info(f"Running IR calculation in parallel with {n_proc} processes")
-    TB_IR = run_pool(ds_RS, n_proc, _run_IR_date, site, project_dir, infrared, site_config)
+    logger.info(f"Running IR calculation with {n_proc} processes")
+    TB_IR = (run_pool(ds_RS, n_proc, _run_IR_date, site, project_dir, infrared, site_config) if has_time
+             else _run_IR_date(ds_RS, site, project_dir, infrared, site_config))
 
     logger.info("Finished IR calculation")
     
@@ -472,6 +475,7 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
         A ``height`` coordinate (m) is required. For multi-profile execution,
         a ``time`` dimension is expected. ``surface_altitude`` gives the profile
         base in metres above sea level, as a scalar or per-time coordinate.
+        Single profiles can omit time or retain a scalar time coordinate.
     site : str
         Site name used for infrared calculations.
     project_dir : str
@@ -522,7 +526,7 @@ def run_RT(ds: xr.Dataset, site: str, project_dir: str, freqs: np.ndarray, angle
                          f'({_rt_context(invalid, angles)}). Reject inconsistent profiles during preparation.')
     # Radius increases with LWC; check the maximum before starting RT or workers.
     _effective_droplet_radius_mum(ds.lwc.max().item(), **infrared)
-    logger.info(f'Starting RT for {ds.time.size} profiles with model {RT_model}')
+    logger.info(f'Starting RT for {ds.sizes.get("time", 1)} profiles with model {RT_model}')
 
     if RT_model == 'pyrtlib':
         ds_new = run_pyrtlib(ds, site, project_dir, freqs, angles, freq_shift, absmdl, num_of_processes=num_of_processes, infrared=infrared, ray_tracing=ray_tracing, site_config=site_config)

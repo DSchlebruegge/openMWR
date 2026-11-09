@@ -57,6 +57,9 @@ def test_normalization_has_known_values_inverses_and_constant_channel_behavior()
     for name in names:
         np.testing.assert_allclose(restored[name], [1., 100.] if name == 'rh' else data[name], atol=1e-12)
     xr.testing.assert_identical(data, original)
+    invalid = data.isel(time=[0, 0, 0]).assign_coords(time=[2, 3, 4])
+    invalid['TB'] = ('time', [np.nan, np.inf, -np.inf])
+    assert bool(normalize(invalid, model).TB.isnull().all())
 
 
 @pytest.mark.parametrize('subset', [False, True])

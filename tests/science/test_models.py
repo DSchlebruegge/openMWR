@@ -8,6 +8,7 @@ import xarray as xr
 from openMWR.models import Model, SpectralConsistencyModel
 from openMWR.normalization import denormalize, get_input_noise, normalize, normalized_input_noise
 from openMWR.train import TrainingWorkflow
+from openMWR.predict import run_model
 
 
 def test_spectral_normalization_applies_once_and_matches_physical_noise():
@@ -22,6 +23,25 @@ def test_spectral_normalization_applies_once_and_matches_physical_noise():
     np.testing.assert_allclose(normalized_input_noise(model, parameters), [1., 1.])
     np.testing.assert_allclose((normalize(data + get_input_noise(model, parameters), model) - normalized).TB,
                                [1., 1.])
+
+
+@pytest.mark.parametrize('variable', ['lwc', 'lwp'])
+def test_z_normalized_cloud_water_is_bounded_in_physical_units(variable):
+    model = Model('water', [0.] if variable == 'lwc' else None, [22.24], is_MLR=True,
+                  additional_input_vars=[], output_vars=[variable],
+                  norm_functions={'TB': 'z_norm', variable: 'z_norm'})
+    water = (('stat', 'height'), [[10.], [20.]]) if variable == 'lwc' else ('stat', [10., 20.])
+    model.nor = xr.Dataset({'TB': (('stat', 'frq'), [[100.], [2.]]), variable: water},
+                           coords={'stat': ['mean', 'std'], 'frq': [22.24],
+                                   **({'height': [0.]} if variable == 'lwc' else {})})
+    with torch.no_grad():
+        model.stack.weight.fill_(1.)
+        model.stack.bias.zero_()
+    data = xr.Dataset({'TB': (('time', 'frq'), [[98.], [100.], [102.]])},
+                      coords={'time': np.arange('2024-01-01', '2024-01-04', dtype='datetime64[D]'),
+                              'frq': [22.24]})
+    prediction = run_model(model, data, 'cpu', include_input_vars=False)
+    np.testing.assert_allclose(prediction[variable].values.ravel(), [0., 10., 30.])
 
 
 def test_input_noise_uses_the_selected_linear_scale_and_rejects_undefined_conversions():

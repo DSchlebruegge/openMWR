@@ -178,6 +178,22 @@ def test_infrared_microphysics_reaches_rt_and_incomplete_inputs_are_rejected(dat
     assert bool((abs(first.TB.sel(ang=4.2)-flat.TB.sel(ang=4.2)) > 1e-4).all())
     assert first.attrs['ray_tracing'] == 1 and flat.attrs['ray_tracing'] == 0
     assert altitudes == [484., 2656., 484., 2656., 484., 2656.]
+    # Scalar-time and timeless profiles use the same physics as the batch,
+    # without adding a synthetic timestamp or changing the caller's dataset.
+    for keep_time in (True, False):
+        single = profiles.isel(time=0)
+        expected = first.isel(time=0)
+        if not keep_time:
+            single = single.drop_vars('time')
+            expected = expected.drop_vars('time')
+        original = single.copy(deep=True)
+        output = rt.run_RT(single, **options,
+                           infrared={'droplet_number_density': 200e6, 'min_effective_radius': 2.5})
+        assert 'time' not in output.dims
+        assert ('time' in output.coords) == keep_time
+        xr.testing.assert_allclose(output.TB, expected.TB)
+        xr.testing.assert_allclose(output.TB_IR, expected.TB_IR)
+        xr.testing.assert_identical(single, original)
     assert other_build.read_text() == 'Input owned by another running build'
     with pytest.raises(ValueError, match='RT requires finite surface_altitude'):
         rt.run_RT(profiles.drop_vars('surface_altitude'), **options,

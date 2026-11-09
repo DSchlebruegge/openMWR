@@ -27,12 +27,17 @@ jobs:
           import tomllib
 
           tag = os.environ['RELEASE_TAG']
+          projects = []
           for path in (Path('pyproject.toml'), Path('torchMWRT/pyproject.toml')):
               project = tomllib.loads(path.read_text())['project']
+              projects.append(project)
               if project['version'] != tag:
                   raise SystemExit(
                       f"{project['name']} version {project['version']} does not match release tag {tag}."
                   )
+          requirement = f"torchMWRT>={tag}"
+          if requirement not in projects[0]['dependencies']:
+              raise SystemExit(f"openMWR must require {requirement} for this shared release.")
           PY
       - run: python -m pip install build twine
       - name: Build both distributions

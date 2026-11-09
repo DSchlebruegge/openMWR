@@ -558,14 +558,16 @@ class Model(BaseModel):
 
         Notes
         -----
-        Applies ``ReLU`` to ``lwc`` and ``lwp`` outputs (except during
-        training of ``is_MLR`` models) to keep these quantities non-negative.
+        Applies ``ReLU`` to uncentred ``lwc`` and ``lwp`` outputs (except during
+        training of ``is_MLR`` models). Z-normalized water outputs retain
+        negative normalized values and are clipped in physical units by
+        :func:`openMWR.normalization.denormalize`.
         """
         y = self.stack(x)
 
         if not self.is_MLR or not self.training:
             for name in ('lwc', 'lwp'):
-                if name in self.output_slices:
+                if name in self.output_slices and self.norm_functions.get(name) != 'z_norm':
                     y[:, self.output_slices[name]] = self.relu(y[:, self.output_slices[name]])
 
         return y
