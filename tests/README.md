@@ -81,6 +81,9 @@ For an explicit check against the installed PyRTlib version:
 python -m pytest -m reference
 ```
 
+This checks every fixed RT case and the water-vapour temperature-exponent
+mapping for each applicable absorption model.
+
 To deliberately regenerate reference values, then review all numerical changes:
 
 ```sh

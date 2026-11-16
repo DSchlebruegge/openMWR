@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchMWRT"
-version = "0.2.2"
+version = "0.2.3"
 description = "Microwave radiative transfer with PyTorch"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ dependencies = [
     "numpy",
     "xarray",
     "netCDF4",
-    "pyrtlib>=1.2.0",
+    "pyrtlib>=1.2.1",
 ]
 
 [project.urls]

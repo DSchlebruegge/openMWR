@@ -5,12 +5,28 @@ import shutil
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 import torch
 
 import torchMWRT
 import torchMWRT.lineshape as lineshape
 from torchMWRT.absorption_model import AbsModelError, H2OAbsModel, O2AbsModel, O3AbsModel
+
+
+@pytest.mark.reference
+@pytest.mark.parametrize('model', [name for name in lineshape.H2OLL.available_models()
+                                 if name not in ('R98', 'R03', 'R16', 'R17')])
+def test_water_temperature_exponents_agree_with_installed_pyrtlib(model):
+    from pyrtlib.absorption_model import H2OAbsModel as PyH2OAbsModel
+
+    PyH2OAbsModel.model = model
+    PyH2OAbsModel.set_ll()
+    loaded = lineshape.H2OLL.load(model, dtype=torch.float64)
+    for field in ('xh', 'xhs', 'xw2', 'xw2s'):
+        if hasattr(PyH2OAbsModel.h2oll, field):
+            np.testing.assert_array_equal(getattr(loaded, field),
+                                          getattr(PyH2OAbsModel.h2oll, field))
 
 
 def test_coefficients_load_from_readonly_packages_without_local_copies(tmp_path):

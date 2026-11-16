@@ -1,5 +1,10 @@
 # Release notes
 
+## 0.2.3
+
+- Update to PyRTlib 1.2.1 or later and adopt its water-vapour
+  temperature-exponent adjustment in torchMWRT.
+
 ## 0.2.2
 
 Rebuild affected prepared profiles and HATPRO datasets, then their dependent

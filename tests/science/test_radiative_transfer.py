@@ -129,10 +129,9 @@ def test_profile_orientation_shapes_and_explicit_humidity():
 
 
 @pytest.mark.reference
-@pytest.mark.parametrize('index', [0, -1], ids=['gridded', 'radiosonde'])
-def test_reference_agrees_with_installed_pyrtlib(index):
+@pytest.mark.parametrize('case', REFERENCE['cases'], ids=case_name)
+def test_reference_agrees_with_installed_pyrtlib(case):
     """Optional dependency-upgrade check; default numerical tests use fixed data."""
     from tests.tools.generate_rt_reference import pyrtlib_brightness
 
-    case = REFERENCE['cases'][index]
     np.testing.assert_allclose(pyrtlib_brightness(case), case['tb_K'], rtol=5e-5, atol=1e-6)

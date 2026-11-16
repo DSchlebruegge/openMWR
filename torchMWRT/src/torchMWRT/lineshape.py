@@ -13,6 +13,7 @@ from importlib.resources import as_file, files
 from typing import Any, List, Optional
 
 from netCDF4 import Dataset
+import numpy as np
 import torch
 
 
@@ -200,9 +201,9 @@ class H2OLL(_LineShape):
 
         if model not in ['R98', 'R03', 'R16', 'R17']:
             ls.sh = mtx[:, 8] / 1000.0
-            ls.xh = mtx[:, 9]
+            ls.xh = np.where(mtx[:, 9] <= 0.0, ls.x, mtx[:, 9])
             ls.shs = mtx[:, 10] / 1000.0
-            ls.xhs = mtx[:, 11]
+            ls.xhs = np.where(mtx[:, 11] <= 0.0, ls.xs, mtx[:, 11])
 
         if model in ['R19', 'R19SD', 'R20', 'R20SD', 'R21SD', 'R22SD', 'R23', 'R23SD', 'R24', 'MWL24']:
             ls.aair = mtx[:, 12]
@@ -215,9 +216,9 @@ class H2OLL(_LineShape):
             ls.w2s = mtx[:, 15] / 1000.0
 
         if model in ['R21SD', 'R22SD', 'R23', 'R23SD', 'R24', 'MWL24']:
-            ls.xw2 = mtx[:, 15]
+            ls.xw2 = np.where(mtx[:, 15] <= 0.0, ls.x, mtx[:, 15])
             ls.w2s = mtx[:, 16] / 1000.0
-            ls.xw2s = mtx[:, 17]
+            ls.xw2s = np.where(mtx[:, 17] <= 0.0, ls.xs, mtx[:, 17])
             ls.d2 = mtx[:, 18] / 1000.0
             ls.d2s = mtx[:, 19] / 1000.0
 
